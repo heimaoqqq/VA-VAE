@@ -167,12 +167,16 @@ def extract_latent_features(args):
     # 等待所有进程完成
     if world_size > 1:
         dist.barrier()
-    
+
     # 主进程合并所有rank的结果
     if rank == 0:
         print("\n🔄 合并所有rank的特征...")
         merge_features(output_dir, world_size)
-    
+
+        # 计算微多普勒数据的潜在特征统计信息
+        print("\n📊 计算微多普勒潜在特征统计信息...")
+        compute_micro_doppler_stats(output_dir)
+
     print("✅ 特征提取完成!")
 
 def merge_features(output_dir, world_size):
@@ -232,6 +236,70 @@ def merge_features(output_dir, world_size):
             
             save_file(save_dict, final_file)
             print(f"✅ 最终特征保存到: {final_file}")
+
+def compute_micro_doppler_stats(output_dir):
+    """
+    计算微多普勒数据的潜在特征统计信息
+    这对于正确的数据归一化很重要
+    """
+    from safetensors import safe_open
+
+    print("计算微多普勒潜在特征的统计信息...")
+
+    # 使用训练集计算统计信息
+    train_file = output_dir / "train.safetensors"
+    if not train_file.exists():
+        print("❌ 训练集特征文件不存在")
+        return
+
+    # 加载训练集特征
+    with safe_open(train_file, framework="pt", device="cpu") as f:
+        latents = f.get_tensor('latents')  # (N, 32, 16, 16)
+
+    print(f"计算 {len(latents)} 个样本的统计信息...")
+
+    # 计算均值和标准差 (在空间维度上)
+    # 保持通道维度，对batch和空间维度求统计
+    mean = latents.mean(dim=[0, 2, 3], keepdim=True)  # (1, 32, 1, 1)
+    std = latents.std(dim=[0, 2, 3], keepdim=True)    # (1, 32, 1, 1)
+
+    print(f"潜在特征统计信息:")
+    print(f"  均值范围: [{mean.min():.4f}, {mean.max():.4f}]")
+    print(f"  标准差范围: [{std.min():.4f}, {std.max():.4f}]")
+    print(f"  全局均值: {mean.mean():.4f}")
+    print(f"  全局标准差: {std.mean():.4f}")
+
+    # 保存统计信息
+    stats = {
+        'mean': mean,
+        'std': std,
+        'num_samples': len(latents),
+        'data_type': 'micro_doppler'
+    }
+
+    stats_file = output_dir / "latents_stats.pt"
+    torch.save(stats, stats_file)
+    print(f"✅ 统计信息保存到: {stats_file}")
+
+    # 与ImageNet统计信息对比
+    imagenet_stats_file = "/kaggle/working/pretrained/latents_stats.pt"
+    if os.path.exists(imagenet_stats_file):
+        print("\n📊 与ImageNet统计信息对比:")
+        imagenet_stats = torch.load(imagenet_stats_file)
+        imagenet_mean = imagenet_stats['mean'].mean()
+        imagenet_std = imagenet_stats['std'].mean()
+
+        print(f"  ImageNet - 均值: {imagenet_mean:.4f}, 标准差: {imagenet_std:.4f}")
+        print(f"  微多普勒 - 均值: {mean.mean():.4f}, 标准差: {std.mean():.4f}")
+
+        # 计算差异
+        mean_diff = abs(mean.mean() - imagenet_mean)
+        std_diff = abs(std.mean() - imagenet_std)
+
+        if mean_diff > 0.5 or std_diff > 0.5:
+            print("⚠️  统计信息差异较大，建议使用微多普勒自己的统计信息")
+        else:
+            print("✅ 统计信息相近，可以使用ImageNet统计信息")
 
 def main():
     parser = argparse.ArgumentParser(description='提取微多普勒图像的潜在特征')

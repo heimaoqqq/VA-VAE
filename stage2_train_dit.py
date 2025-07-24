@@ -55,15 +55,29 @@ class LatentDataset(Dataset):
             self._compute_latent_stats()
     
     def _compute_latent_stats(self):
-        """计算潜在特征的均值和标准差"""
-        print("📈 计算潜在特征统计信息...")
-        
-        # 计算全局统计信息
-        self.latent_mean = self.latents.mean()
-        self.latent_std = self.latents.std()
-        
-        print(f"  潜在特征均值: {self.latent_mean:.4f}")
-        print(f"  潜在特征标准差: {self.latent_std:.4f}")
+        """加载或计算潜在特征的均值和标准差"""
+        print("📈 加载潜在特征统计信息...")
+
+        # 首先尝试加载预计算的统计信息
+        stats_file = Path(self.latent_file).parent / "latents_stats.pt"
+
+        if stats_file.exists():
+            print(f"📊 加载统计信息: {stats_file}")
+            stats = torch.load(stats_file)
+            self.latent_mean = stats['mean']  # (1, 32, 1, 1)
+            self.latent_std = stats['std']    # (1, 32, 1, 1)
+
+            print(f"  使用预计算的统计信息")
+            print(f"  均值形状: {self.latent_mean.shape}")
+            print(f"  标准差形状: {self.latent_std.shape}")
+        else:
+            print("⚠️  未找到预计算的统计信息，使用全局统计")
+            # 回退到全局统计信息
+            self.latent_mean = self.latents.mean()
+            self.latent_std = self.latents.std()
+
+            print(f"  全局均值: {self.latent_mean:.4f}")
+            print(f"  全局标准差: {self.latent_std:.4f}")
     
     def __len__(self):
         return len(self.latents)
