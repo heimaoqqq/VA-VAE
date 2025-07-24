@@ -206,12 +206,26 @@ class UserConditionedDiT(pl.LightningModule):
         latents = batch['latent']  # (B, 32, 16, 16)
         user_ids = batch['y']      # (B,) 0-based用户ID
 
-        # 调试信息：检查数据维度
+        # 调试信息：检查数据维度和GPU使用
         if batch_idx == 0:
             print(f"🔍 训练调试信息:")
             print(f"  latents形状: {latents.shape}")
             print(f"  user_ids形状: {user_ids.shape}")
             print(f"  期望latents形状: (B, 32, 16, 16)")
+
+            # 显示GPU使用情况
+            if torch.cuda.is_available():
+                current_device = latents.device
+                print(f"  当前设备: {current_device}")
+                print(f"  GPU内存使用: {torch.cuda.memory_allocated(current_device) / 1e9:.2f}GB")
+
+                # 检查多GPU情况
+                if torch.cuda.device_count() > 1:
+                    print(f"  多GPU状态:")
+                    for i in range(torch.cuda.device_count()):
+                        memory_used = torch.cuda.memory_allocated(i) / 1e9
+                        memory_total = torch.cuda.get_device_properties(i).total_memory / 1e9
+                        print(f"    GPU {i}: {memory_used:.2f}GB / {memory_total:.1f}GB")
 
         # 修复latents维度问题
         if len(latents.shape) == 5:
@@ -419,19 +433,39 @@ def main():
     print(f"  可用GPU数量: {available_gpus}")
     print(f"  实际使用GPU数量: {actual_devices}")
 
+    # 显示GPU详细信息
+    if available_gpus > 0:
+        for i in range(available_gpus):
+            gpu_name = torch.cuda.get_device_name(i)
+            gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1e9
+            print(f"  GPU {i}: {gpu_name} ({gpu_memory:.1f}GB)")
+
+    # 选择合适的策略
+    if actual_devices > 1:
+        # 多GPU使用DDP策略
+        strategy = 'ddp'
+        print(f"🚀 使用分布式数据并行 (DDP) - {actual_devices} GPUs")
+    else:
+        # 单GPU使用auto策略
+        strategy = 'auto'
+        print(f"🚀 使用单GPU训练")
+
     # 创建训练器
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
         devices=actual_devices if available_gpus > 0 else 'auto',
         accelerator='gpu' if available_gpus > 0 else 'cpu',
-        strategy='ddp' if actual_devices > 1 else 'auto',
+        strategy=strategy,
         precision=args.precision if available_gpus > 0 else 32,
         callbacks=callbacks,
         log_every_n_steps=50,
         val_check_interval=1.0,
         enable_progress_bar=True,
         enable_model_summary=True,
-        default_root_dir=args.output_dir
+        default_root_dir=args.output_dir,
+        # DDP相关配置
+        sync_batchnorm=True if actual_devices > 1 else False,
+        find_unused_parameters=False  # 提高DDP性能
     )
     
     print("🚀 开始训练...")
