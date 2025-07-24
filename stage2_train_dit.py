@@ -193,28 +193,52 @@ class UserConditionedDiT(pl.LightningModule):
         """训练步骤"""
         latents = batch['latent']  # (B, 32, 16, 16)
         user_ids = batch['y']      # (B,) 0-based用户ID
-        
+
+        # 调试信息：检查数据维度
+        if batch_idx == 0:
+            print(f"🔍 训练调试信息:")
+            print(f"  latents形状: {latents.shape}")
+            print(f"  user_ids形状: {user_ids.shape}")
+            print(f"  期望latents形状: (B, 32, 16, 16)")
+
+        # 确保latents是4维的 (B, C, H, W)
+        if len(latents.shape) != 4:
+            print(f"❌ 错误的latents维度: {latents.shape}")
+            raise ValueError(f"期望4维张量 (B, C, H, W)，得到 {latents.shape}")
+
         # 扩散训练
         model_kwargs = dict(y=user_ids)
         loss_dict = self.transport.training_losses(self.dit, latents, model_kwargs)
         loss = loss_dict["loss"].mean()
-        
+
         # 记录损失
         self.log('train/loss', loss, prog_bar=True, logger=True, sync_dist=True)
-        
+
         return loss
     
     def validation_step(self, batch, batch_idx):
         """验证步骤"""
         latents = batch['latent']
         user_ids = batch['y']
-        
+
+        # 调试信息：检查数据维度
+        if batch_idx == 0:
+            print(f"🔍 验证调试信息:")
+            print(f"  latents形状: {latents.shape}")
+            print(f"  user_ids形状: {user_ids.shape}")
+            print(f"  期望latents形状: (B, 32, 16, 16)")
+
+        # 确保latents是4维的 (B, C, H, W)
+        if len(latents.shape) != 4:
+            print(f"❌ 错误的latents维度: {latents.shape}")
+            raise ValueError(f"期望4维张量 (B, C, H, W)，得到 {latents.shape}")
+
         model_kwargs = dict(y=user_ids)
         loss_dict = self.transport.training_losses(self.dit, latents, model_kwargs)
         loss = loss_dict["loss"].mean()
-        
+
         self.log('val/loss', loss, prog_bar=True, logger=True, sync_dist=True)
-        
+
         return loss
     
     def configure_optimizers(self):
@@ -359,13 +383,23 @@ def main():
         LearningRateMonitor(logging_interval='epoch')
     ]
     
+    # 检查实际可用的GPU数量
+    import torch
+    available_gpus = torch.cuda.device_count()
+    actual_devices = min(args.devices, available_gpus) if available_gpus > 0 else 1
+
+    print(f"🔧 GPU配置:")
+    print(f"  请求GPU数量: {args.devices}")
+    print(f"  可用GPU数量: {available_gpus}")
+    print(f"  实际使用GPU数量: {actual_devices}")
+
     # 创建训练器
     trainer = pl.Trainer(
         max_epochs=args.max_epochs,
-        devices=args.devices,
-        accelerator='gpu',
-        strategy='ddp' if args.devices > 1 else 'auto',
-        precision=args.precision,
+        devices=actual_devices if available_gpus > 0 else 'auto',
+        accelerator='gpu' if available_gpus > 0 else 'cpu',
+        strategy='ddp' if actual_devices > 1 else 'auto',
+        precision=args.precision if available_gpus > 0 else 32,
         callbacks=callbacks,
         log_every_n_steps=50,
         val_check_interval=1.0,
