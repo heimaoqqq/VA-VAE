@@ -147,9 +147,9 @@ class MicroDopplerDataset(Dataset):
                 pil_img = pil_img.resize((self.img_size, self.img_size), Image.LANCZOS)
                 spectrogram = np.array(pil_img).astype(np.float32) / 255.0
         
-        # 调试信息：只在第一次加载时显示
+        # 数据集信息（只显示一次）
         if not hasattr(self, '_debug_printed'):
-            print(f"📊 数据集信息 - 图像尺寸: {spectrogram.shape}, 数据类型: {spectrogram.dtype}")
+            print(f"📊 数据预处理 - 输入: {spectrogram.shape} {spectrogram.dtype}")
             self._debug_printed = True
 
         # 转换为3通道 (LightningDiT期望RGB格式)
@@ -204,7 +204,7 @@ class MicroDopplerDataset(Dataset):
 
         # 最终验证信息（只显示一次）
         if not hasattr(self, '_final_debug_printed'):
-            print(f"✅ 数据预处理完成 - 输出维度: {image_tensor.shape}, 数值范围: [{image_tensor.min():.3f}, {image_tensor.max():.3f}]")
+            print(f"✅ 数据预处理完成 - 输出: {image_tensor.shape}, 范围: [{image_tensor.min():.2f}, {image_tensor.max():.2f}]")
             self._final_debug_printed = True
 
         return {

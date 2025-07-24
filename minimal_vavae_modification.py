@@ -68,9 +68,9 @@ class UserConditionedVAVAE(nn.Module):
         Returns:
             posterior: 后验分布
         """
-        # 模型初始化信息（只显示一次）
+        # 模型运行信息（只显示一次）
         if hasattr(self, '_debug_first_call') and not self._debug_first_call:
-            print(f"🔥 模型运行 - 批次大小: {x.shape[0]}, 输入维度: {x.shape[1:]}")
+            print(f"🔥 模型启动 - 批次: {x.shape[0]}, 维度: {x.shape[1:]}")
             self._debug_first_call = True
 
         # 确保输入维度正确
@@ -87,7 +87,7 @@ class UserConditionedVAVAE(nn.Module):
         if user_ids is not None:
             # 用户条件信息（只显示一次）
             if hasattr(self, '_debug_user_ids') and not self._debug_user_ids:
-                print(f"👥 用户条件 - 用户范围: [{user_ids.min().item()}, {user_ids.max().item()}], 嵌入维度: {self.condition_dim}")
+                print(f"👥 用户条件启用 - 范围: [{user_ids.min().item()}, {user_ids.max().item()}], 维度: {self.condition_dim}")
                 self._debug_user_ids = True
 
             # 获取用户嵌入 (用户ID从1开始，需要转换为0开始的索引)
@@ -139,7 +139,7 @@ class UserConditionedVAVAE(nn.Module):
 
             # 解码信息（只显示一次）
             if hasattr(self, '_debug_decode') and not self._debug_decode:
-                print(f"🎨 解码过程 - 潜在空间: {z.shape}, 用户条件: {user_cond.shape}")
+                print(f"🎨 解码启动 - 潜在: {z.shape}, 条件: {user_cond.shape}")
                 self._debug_decode = True
 
             z = z + user_cond

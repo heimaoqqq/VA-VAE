@@ -29,39 +29,47 @@ class TrainingSummaryCallback(Callback):
 
     def on_train_epoch_start(self, trainer, pl_module):
         """记录epoch开始时间"""
-        self.epoch_start_time = time.time()
-        print(f"\n🚀 开始 Epoch {trainer.current_epoch + 1}/{trainer.max_epochs}")
+        # 只在主进程输出
+        if trainer.is_global_zero:
+            self.epoch_start_time = time.time()
+            print(f"\n🚀 Epoch {trainer.current_epoch + 1}/{trainer.max_epochs} 开始训练...")
 
     def on_train_epoch_end(self, trainer, pl_module):
         """训练epoch结束总结"""
-        epoch_time = time.time() - self.epoch_start_time if self.epoch_start_time else 0
+        # 只在主进程输出
+        if trainer.is_global_zero:
+            epoch_time = time.time() - self.epoch_start_time if self.epoch_start_time else 0
+            metrics = trainer.callback_metrics
+            train_loss = metrics.get('train/loss', 0.0)
 
-        # 获取训练指标
-        metrics = trainer.callback_metrics
-        train_loss = metrics.get('train/loss', 0.0)
-
-        print(f"⏱️  Epoch {trainer.current_epoch + 1} 训练完成 - 用时: {epoch_time:.1f}s, 损失: {train_loss:.6f}")
+            print(f"⏱️  训练完成 - 用时: {epoch_time:.1f}s, 损失: {train_loss:.6f}")
 
     def on_validation_epoch_end(self, trainer, pl_module):
         """验证epoch结束总结"""
-        metrics = trainer.callback_metrics
-        val_loss = metrics.get('val/loss', 0.0)
-        train_loss = metrics.get('train/loss', 0.0)
+        # 只在主进程输出
+        if trainer.is_global_zero:
+            metrics = trainer.callback_metrics
+            val_loss = metrics.get('val/loss', 0.0)
+            train_loss = metrics.get('train/loss', 0.0)
+            val_recon = metrics.get('val/recon', 0.0)
+            val_kl = metrics.get('val/kl', 0.0)
 
-        print(f"📊 Epoch {trainer.current_epoch + 1} 总结:")
-        print(f"   训练损失: {train_loss:.6f} | 验证损失: {val_loss:.6f}")
+            print(f"📊 Epoch {trainer.current_epoch + 1} 总结:")
+            print(f"   训练损失: {train_loss:.6f} | 验证损失: {val_loss:.6f}")
+            print(f"   验证重建: {val_recon:.6f} | 验证KL: {val_kl:.2f}")
 
-        # 显示改进情况
-        if hasattr(self, 'best_val_loss'):
-            if val_loss < self.best_val_loss:
-                print(f"   🎉 验证损失改进! ({self.best_val_loss:.6f} → {val_loss:.6f})")
-                self.best_val_loss = val_loss
+            # 显示改进情况
+            if hasattr(self, 'best_val_loss'):
+                if val_loss < self.best_val_loss:
+                    print(f"   🎉 验证损失改进! ({self.best_val_loss:.6f} → {val_loss:.6f})")
+                    self.best_val_loss = val_loss
+                else:
+                    print(f"   📈 当前最佳: {self.best_val_loss:.6f}")
             else:
-                print(f"   📈 验证损失: {val_loss:.6f} (最佳: {self.best_val_loss:.6f})")
-        else:
-            self.best_val_loss = val_loss
+                self.best_val_loss = val_loss
+                print(f"   🎯 初始验证损失: {val_loss:.6f}")
 
-        print("=" * 70)
+            print("=" * 70)
 
 
 def parse_args():
@@ -176,25 +184,12 @@ class MicroDopplerVAVAEModule(pl.LightningModule):
         return total_loss
 
     def on_train_epoch_end(self):
-        """训练epoch结束时的总结"""
-        # 获取当前epoch的平均损失
-        train_loss = self.trainer.callback_metrics.get('train/loss', 0.0)
-        train_recon = self.trainer.callback_metrics.get('train/recon', 0.0)
-        train_kl = self.trainer.callback_metrics.get('train/kl', 0.0)
-
-        print(f"\n📊 Epoch {self.current_epoch} 训练总结:")
-        print(f"   总损失: {train_loss:.6f} | 重建: {train_recon:.6f} | KL: {train_kl:.6f}")
+        """训练epoch结束时的总结 - 移除，避免重复"""
+        pass
 
     def on_validation_epoch_end(self):
-        """验证epoch结束时的总结"""
-        # 获取当前epoch的验证损失
-        val_loss = self.trainer.callback_metrics.get('val/loss', 0.0)
-        val_recon = self.trainer.callback_metrics.get('val/recon', 0.0)
-        val_kl = self.trainer.callback_metrics.get('val/kl', 0.0)
-
-        print(f"📈 Epoch {self.current_epoch} 验证总结:")
-        print(f"   总损失: {val_loss:.6f} | 重建: {val_recon:.6f} | KL: {val_kl:.6f}")
-        print("=" * 60)
+        """验证epoch结束时的总结 - 移除，避免重复"""
+        pass
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -320,12 +315,11 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print("=" * 60)
-    print("微多普勒VA-VAE训练 - PyTorch Lightning版本")
-    print("=" * 60)
+    print("🎯 微多普勒VA-VAE用户条件化训练")
+    print("=" * 50)
 
     # 1. 创建数据模块
-    print("1. 创建数据模块...")
+    print("📊 创建数据模块...")
     data_module = MicroDopplerDataModule(
         data_dir=args.data_dir,
         batch_size=args.batch_size,
@@ -337,11 +331,11 @@ def main():
     num_users = data_module.num_users
 
     # 2. 创建模型
-    print("2. 创建用户条件化VA-VAE模型...")
+    print("🤖 创建用户条件化VA-VAE模型...")
 
     # 加载预训练的VA-VAE模型
     if os.path.exists(args.original_vavae):
-        print(f"加载预训练VA-VAE模型: {args.original_vavae}")
+        print(f"📥 加载预训练模型: {Path(args.original_vavae).name}")
         try:
             # 从LightningDiT导入VA-VAE模型
             import sys
@@ -408,10 +402,12 @@ def main():
         precision=args.precision,
         callbacks=callbacks,
         logger=logger,
-        log_every_n_steps=100,
+        log_every_n_steps=200,  # 减少日志频率
         val_check_interval=1.0,
         enable_progress_bar=True,
-        enable_model_summary=False  # 简化输出
+        enable_model_summary=False,  # 简化输出
+        enable_checkpointing=True,
+        num_sanity_val_steps=0  # 跳过sanity check，减少输出
     )
 
     print(f"训练配置:")
