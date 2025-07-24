@@ -21,7 +21,14 @@ from torch.utils.checkpoint import checkpoint
 from timm.models.vision_transformer import PatchEmbed, Mlp
 from models.swiglu_ffn import SwiGLUFFN 
 from models.pos_embed import VisionRotaryEmbeddingFast
-from models.rmsnorm import RMSNorm
+try:
+    from models.rmsnorm import RMSNorm
+except ImportError:
+    # 如果fairscale不可用，使用简化版本
+    import sys
+    import os
+    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+    from simple_rmsnorm import RMSNorm
 
 @torch.compile
 def modulate(x, shift, scale):
