@@ -161,6 +161,63 @@ def setup_seed(seed):
     print(f"设置随机种子: {seed}")
 
 
+def create_dummy_vavae():
+    """创建测试用的DummyVAVAE模型"""
+    class DummyVAVAE(nn.Module):
+        def __init__(self):
+            super().__init__()
+            # 编码器: 256x256 -> 16x16 (16倍下采样)
+            self.encoder = nn.Sequential(
+                nn.Conv2d(3, 64, 4, 2, 1),    # 256->128
+                nn.ReLU(),
+                nn.Conv2d(64, 128, 4, 2, 1),  # 128->64
+                nn.ReLU(),
+                nn.Conv2d(128, 256, 4, 2, 1), # 64->32
+                nn.ReLU(),
+                nn.Conv2d(256, 512, 4, 2, 1), # 32->16
+                nn.ReLU()
+            )
+            # 解码器: 16x16 -> 256x256
+            self.decoder = nn.Sequential(
+                nn.ConvTranspose2d(512, 256, 4, 2, 1), # 16->32
+                nn.ReLU(),
+                nn.ConvTranspose2d(256, 128, 4, 2, 1), # 32->64
+                nn.ReLU(),
+                nn.ConvTranspose2d(128, 64, 4, 2, 1),  # 64->128
+                nn.ReLU(),
+                nn.ConvTranspose2d(64, 3, 4, 2, 1),    # 128->256
+                nn.Sigmoid()
+            )
+            # 量化层
+            self.quant_conv = nn.Conv2d(512, 64, 1)  # 输出32通道的均值和方差
+            self.post_quant_conv = nn.Conv2d(32, 512, 1)
+
+        def encode(self, x):
+            """编码"""
+            h = self.encoder(x)
+            moments = self.quant_conv(h)
+            # 分离均值和方差
+            mean, logvar = torch.chunk(moments, 2, dim=1)
+            return mean, logvar
+
+        def decode(self, z):
+            """解码"""
+            z = self.post_quant_conv(z)
+            return self.decoder(z)
+
+        def forward(self, x):
+            """前向传播"""
+            mean, logvar = self.encode(x)
+            # 重参数化技巧
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            z = mean + eps * std
+            recon = self.decode(z)
+            return recon, mean, logvar
+
+    return DummyVAVAE()
+
+
 def main():
     """主训练函数 - 使用PyTorch Lightning"""
     args = parse_args()
@@ -190,40 +247,46 @@ def main():
 
     # 2. 创建模型
     print("2. 创建用户条件化VA-VAE模型...")
-    print(f"注意: 需要实际的VA-VAE模型文件: {args.original_vavae}")
-    print("当前为演示版本，请替换为实际的模型加载代码")
 
-    # 创建一个简单的测试模型 (实际使用时需要替换)
-    class DummyVAVAE(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.encoder = nn.Sequential(
-                nn.Conv2d(3, 64, 4, 2, 1),
-                nn.ReLU(),
-                nn.Conv2d(64, 128, 4, 2, 1),
-                nn.ReLU(),
-                nn.Conv2d(128, 256, 4, 2, 1),
-                nn.ReLU(),
-                nn.Conv2d(256, 512, 4, 2, 1),
-            )
-            self.decoder = nn.Sequential(
-                nn.ConvTranspose2d(512, 256, 4, 2, 1),
-                nn.ReLU(),
-                nn.ConvTranspose2d(256, 128, 4, 2, 1),
-                nn.ReLU(),
-                nn.ConvTranspose2d(128, 64, 4, 2, 1),
-                nn.ReLU(),
-                nn.ConvTranspose2d(64, 3, 4, 2, 1),
-                nn.Sigmoid()
-            )
-            self.quant_conv = nn.Conv2d(512, 1024, 1)  # 输出2倍通道用于均值和方差
-            self.post_quant_conv = nn.Conv2d(512, 512, 1)
+    # 加载预训练的VA-VAE模型
+    if os.path.exists(args.original_vavae):
+        print(f"加载预训练VA-VAE模型: {args.original_vavae}")
+        try:
+            # 加载原始VA-VAE检查点
+            checkpoint = torch.load(args.original_vavae, map_location='cpu')
 
-    dummy_vavae = DummyVAVAE()
+            # 从LightningDiT导入VA-VAE模型
+            import sys
+            sys.path.append('LightningDiT')
+            from tokenizer.autoencoder import AutoencoderKL
+
+            # 创建VA-VAE模型实例 (使用AutoencoderKL)
+            original_vavae = AutoencoderKL(
+                embed_dim=32,  # f16d32配置
+                ch_mult=(1, 1, 2, 2, 4),
+                ckpt_path=None  # 我们手动加载权重
+            )
+
+            # 加载权重
+            if 'state_dict' in checkpoint:
+                original_vavae.load_state_dict(checkpoint['state_dict'])
+            else:
+                original_vavae.load_state_dict(checkpoint)
+
+            print("✅ 预训练VA-VAE模型加载成功")
+
+        except Exception as e:
+            print(f"❌ 加载预训练模型失败: {e}")
+            print("使用DummyVAVAE进行测试...")
+            original_vavae = create_dummy_vavae()
+    else:
+        print(f"⚠️ 预训练模型文件不存在: {args.original_vavae}")
+        print("使用DummyVAVAE进行测试...")
+        original_vavae = create_dummy_vavae()
 
     # 创建Lightning模块
     model = MicroDopplerVAVAEModule(
-        original_vavae=dummy_vavae,
+        original_vavae=original_vavae,
         num_users=num_users,
         condition_dim=args.condition_dim,
         lr=args.lr,
