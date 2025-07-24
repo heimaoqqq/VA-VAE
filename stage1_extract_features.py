@@ -286,20 +286,37 @@ def compute_micro_doppler_stats(output_dir):
     if os.path.exists(imagenet_stats_file):
         print("\n📊 与ImageNet统计信息对比:")
         imagenet_stats = torch.load(imagenet_stats_file)
-        imagenet_mean = imagenet_stats['mean'].mean()
-        imagenet_std = imagenet_stats['std'].mean()
+        imagenet_mean = imagenet_stats['mean']  # 保持原始形状
+        imagenet_std = imagenet_stats['std']    # 保持原始形状
 
-        print(f"  ImageNet - 均值: {imagenet_mean:.4f}, 标准差: {imagenet_std:.4f}")
-        print(f"  微多普勒 - 均值: {mean.mean():.4f}, 标准差: {std.mean():.4f}")
+        print(f"  ImageNet统计形状 - 均值: {imagenet_mean.shape}, 标准差: {imagenet_std.shape}")
+        print(f"  微多普勒统计形状 - 均值: {mean.shape}, 标准差: {std.shape}")
+        print(f"  ImageNet - 全局均值: {imagenet_mean.mean():.4f}, 全局标准差: {imagenet_std.mean():.4f}")
+        print(f"  微多普勒 - 全局均值: {mean.mean():.4f}, 全局标准差: {std.mean():.4f}")
 
         # 计算差异
-        mean_diff = abs(mean.mean() - imagenet_mean)
-        std_diff = abs(std.mean() - imagenet_std)
+        mean_diff = abs(mean.mean() - imagenet_mean.mean())
+        std_diff = abs(std.mean() - imagenet_std.mean())
 
         if mean_diff > 0.5 or std_diff > 0.5:
-            print("⚠️  统计信息差异较大，建议使用微多普勒自己的统计信息")
+            print("⚠️  统计信息差异较大，使用微多普勒自己的统计信息")
+            recommendation = "micro_doppler"
         else:
-            print("✅ 统计信息相近，可以使用ImageNet统计信息")
+            print("✅ 统计信息相近，可以选择使用ImageNet统计信息")
+            recommendation = "imagenet"
+
+            # 如果相近，提供ImageNet统计信息作为选项
+            imagenet_stats_copy = output_dir / "latents_stats_imagenet.pt"
+            torch.save(imagenet_stats, imagenet_stats_copy)
+            print(f"📋 ImageNet统计信息副本: {imagenet_stats_copy}")
+
+        # 保存推荐信息
+        recommendation_file = output_dir / "stats_recommendation.txt"
+        with open(recommendation_file, 'w') as f:
+            f.write(f"Recommendation: {recommendation}\n")
+            f.write(f"Mean difference: {mean_diff:.4f}\n")
+            f.write(f"Std difference: {std_diff:.4f}\n")
+        print(f"📝 推荐信息保存到: {recommendation_file}")
 
 def main():
     parser = argparse.ArgumentParser(description='提取微多普勒图像的潜在特征')

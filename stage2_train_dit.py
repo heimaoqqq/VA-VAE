@@ -58,18 +58,38 @@ class LatentDataset(Dataset):
         """加载或计算潜在特征的均值和标准差"""
         print("📈 加载潜在特征统计信息...")
 
-        # 首先尝试加载预计算的统计信息
-        stats_file = Path(self.latent_file).parent / "latents_stats.pt"
+        latent_dir = Path(self.latent_file).parent
+
+        # 检查推荐使用哪个统计信息
+        recommendation_file = latent_dir / "stats_recommendation.txt"
+        use_imagenet = False
+
+        if recommendation_file.exists():
+            with open(recommendation_file, 'r') as f:
+                content = f.read()
+                if "imagenet" in content.lower():
+                    use_imagenet = True
+                    print("📋 推荐使用ImageNet统计信息")
+
+        # 选择统计信息文件
+        if use_imagenet:
+            stats_file = latent_dir / "latents_stats_imagenet.pt"
+            stats_type = "ImageNet"
+        else:
+            stats_file = latent_dir / "latents_stats.pt"
+            stats_type = "微多普勒"
 
         if stats_file.exists():
-            print(f"📊 加载统计信息: {stats_file}")
+            print(f"📊 加载{stats_type}统计信息: {stats_file}")
             stats = torch.load(stats_file)
             self.latent_mean = stats['mean']  # (1, 32, 1, 1)
             self.latent_std = stats['std']    # (1, 32, 1, 1)
 
-            print(f"  使用预计算的统计信息")
+            print(f"  使用{stats_type}统计信息")
             print(f"  均值形状: {self.latent_mean.shape}")
             print(f"  标准差形状: {self.latent_std.shape}")
+            print(f"  全局均值: {self.latent_mean.mean():.4f}")
+            print(f"  全局标准差: {self.latent_std.mean():.4f}")
         else:
             print("⚠️  未找到预计算的统计信息，使用全局统计")
             # 回退到全局统计信息
