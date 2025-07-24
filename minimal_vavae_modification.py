@@ -42,6 +42,9 @@ class UserConditionedVAVAE(nn.Module):
         self.condition_proj = nn.Linear(condition_dim, encoder_out_channels)
         
         print(f"添加用户条件: {num_users}个用户, 条件维度: {condition_dim}")
+
+        # 调试标志
+        self._debug_first_call = False
     
     def _get_encoder_out_channels(self):
         """获取编码器输出通道数"""
@@ -54,14 +57,28 @@ class UserConditionedVAVAE(nn.Module):
     def encode(self, x, user_ids=None):
         """
         编码 - 添加用户条件
-        
+
         Args:
             x: 输入图像 (B, 3, H, W)
             user_ids: 用户ID (B,)
-            
+
         Returns:
             posterior: 后验分布
         """
+        # 调试信息：检查输入维度
+        if hasattr(self, '_debug_first_call') and not self._debug_first_call:
+            print(f"🔍 调试信息 - 输入张量维度: {x.shape}")
+            print(f"🔍 调试信息 - 输入张量数据类型: {x.dtype}")
+            print(f"🔍 调试信息 - 输入张量范围: [{x.min():.3f}, {x.max():.3f}]")
+            self._debug_first_call = True
+
+        # 确保输入维度正确
+        if x.dim() == 4 and x.shape[1] != 3:
+            if x.shape[3] == 3:
+                # (B, H, W, C) -> (B, C, H, W)
+                x = x.permute(0, 3, 1, 2)
+                print(f"⚠️ 修正输入维度: {x.shape}")
+
         # 原有的编码过程
         h = self.encoder(x)
         

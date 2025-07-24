@@ -149,22 +149,48 @@ class MicroDopplerDataset(Dataset):
         
         # 转换为3通道 (LightningDiT期望RGB格式)
         if spectrogram.ndim == 2:
-            # 灰度 -> RGB: 复制3次
+            # 灰度 -> RGB: 复制3次，格式为 (3, H, W)
             spectrogram = np.stack([spectrogram, spectrogram, spectrogram], axis=0)
-        elif spectrogram.ndim == 3 and spectrogram.shape[2] == 1:
-            # (H, W, 1) -> (3, H, W)
-            spectrogram = spectrogram.squeeze(2)
-            spectrogram = np.stack([spectrogram, spectrogram, spectrogram], axis=0)
-        elif spectrogram.ndim == 3 and spectrogram.shape[0] == 1:
-            # (1, H, W) -> (3, H, W)
-            spectrogram = np.repeat(spectrogram, 3, axis=0)
-        
+        elif spectrogram.ndim == 3:
+            if spectrogram.shape[2] == 3:
+                # (H, W, 3) -> (3, H, W) - RGB图像
+                spectrogram = np.transpose(spectrogram, (2, 0, 1))
+            elif spectrogram.shape[2] == 1:
+                # (H, W, 1) -> (3, H, W) - 单通道图像
+                spectrogram = spectrogram.squeeze(2)
+                spectrogram = np.stack([spectrogram, spectrogram, spectrogram], axis=0)
+            elif spectrogram.shape[0] == 1:
+                # (1, H, W) -> (3, H, W)
+                spectrogram = np.repeat(spectrogram, 3, axis=0)
+            elif spectrogram.shape[0] == 3:
+                # 已经是 (3, H, W) 格式，无需转换
+                pass
+            else:
+                # 其他情况，强制转换为 (3, H, W)
+                if spectrogram.shape[0] != 3:
+                    # 取第一个通道并复制3次
+                    if len(spectrogram.shape) == 3:
+                        spectrogram = spectrogram[0]  # 取第一个通道
+                    spectrogram = np.stack([spectrogram, spectrogram, spectrogram], axis=0)
+
         # 确保数据范围在[0, 1]
         if spectrogram.max() > 1.0:
             spectrogram = spectrogram / 255.0
-        
-        # 转换为tensor
+
+        # 转换为tensor，确保维度为 (C, H, W)
         image_tensor = torch.from_numpy(spectrogram).float()
+
+        # 最终检查：确保张量维度正确
+        if image_tensor.dim() == 3 and image_tensor.shape[0] != 3:
+            # 如果第一个维度不是3，进行转换
+            if image_tensor.shape[2] == 3:
+                image_tensor = image_tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
+
+        # 验证最终维度
+        assert image_tensor.dim() == 3, f"期望3维张量，得到{image_tensor.dim()}维"
+        assert image_tensor.shape[0] == 3, f"期望3个通道，得到{image_tensor.shape[0]}个通道"
+        assert image_tensor.shape[1] == self.img_size, f"期望高度{self.img_size}，得到{image_tensor.shape[1]}"
+        assert image_tensor.shape[2] == self.img_size, f"期望宽度{self.img_size}，得到{image_tensor.shape[2]}"
         
         return {
             'image': image_tensor,      # LightningDiT期望的键名
