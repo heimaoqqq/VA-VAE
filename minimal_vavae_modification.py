@@ -39,13 +39,15 @@ class UserConditionedVAVAE(nn.Module):
         # 简单的条件融合层
         # 获取编码器输出的通道数
         encoder_out_channels = self._get_encoder_out_channels()
-        self.condition_proj = nn.Linear(condition_dim, encoder_out_channels)
+        self.condition_proj = nn.Linear(condition_dim, encoder_out_channels)  # 用于编码器
+        self.latent_proj = nn.Linear(condition_dim, 32)  # 用于潜在空间（32维）
         
         print(f"添加用户条件: {num_users}个用户, 条件维度: {condition_dim}")
 
         # 调试标志
         self._debug_first_call = False
         self._debug_user_ids = False
+        self._debug_decode = False
     
     def _get_encoder_out_channels(self):
         """获取编码器输出通道数"""
@@ -130,12 +132,20 @@ class UserConditionedVAVAE(nn.Module):
         
         # 添加用户条件 (如果提供)
         if user_ids is not None:
-            # 获取用户嵌入
-            user_emb = self.user_embedding(user_ids)
-            
-            # 投影到潜在空间
-            user_cond = self.condition_proj(user_emb)
-            user_cond = user_cond.unsqueeze(-1).unsqueeze(-1)
+            # 获取用户嵌入 (用户ID从1开始，需要转换为0开始的索引)
+            user_indices = user_ids - 1  # 将1-31转换为0-30
+            user_emb = self.user_embedding(user_indices)
+
+            # 投影到潜在空间（使用32维的投影层）
+            user_cond = self.latent_proj(user_emb)  # (B, 32)
+            user_cond = user_cond.unsqueeze(-1).unsqueeze(-1)  # (B, 32, 1, 1)
+
+            # 调试信息：检查维度匹配
+            if hasattr(self, '_debug_decode') and not self._debug_decode:
+                print(f"🔍 解码调试 - z维度: {z.shape}")
+                print(f"🔍 解码调试 - user_cond维度: {user_cond.shape}")
+                self._debug_decode = True
+
             z = z + user_cond
         
         # 原有的解码过程
