@@ -215,11 +215,14 @@ def create_split_info(splits, user_files, output_dir, use_test_set):
         'total_users': len(user_files),
         'splits': {
             'train': len(splits['train']),
-            'val': len(splits['val']),
-            'test': len(splits['test'])
+            'val': len(splits['val'])
         },
         'user_distribution': {}
     }
+
+    # 如果使用测试集，添加测试集信息
+    if use_test_set and 'test' in splits:
+        info['splits']['test'] = len(splits['test'])
     
     # 按用户统计分布
     for user_id in user_files.keys():
@@ -248,10 +251,15 @@ def create_split_info(splits, user_files, output_dir, use_test_set):
         f.write("\n用户分布:\n")
         for user_id, user_splits in info['user_distribution'].items():
             total = sum(user_splits.values())
-            f.write(f"  {user_id}: 总计 {total:3d} -> "
-                   f"训练 {user_splits['train']:3d}, "
-                   f"验证 {user_splits['val']:3d}, "
-                   f"测试 {user_splits['test']:3d}\n")
+            if use_test_set and 'test' in user_splits:
+                f.write(f"  {user_id}: 总计 {total:3d} -> "
+                       f"训练 {user_splits['train']:3d}, "
+                       f"验证 {user_splits['val']:3d}, "
+                       f"测试 {user_splits['test']:3d}\n")
+            else:
+                f.write(f"  {user_id}: 总计 {total:3d} -> "
+                       f"训练 {user_splits['train']:3d}, "
+                       f"验证 {user_splits['val']:3d}\n")
     
     print(f"\n划分信息已保存到: {info_file}")
 
