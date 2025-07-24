@@ -151,7 +151,7 @@ def split_user_data(user_files, train_ratio, val_ratio, test_ratio, seed, min_sa
 
 def copy_files_to_splits(splits, output_dir):
     """
-    将文件复制到对应的划分目录，并重命名为统一格式
+    将文件复制到对应的划分目录，按用户目录组织
 
     Args:
         splits: {'train': [...], 'val': [...], 'test': [...]}
@@ -165,7 +165,7 @@ def copy_files_to_splits(splits, output_dir):
 
         print(f"\n复制 {split_name} 集文件...")
 
-        # 按用户组织文件以便重命名
+        # 按用户组织文件
         user_files = {}
         for file_path in files:
             # 从路径中提取用户ID
@@ -180,19 +180,25 @@ def copy_files_to_splits(splits, output_dir):
                 user_files[user_id] = []
             user_files[user_id].append(file_path)
 
-        # 重命名并复制文件
+        # 为每个用户创建目录并复制文件
         file_count = 0
         for user_id, user_file_list in user_files.items():
+            # 创建用户目录
+            user_dir = split_dir / f"user{user_id}"
+            user_dir.mkdir(exist_ok=True)
+
             for sample_idx, file_path in enumerate(user_file_list, 1):
-                # 生成新文件名: user_XX_sample_XXX.ext
-                new_name = f"user_{user_id:02d}_sample_{sample_idx:03d}{file_path.suffix}"
-                dest_path = split_dir / new_name
+                # 生成新文件名: image_XXX.ext (保持简单)
+                new_name = f"image_{sample_idx:03d}{file_path.suffix}"
+                dest_path = user_dir / new_name
 
                 shutil.copy2(file_path, dest_path)
                 file_count += 1
 
                 if file_count % 100 == 0:
                     print(f"  已复制 {file_count}/{len(files)} 个文件")
+
+            print(f"  用户{user_id}: {len(user_file_list)} 个文件")
 
         print(f"{split_name} 集完成: {len(files)} 个文件")
 
