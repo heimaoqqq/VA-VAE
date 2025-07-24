@@ -45,6 +45,7 @@ class UserConditionedVAVAE(nn.Module):
 
         # 调试标志
         self._debug_first_call = False
+        self._debug_user_ids = False
     
     def _get_encoder_out_channels(self):
         """获取编码器输出通道数"""
@@ -84,8 +85,20 @@ class UserConditionedVAVAE(nn.Module):
         
         # 添加用户条件 (如果提供)
         if user_ids is not None:
-            # 获取用户嵌入
-            user_emb = self.user_embedding(user_ids)  # (B, condition_dim)
+            # 调试信息：检查用户ID范围
+            if hasattr(self, '_debug_user_ids') and not self._debug_user_ids:
+                print(f"🔍 用户ID调试 - 原始用户ID范围: [{user_ids.min().item()}, {user_ids.max().item()}]")
+                print(f"🔍 用户ID调试 - 嵌入层大小: {self.user_embedding.num_embeddings}")
+                self._debug_user_ids = True
+
+            # 获取用户嵌入 (用户ID从1开始，需要转换为0开始的索引)
+            user_indices = user_ids - 1  # 将1-31转换为0-30
+
+            # 验证索引范围
+            assert user_indices.min() >= 0, f"用户索引过小: {user_indices.min()}"
+            assert user_indices.max() < self.user_embedding.num_embeddings, f"用户索引过大: {user_indices.max()}, 嵌入层大小: {self.user_embedding.num_embeddings}"
+
+            user_emb = self.user_embedding(user_indices)  # (B, condition_dim)
             
             # 投影到编码器输出空间
             user_cond = self.condition_proj(user_emb)  # (B, encoder_channels)
