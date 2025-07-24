@@ -39,8 +39,10 @@ class MicroDopplerDataset(torch.utils.data.Dataset):
         for user_dir in sorted(self.data_dir.iterdir()):
             if user_dir.is_dir() and user_dir.name.startswith('user'):
                 user_id = int(user_dir.name.replace('user', ''))
-                for img_file in user_dir.glob('*.png'):
-                    self.samples.append((str(img_file), user_id))
+                # 支持多种图像格式
+                for ext in ['*.png', '*.jpg', '*.jpeg']:
+                    for img_file in user_dir.glob(ext):
+                        self.samples.append((str(img_file), user_id))
         
         print(f"加载了 {len(self.samples)} 个微多普勒样本")
         
