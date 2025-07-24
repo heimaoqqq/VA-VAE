@@ -442,8 +442,12 @@ def main():
 
     # 选择合适的策略
     if actual_devices > 1:
-        # 多GPU使用DDP策略
-        strategy = 'ddp'
+        # 多GPU使用DDP策略，配置DDP参数
+        from pytorch_lightning.strategies import DDPStrategy
+        strategy = DDPStrategy(
+            find_unused_parameters=False,  # 提高DDP性能
+            static_graph=True,             # 静态图优化
+        )
         print(f"🚀 使用分布式数据并行 (DDP) - {actual_devices} GPUs")
     else:
         # 单GPU使用auto策略
@@ -463,9 +467,8 @@ def main():
         enable_progress_bar=True,
         enable_model_summary=True,
         default_root_dir=args.output_dir,
-        # DDP相关配置
+        # 其他配置
         sync_batchnorm=True if actual_devices > 1 else False,
-        find_unused_parameters=False  # 提高DDP性能
     )
     
     print("🚀 开始训练...")
