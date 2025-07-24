@@ -9,15 +9,59 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor, Callback
 from pytorch_lightning.loggers import TensorBoardLogger
 import os
 import argparse
+import time
 from pathlib import Path
 
 # 导入我们的最小修改模块
 from minimal_micro_doppler_dataset import create_micro_doppler_dataloader, MicroDopplerDataset
 from minimal_vavae_modification import UserConditionedVAVAE
+
+class TrainingSummaryCallback(Callback):
+    """自定义回调：提供清晰的训练总结"""
+
+    def __init__(self):
+        super().__init__()
+        self.epoch_start_time = None
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        """记录epoch开始时间"""
+        self.epoch_start_time = time.time()
+        print(f"\n🚀 开始 Epoch {trainer.current_epoch + 1}/{trainer.max_epochs}")
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        """训练epoch结束总结"""
+        epoch_time = time.time() - self.epoch_start_time if self.epoch_start_time else 0
+
+        # 获取训练指标
+        metrics = trainer.callback_metrics
+        train_loss = metrics.get('train/loss', 0.0)
+
+        print(f"⏱️  Epoch {trainer.current_epoch + 1} 训练完成 - 用时: {epoch_time:.1f}s, 损失: {train_loss:.6f}")
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        """验证epoch结束总结"""
+        metrics = trainer.callback_metrics
+        val_loss = metrics.get('val/loss', 0.0)
+        train_loss = metrics.get('train/loss', 0.0)
+
+        print(f"📊 Epoch {trainer.current_epoch + 1} 总结:")
+        print(f"   训练损失: {train_loss:.6f} | 验证损失: {val_loss:.6f}")
+
+        # 显示改进情况
+        if hasattr(self, 'best_val_loss'):
+            if val_loss < self.best_val_loss:
+                print(f"   🎉 验证损失改进! ({self.best_val_loss:.6f} → {val_loss:.6f})")
+                self.best_val_loss = val_loss
+            else:
+                print(f"   📈 验证损失: {val_loss:.6f} (最佳: {self.best_val_loss:.6f})")
+        else:
+            self.best_val_loss = val_loss
+
+        print("=" * 70)
 
 
 def parse_args():
@@ -79,10 +123,10 @@ class MicroDopplerVAVAEModule(pl.LightningModule):
         kl_loss = posterior.kl().mean()
         total_loss = recon_loss + self.kl_weight * kl_loss
 
-        # 记录损失
-        self.log('train/total_loss', total_loss, prog_bar=True)
-        self.log('train/recon_loss', recon_loss, prog_bar=True)
-        self.log('train/kl_loss', kl_loss, prog_bar=True)
+        # 记录损失（简化显示）
+        self.log('train/loss', total_loss, prog_bar=True, logger=True)
+        self.log('train/recon', recon_loss, prog_bar=False, logger=True)
+        self.log('train/kl', kl_loss, prog_bar=False, logger=True)
 
         return total_loss
 
@@ -98,12 +142,33 @@ class MicroDopplerVAVAEModule(pl.LightningModule):
         kl_loss = posterior.kl().mean()
         total_loss = recon_loss + self.kl_weight * kl_loss
 
-        # 记录损失
-        self.log('val/total_loss', total_loss, prog_bar=True)
-        self.log('val/recon_loss', recon_loss, prog_bar=True)
-        self.log('val/kl_loss', kl_loss, prog_bar=True)
+        # 记录损失（添加分布式同步）
+        self.log('val/loss', total_loss, prog_bar=True, logger=True, sync_dist=True)
+        self.log('val/recon', recon_loss, prog_bar=False, logger=True, sync_dist=True)
+        self.log('val/kl', kl_loss, prog_bar=False, logger=True, sync_dist=True)
 
         return total_loss
+
+    def on_train_epoch_end(self):
+        """训练epoch结束时的总结"""
+        # 获取当前epoch的平均损失
+        train_loss = self.trainer.callback_metrics.get('train/loss', 0.0)
+        train_recon = self.trainer.callback_metrics.get('train/recon', 0.0)
+        train_kl = self.trainer.callback_metrics.get('train/kl', 0.0)
+
+        print(f"\n📊 Epoch {self.current_epoch} 训练总结:")
+        print(f"   总损失: {train_loss:.6f} | 重建: {train_recon:.6f} | KL: {train_kl:.6f}")
+
+    def on_validation_epoch_end(self):
+        """验证epoch结束时的总结"""
+        # 获取当前epoch的验证损失
+        val_loss = self.trainer.callback_metrics.get('val/loss', 0.0)
+        val_recon = self.trainer.callback_metrics.get('val/recon', 0.0)
+        val_kl = self.trainer.callback_metrics.get('val/kl', 0.0)
+
+        print(f"📈 Epoch {self.current_epoch} 验证总结:")
+        print(f"   总损失: {val_loss:.6f} | 重建: {val_recon:.6f} | KL: {val_kl:.6f}")
+        print("=" * 60)
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -290,13 +355,14 @@ def main():
     callbacks = [
         ModelCheckpoint(
             dirpath=output_dir / 'checkpoints',
-            filename='best-{epoch:02d}-{val/total_loss:.4f}',
-            monitor='val/total_loss',
+            filename='best-{epoch:02d}-{val/loss:.4f}',
+            monitor='val/loss',
             mode='min',
             save_top_k=1,
             save_last=True
         ),
-        LearningRateMonitor(logging_interval='step')
+        LearningRateMonitor(logging_interval='epoch'),
+        TrainingSummaryCallback()  # 添加自定义训练总结回调
     ]
 
     # 4. 设置日志记录器
@@ -316,9 +382,10 @@ def main():
         precision=args.precision,
         callbacks=callbacks,
         logger=logger,
-        log_every_n_steps=50,
+        log_every_n_steps=100,
         val_check_interval=1.0,
-        enable_progress_bar=True
+        enable_progress_bar=True,
+        enable_model_summary=False  # 简化输出
     )
 
     print(f"训练配置:")

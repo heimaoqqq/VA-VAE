@@ -68,11 +68,9 @@ class UserConditionedVAVAE(nn.Module):
         Returns:
             posterior: 后验分布
         """
-        # 调试信息：检查输入维度
+        # 模型初始化信息（只显示一次）
         if hasattr(self, '_debug_first_call') and not self._debug_first_call:
-            print(f"🔍 调试信息 - 输入张量维度: {x.shape}")
-            print(f"🔍 调试信息 - 输入张量数据类型: {x.dtype}")
-            print(f"🔍 调试信息 - 输入张量范围: [{x.min():.3f}, {x.max():.3f}]")
+            print(f"🔥 模型运行 - 批次大小: {x.shape[0]}, 输入维度: {x.shape[1:]}")
             self._debug_first_call = True
 
         # 确保输入维度正确
@@ -87,10 +85,9 @@ class UserConditionedVAVAE(nn.Module):
         
         # 添加用户条件 (如果提供)
         if user_ids is not None:
-            # 调试信息：检查用户ID范围
+            # 用户条件信息（只显示一次）
             if hasattr(self, '_debug_user_ids') and not self._debug_user_ids:
-                print(f"🔍 用户ID调试 - 原始用户ID范围: [{user_ids.min().item()}, {user_ids.max().item()}]")
-                print(f"🔍 用户ID调试 - 嵌入层大小: {self.user_embedding.num_embeddings}")
+                print(f"👥 用户条件 - 用户范围: [{user_ids.min().item()}, {user_ids.max().item()}], 嵌入维度: {self.condition_dim}")
                 self._debug_user_ids = True
 
             # 获取用户嵌入 (用户ID从1开始，需要转换为0开始的索引)
@@ -140,10 +137,9 @@ class UserConditionedVAVAE(nn.Module):
             user_cond = self.latent_proj(user_emb)  # (B, 32)
             user_cond = user_cond.unsqueeze(-1).unsqueeze(-1)  # (B, 32, 1, 1)
 
-            # 调试信息：检查维度匹配
+            # 解码信息（只显示一次）
             if hasattr(self, '_debug_decode') and not self._debug_decode:
-                print(f"🔍 解码调试 - z维度: {z.shape}")
-                print(f"🔍 解码调试 - user_cond维度: {user_cond.shape}")
+                print(f"🎨 解码过程 - 潜在空间: {z.shape}, 用户条件: {user_cond.shape}")
                 self._debug_decode = True
 
             z = z + user_cond
