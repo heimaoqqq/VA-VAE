@@ -32,16 +32,19 @@ class LatentDataset(Dataset):
     
     def __init__(self, latent_file, latent_norm=True, latent_multiplier=1.0):
         print(f"📊 加载潜在特征: {latent_file}")
-        
+
+        # 保存文件路径
+        self.latent_file = latent_file
+
         # 使用safetensors加载数据
         with safe_open(latent_file, framework="pt", device="cpu") as f:
             self.latents = f.get_tensor('latents')  # (N, 32, 16, 16)
             self.user_ids = f.get_tensor('user_ids')  # (N,)
-            
+
             # 读取元数据
             self.num_samples = f.get_tensor('num_samples').item()
             self.num_users = f.get_tensor('num_users').item()
-        
+
         self.latent_norm = latent_norm
         self.latent_multiplier = latent_multiplier
         
