@@ -106,31 +106,44 @@ def install_pytorch():
         print(f"PyTorch检查失败: {e}")
         print("🔄 重新安装PyTorch...")
 
-    # 先卸载可能损坏的PyTorch
-    print("🗑️  清理现有PyTorch安装...")
-    run_command("pip uninstall torch torchvision torchaudio -y", "卸载PyTorch")
+    # 完全清理PyTorch环境
+    print("🗑️  完全清理PyTorch环境...")
+    cleanup_commands = [
+        "pip uninstall torch torchvision torchaudio -y",
+        "pip uninstall torch-audio torch-vision -y",
+        "pip cache purge",
+        "python -c \"import sys; [sys.modules.pop(k) for k in list(sys.modules.keys()) if k.startswith('torch')]\""
+    ]
 
-    # 安装PyTorch - 使用Kaggle推荐的版本
+    for cmd in cleanup_commands:
+        run_command(cmd, "清理PyTorch")
+
+    print("🔄 重启Python解释器以清理内存...")
+    print("⚠️  注意: 需要重启Kaggle内核以完全清理PyTorch!")
+    print("请在Kaggle中点击 'Restart & Run All' 然后重新运行此脚本")
+
+    # 检查是否需要重启
+    try:
+        import torch
+        print("❌ 检测到残留的PyTorch模块，必须重启内核")
+        return False
+    except ImportError:
+        print("✅ PyTorch模块已清理")
+
+    # 安装新的PyTorch
     print("📦 安装新的PyTorch...")
     cuda_available, _ = run_command("nvidia-smi", "检查CUDA")
     if cuda_available:
-        # 使用与Kaggle兼容的CUDA版本
-        cmd = "pip install torch==2.1.0+cu121 torchvision==0.16.0+cu121 --index-url https://download.pytorch.org/whl/cu121"
+        # 使用稳定版本避免冲突
+        cmd = "pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --index-url https://download.pytorch.org/whl/cu118"
     else:
-        cmd = "pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cpu"
+        cmd = "pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu"
 
     success, _ = run_command(cmd, "安装PyTorch")
 
-    # 验证安装
     if success:
-        try:
-            import torch
-            import torch._C  # 验证C++扩展
-            print(f"✅ PyTorch {torch.__version__} 安装成功，模块完整")
-            return True
-        except ImportError as e:
-            print(f"❌ PyTorch安装后仍有问题: {e}")
-            return False
+        print("✅ PyTorch安装完成，请重启内核验证")
+        print("🔄 重启后运行: import torch; print(torch.__version__)")
 
     return success
 
@@ -335,6 +348,7 @@ def check_package_versions():
 
     print("检查必需包:")
     for package_name, min_version in required_packages.items():
+        package_display = package_name  # 初始化变量
         try:
             if package_name == 'PIL':
                 import PIL
@@ -407,59 +421,78 @@ def test_imports():
     return success_count == len(test_modules)
 
 def test_pytorch_functionality():
-    """测试PyTorch功能和完整性"""
+    """安全测试PyTorch功能和完整性"""
     print_step(10, "测试PyTorch功能和完整性")
 
     try:
-        import torch
-        import torch.nn as nn
-        import torch.distributed as dist
+        # 首先检查PyTorch是否可导入
+        try:
+            import torch
+            print(f"✅ PyTorch导入成功: {torch.__version__}")
+        except ImportError as e:
+            print(f"❌ PyTorch导入失败: {e}")
+            return False
+        except AttributeError as e:
+            print(f"❌ PyTorch版本属性缺失: {e}")
+            print("🔄 需要重启内核并重新安装PyTorch")
+            return False
 
-        # 测试关键C++扩展模块
+        # 测试关键模块
         try:
             import torch._C
             print("✅ torch._C模块: 可用")
         except ImportError:
-            print("❌ torch._C模块: 缺失 - PyTorch安装不完整")
+            print("❌ torch._C模块: 缺失")
+            print("🔄 需要重新安装PyTorch")
+            return False
+        except Exception as e:
+            print(f"❌ torch._C模块错误: {e}")
+            print("🔄 需要重启内核")
             return False
 
-        # 测试基本张量操作
-        x = torch.randn(2, 3)
-        y = torch.randn(3, 4)
-        z = torch.mm(x, y)
-        print(f"✅ 张量运算: {z.shape}")
-
-        # 测试神经网络
-        model = nn.Linear(10, 1)
-        input_tensor = torch.randn(5, 10)
-        output = model(input_tensor)
-        print(f"✅ 神经网络: {output.shape}")
-
-        # 测试自动求导
-        x = torch.randn(2, 2, requires_grad=True)
-        y = x.sum()
-        y.backward()
-        print(f"✅ 自动求导: 梯度形状 {x.grad.shape}")
-
-        # 测试CUDA（如果可用）
-        if torch.cuda.is_available():
-            device = torch.device('cuda')
-            x_cuda = x.to(device)
-            print(f"✅ CUDA运算: 设备 {x_cuda.device}")
-            print(f"✅ GPU数量: {torch.cuda.device_count()}")
-        else:
-            print("⚠️  CUDA不可用，使用CPU")
-
-        # 测试分布式功能（不初始化，只检查模块）
+        # 测试基本功能
         try:
-            from torch.nn.parallel import DistributedDataParallel
-            print("✅ 分布式模块: 可用")
-        except ImportError:
-            print("⚠️  分布式模块: 不可用")
+            import torch.nn as nn
+
+            # 基本张量操作
+            x = torch.randn(2, 3)
+            y = torch.randn(3, 4)
+            z = torch.mm(x, y)
+            print(f"✅ 张量运算: {z.shape}")
+
+            # 神经网络
+            model = nn.Linear(10, 1)
+            input_tensor = torch.randn(5, 10)
+            output = model(input_tensor)
+            print(f"✅ 神经网络: {output.shape}")
+
+            # 自动求导
+            x_grad = torch.randn(2, 2, requires_grad=True)
+            y_grad = x_grad.sum()
+            y_grad.backward()
+            print(f"✅ 自动求导: 梯度形状 {x_grad.grad.shape}")
+
+        except Exception as e:
+            print(f"❌ PyTorch基本功能测试失败: {e}")
+            return False
+
+        # 测试CUDA
+        try:
+            if torch.cuda.is_available():
+                device = torch.device('cuda')
+                x_cuda = torch.randn(2, 2).to(device)
+                print(f"✅ CUDA运算: 设备 {x_cuda.device}")
+                print(f"✅ GPU数量: {torch.cuda.device_count()}")
+            else:
+                print("⚠️  CUDA不可用，使用CPU")
+        except Exception as e:
+            print(f"⚠️  CUDA测试失败: {e}")
 
         return True
+
     except Exception as e:
-        print(f"❌ PyTorch功能测试失败: {str(e)}")
+        print(f"❌ PyTorch测试完全失败: {str(e)}")
+        print("🔄 建议重启内核并重新运行安装脚本")
         return False
 
 def test_lightning_functionality():
