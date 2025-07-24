@@ -144,9 +144,8 @@ def main(args):
             )):
                 images = images.cuda()
                 
-                # 使用VA-VAE编码 (参考原项目)
-                posterior = tokenizer.encode(images)
-                latents = posterior.sample()  # (B, 32, 16, 16)
+                # 使用VA-VAE编码 (使用正确的方法)
+                latents = tokenizer.encode_images(images)  # (B, 32, 16, 16)
                 
                 all_latents.append(latents.cpu())
                 all_user_ids.extend(user_ids.tolist())

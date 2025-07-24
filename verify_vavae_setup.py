@@ -98,20 +98,28 @@ def test_vavae_loading():
         
         # 测试编码功能
         print("🔄 测试编码功能...")
-        test_image = torch.randn(1, 3, 256, 256)
-        
-        with torch.no_grad():
-            encoded = vavae.encode(test_image)
-            latent = encoded.sample()
-            print(f"✅ 编码测试成功!")
-            print(f"   输入形状: {test_image.shape}")
-            print(f"   输出形状: {latent.shape}")
-            print(f"   预期形状: torch.Size([1, 32, 16, 16])")
-            
-            if latent.shape == torch.Size([1, 32, 16, 16]):
-                print("✅ 输出形状正确")
-            else:
-                print("⚠️  输出形状异常")
+        # 创建标准化的测试图像 (VA-VAE期望[-1,1]范围)
+        test_image = torch.randn(1, 3, 256, 256) * 0.5  # 缩放到合理范围
+
+        # 使用VA-VAE的encode_images方法
+        latent = vavae.encode_images(test_image)
+        print(f"✅ 编码测试成功!")
+        print(f"   输入形状: {test_image.shape}")
+        print(f"   输出形状: {latent.shape}")
+        print(f"   预期形状: torch.Size([1, 32, 16, 16])")
+
+        if latent.shape == torch.Size([1, 32, 16, 16]):
+            print("✅ 输出形状正确")
+        else:
+            print("⚠️  输出形状异常")
+
+        # 测试解码功能
+        print("🔄 测试解码功能...")
+        decoded_images = vavae.decode_to_images(latent)
+        print(f"✅ 解码测试成功!")
+        print(f"   潜在形状: {latent.shape}")
+        print(f"   解码形状: {decoded_images.shape}")
+        print(f"   预期形状: (1, 256, 256, 3)")
         
         return True
         
