@@ -108,14 +108,26 @@ class LatentDataset(Dataset):
     def __getitem__(self, idx):
         latent = self.latents[idx].clone()  # (32, 16, 16)
         user_id = self.user_ids[idx].item()
-        
+
         # 应用归一化
         if self.latent_norm:
-            latent = (latent - self.latent_mean) / self.latent_std
-        
+            # 确保统计信息的形状匹配
+            # latent: (32, 16, 16), mean/std: (1, 32, 1, 1)
+            # 需要squeeze掉第一个维度
+            mean = self.latent_mean.squeeze(0)  # (32, 1, 1)
+            std = self.latent_std.squeeze(0)    # (32, 1, 1)
+            latent = (latent - mean) / std
+
         # 应用缩放因子
         latent = latent * self.latent_multiplier
-        
+
+        # 确保返回的latent是3维的 (C, H, W)
+        if len(latent.shape) != 3:
+            print(f"⚠️  警告: latent维度异常 {latent.shape}, 尝试修复")
+            latent = latent.squeeze()  # 移除所有大小为1的维度
+            if len(latent.shape) != 3:
+                raise ValueError(f"无法修复latent维度: {latent.shape}")
+
         return {
             'latent': latent,
             'user_id': user_id,
@@ -201,6 +213,13 @@ class UserConditionedDiT(pl.LightningModule):
             print(f"  user_ids形状: {user_ids.shape}")
             print(f"  期望latents形状: (B, 32, 16, 16)")
 
+        # 修复latents维度问题
+        if len(latents.shape) == 5:
+            print(f"🔧 修复5维张量: {latents.shape} -> ", end="")
+            # 如果是5维，尝试squeeze掉大小为1的维度
+            latents = latents.squeeze()
+            print(f"{latents.shape}")
+
         # 确保latents是4维的 (B, C, H, W)
         if len(latents.shape) != 4:
             print(f"❌ 错误的latents维度: {latents.shape}")
@@ -227,6 +246,13 @@ class UserConditionedDiT(pl.LightningModule):
             print(f"  latents形状: {latents.shape}")
             print(f"  user_ids形状: {user_ids.shape}")
             print(f"  期望latents形状: (B, 32, 16, 16)")
+
+        # 修复latents维度问题
+        if len(latents.shape) == 5:
+            print(f"🔧 修复5维张量: {latents.shape} -> ", end="")
+            # 如果是5维，尝试squeeze掉大小为1的维度
+            latents = latents.squeeze()
+            print(f"{latents.shape}")
 
         # 确保latents是4维的 (B, C, H, W)
         if len(latents.shape) != 4:
