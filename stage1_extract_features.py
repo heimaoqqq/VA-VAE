@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
+from tqdm import tqdm
 
 # 导入LightningDiT组件
 import sys
