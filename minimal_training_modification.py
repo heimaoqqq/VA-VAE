@@ -73,7 +73,7 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, default='outputs', help='输出目录')
     parser.add_argument('--batch_size', type=int, default=16, help='批次大小（每个GPU）')
     parser.add_argument('--condition_dim', type=int, default=128, help='条件向量维度')
-    parser.add_argument('--kl_weight', type=float, default=1e-6, help='KL散度权重')
+    parser.add_argument('--kl_weight', type=float, default=1e-4, help='KL散度权重')
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
 
     # PyTorch Lightning 训练参数（遵循原项目方式）
@@ -107,6 +107,8 @@ class MicroDopplerVAVAEModule(pl.LightningModule):
 
         self.lr = lr
         self.kl_weight = kl_weight
+        self.kl_weight_max = 1e-3  # 最大KL权重
+        self.kl_weight_min = 1e-6  # 最小KL权重
 
     def forward(self, x, user_ids=None):
         return self.model(x, user_ids)
@@ -121,7 +123,19 @@ class MicroDopplerVAVAEModule(pl.LightningModule):
         # 计算损失
         recon_loss = nn.functional.mse_loss(reconstructed, images, reduction='mean')
         kl_loss = posterior.kl().mean()
-        total_loss = recon_loss + self.kl_weight * kl_loss
+
+        # KL散度裁剪，防止爆炸
+        kl_loss = torch.clamp(kl_loss, max=1000.0)
+
+        # 动态KL权重：根据KL值大小调整权重
+        if kl_loss > 10000:
+            current_kl_weight = self.kl_weight_min  # 使用最小权重
+        elif kl_loss > 1000:
+            current_kl_weight = self.kl_weight_min * 10  # 稍微增加
+        else:
+            current_kl_weight = self.kl_weight  # 使用原始权重
+
+        total_loss = recon_loss + current_kl_weight * kl_loss
 
         # 记录损失（简化显示）
         self.log('train/loss', total_loss, prog_bar=True, logger=True)
@@ -140,7 +154,19 @@ class MicroDopplerVAVAEModule(pl.LightningModule):
         # 计算损失
         recon_loss = nn.functional.mse_loss(reconstructed, images, reduction='mean')
         kl_loss = posterior.kl().mean()
-        total_loss = recon_loss + self.kl_weight * kl_loss
+
+        # KL散度裁剪，防止爆炸
+        kl_loss = torch.clamp(kl_loss, max=1000.0)
+
+        # 动态KL权重：根据KL值大小调整权重
+        if kl_loss > 10000:
+            current_kl_weight = self.kl_weight_min  # 使用最小权重
+        elif kl_loss > 1000:
+            current_kl_weight = self.kl_weight_min * 10  # 稍微增加
+        else:
+            current_kl_weight = self.kl_weight  # 使用原始权重
+
+        total_loss = recon_loss + current_kl_weight * kl_loss
 
         # 记录损失（添加分布式同步）
         self.log('val/loss', total_loss, prog_bar=True, logger=True, sync_dist=True)
