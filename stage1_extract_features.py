@@ -63,6 +63,10 @@ def extract_latent_features(args):
     )
     vavae.eval()
     vavae.cuda(device)
+
+    # 内存优化设置
+    torch.cuda.empty_cache()  # 清理GPU缓存
+    print(f"🔧 GPU内存优化 - 当前可用: {torch.cuda.get_device_properties(device).total_memory / 1e9:.1f}GB")
     
     # 处理每个数据分割
     for split in ['train', 'val']:
@@ -106,21 +110,36 @@ def extract_latent_features(args):
                 images = batch['image'].cuda(device)  # (B, 3, 256, 256)
                 user_ids = batch['user_id']  # (B,)
                 
-                # 提取潜在特征
-                posterior = vavae.encode(images)
-                latents = posterior.sample()  # (B, 32, 16, 16)
-                
+                # 提取潜在特征 (使用更小的子批次处理)
+                sub_batch_size = min(4, len(images))  # 限制子批次大小
+                batch_latents = []
+
+                for i in range(0, len(images), sub_batch_size):
+                    sub_images = images[i:i+sub_batch_size]
+                    with torch.cuda.amp.autocast():  # 使用混合精度
+                        posterior = vavae.encode(sub_images)
+                        sub_latents = posterior.sample()  # (sub_B, 32, 16, 16)
+                    batch_latents.append(sub_latents.cpu())
+
+                    # 立即清理GPU内存
+                    del sub_images, posterior, sub_latents
+                    torch.cuda.empty_cache()
+
+                # 合并子批次结果
+                latents = torch.cat(batch_latents, dim=0)
+
                 # 收集数据
-                all_latents.append(latents.cpu())
+                all_latents.append(latents)
                 all_user_ids.append(user_ids)
                 all_indices.extend([
-                    batch_idx * args.batch_size + i 
+                    batch_idx * args.batch_size + i
                     for i in range(len(user_ids))
                 ])
-                
+
                 # 定期清理GPU内存
-                if batch_idx % 100 == 0:
+                if batch_idx % 10 == 0:  # 更频繁的清理
                     torch.cuda.empty_cache()
+                    print(f"  批次 {batch_idx}: GPU内存使用 {torch.cuda.memory_allocated(device) / 1e9:.1f}GB")
         
         # 合并所有特征
         if all_latents:

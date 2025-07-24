@@ -134,41 +134,156 @@ def install_pytorch_lightning():
 def install_core_packages():
     """安装核心依赖包"""
     print_step(5, "安装核心依赖包")
-    
-    packages = [
+
+    # 基础依赖
+    basic_packages = [
         "pillow>=9.0.0",
-        "numpy>=1.21.0", 
+        "numpy>=1.21.0",
         "tqdm>=4.64.0",
         "tensorboard>=2.8.0",
         "matplotlib>=3.5.0",
-        "scikit-learn>=1.1.0"
+        "scikit-learn>=1.1.0",
+        "safetensors>=0.3.0",  # 用于安全的张量存储
+        "accelerate>=0.20.0",  # 用于模型加速
+        "transformers>=4.30.0"  # 可能需要的transformer组件
     ]
-    
+
     success_count = 0
-    for package in packages:
+    for package in basic_packages:
         success, _ = run_command(f"pip install {package}", f"安装 {package}")
         if success:
             success_count += 1
-    
-    print(f"✅ 成功安装 {success_count}/{len(packages)} 个包")
-    return success_count == len(packages)
+
+    print(f"✅ 成功安装 {success_count}/{len(basic_packages)} 个基础包")
+    return success_count == len(basic_packages)
+
+def install_lightningdit_packages():
+    """安装LightningDiT特定依赖"""
+    print_step(6, "安装LightningDiT特定依赖")
+
+    # LightningDiT特定依赖
+    lightningdit_packages = [
+        "fairscale>=0.4.13",  # 分布式训练支持
+        "einops>=0.6.0",      # 张量操作
+        "timm>=0.9.0",        # 图像模型库
+        "flash-attn>=2.0.0",  # 高效注意力机制
+        "triton>=2.0.0",      # GPU内核优化
+        "xformers>=0.0.20"    # 内存高效的transformer
+    ]
+
+    success_count = 0
+    total_packages = len(lightningdit_packages)
+
+    for package in lightningdit_packages:
+        print(f"\n尝试安装: {package}")
+
+        # 对于一些包，尝试不同的安装方式
+        if "flash-attn" in package:
+            # flash-attn需要特殊安装方式
+            success, _ = run_command(f"pip install {package} --no-build-isolation", f"安装 {package}")
+            if not success:
+                print(f"⚠️  {package} 安装失败，跳过（可选依赖）")
+                continue
+        elif "triton" in package:
+            # triton在某些环境下可能不可用
+            success, _ = run_command(f"pip install {package}", f"安装 {package}")
+            if not success:
+                print(f"⚠️  {package} 安装失败，跳过（可选依赖）")
+                continue
+        elif "xformers" in package:
+            # xformers需要特定的PyTorch版本
+            success, _ = run_command(f"pip install {package}", f"安装 {package}")
+            if not success:
+                print(f"⚠️  {package} 安装失败，跳过（可选依赖）")
+                continue
+        else:
+            success, _ = run_command(f"pip install {package}", f"安装 {package}")
+
+        if success:
+            success_count += 1
+
+    print(f"✅ 成功安装 {success_count}/{total_packages} 个LightningDiT依赖")
+
+    # 即使部分失败也返回True，因为有些是可选依赖
+    return success_count >= 3  # 至少安装成功3个核心包
+
+def test_lightningdit_imports():
+    """测试LightningDiT相关的导入"""
+    print_step(8, "测试LightningDiT导入")
+
+    # 测试关键导入
+    test_imports = [
+        ("safetensors", "from safetensors import safe_open"),
+        ("fairscale", "import fairscale"),
+        ("einops", "import einops"),
+        ("timm", "import timm"),
+        ("accelerate", "import accelerate"),
+        ("transformers", "import transformers")
+    ]
+
+    success_count = 0
+    for name, import_statement in test_imports:
+        try:
+            exec(import_statement)
+            print(f"✅ {name}: 导入成功")
+            success_count += 1
+        except ImportError as e:
+            print(f"⚠️  {name}: 导入失败 - {str(e)}")
+        except Exception as e:
+            print(f"❌ {name}: 测试失败 - {str(e)}")
+
+    # 测试可选的高性能包
+    optional_imports = [
+        ("flash_attn", "import flash_attn"),
+        ("triton", "import triton"),
+        ("xformers", "import xformers")
+    ]
+
+    optional_success = 0
+    for name, import_statement in optional_imports:
+        try:
+            exec(import_statement)
+            print(f"✅ {name}: 导入成功 (性能优化)")
+            optional_success += 1
+        except ImportError:
+            print(f"⚠️  {name}: 未安装 (可选性能优化)")
+        except Exception as e:
+            print(f"⚠️  {name}: 测试失败 - {str(e)}")
+
+    print(f"\n核心导入: {success_count}/{len(test_imports)}")
+    print(f"性能优化: {optional_success}/{len(optional_imports)}")
+
+    return success_count >= 4  # 至少4个核心包导入成功
 
 def check_package_versions():
     """检查包版本兼容性"""
-    print_step(6, "检查包版本兼容性")
-    
+    print_step(7, "检查包版本兼容性")
+
     required_packages = {
         'torch': '2.0.0',
         'pytorch_lightning': '2.0.0',
         'PIL': '9.0.0',  # Pillow
         'numpy': '1.21.0',
         'tqdm': '4.64.0',
-        'tensorboard': '2.8.0'
+        'tensorboard': '2.8.0',
+        'safetensors': '0.3.0',
+        'accelerate': '0.20.0',
+        'transformers': '4.30.0'
+    }
+
+    optional_packages = {
+        'fairscale': '0.4.13',
+        'einops': '0.6.0',
+        'timm': '0.9.0',
+        'flash_attn': '2.0.0',
+        'triton': '2.0.0',
+        'xformers': '0.0.20'
     }
     
     compatible_count = 0
     total_count = len(required_packages)
-    
+
+    print("检查必需包:")
     for package_name, min_version in required_packages.items():
         try:
             if package_name == 'PIL':
@@ -179,7 +294,7 @@ def check_package_versions():
                 module = importlib.import_module(package_name)
                 current_version = module.__version__
                 package_display = package_name
-            
+
             if version.parse(current_version) >= version.parse(min_version):
                 print(f"✅ {package_display}: {current_version} (>= {min_version})")
                 compatible_count += 1
@@ -189,8 +304,29 @@ def check_package_versions():
             print(f"❌ {package_display}: 未安装")
         except Exception as e:
             print(f"⚠️  {package_display}: 检查失败 ({str(e)})")
-    
-    print(f"\n兼容性检查: {compatible_count}/{total_count} 个包符合要求")
+
+    print(f"\n必需包兼容性: {compatible_count}/{total_count}")
+
+    # 检查可选包
+    print("\n检查可选包 (LightningDiT优化):")
+    optional_count = 0
+    for package_name, min_version in optional_packages.items():
+        try:
+            module = importlib.import_module(package_name)
+            current_version = module.__version__
+
+            if version.parse(current_version) >= version.parse(min_version):
+                print(f"✅ {package_name}: {current_version} (>= {min_version})")
+                optional_count += 1
+            else:
+                print(f"⚠️  {package_name}: {current_version} (< {min_version})")
+        except ImportError:
+            print(f"⚠️  {package_name}: 未安装 (可选)")
+        except Exception as e:
+            print(f"⚠️  {package_name}: 检查失败 ({str(e)})")
+
+    print(f"可选包可用: {optional_count}/{len(optional_packages)}")
+
     return compatible_count == total_count
 
 def test_imports():
@@ -352,8 +488,10 @@ def main():
         install_pytorch,
         install_pytorch_lightning,
         install_core_packages,
+        install_lightningdit_packages,
         check_package_versions,
         test_imports,
+        test_lightningdit_imports,
         test_pytorch_functionality,
         test_lightning_functionality,
         create_environment_summary
