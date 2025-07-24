@@ -1,6 +1,9 @@
 # VA-VAE配置文件
 # 基于LightningDiT原项目的tokenizer配置
 
+# VA-VAE模型路径 (根级别配置)
+ckpt_path: "/kaggle/working/pretrained/vavae-imagenet256-f16d32-dinov2.pt"
+
 model:
   target: tokenizer.vavae.VA_VAE
   params:
@@ -17,14 +20,10 @@ model:
       num_res_blocks: 2
       attn_resolutions: [16]
       dropout: 0.0
-    
-    # VA-VAE特定配置
-    ckpt_path: "/kaggle/working/pretrained/vavae-imagenet256-f16d32-dinov2.pt"
-    ignore_keys: []
-    
+
     # DINOv2对齐配置
     use_dinov2: true
     dinov2_model: "dinov2_vitb14"
-    
+
     # 训练配置
     monitor: "val/rec_loss"
