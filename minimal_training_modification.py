@@ -252,26 +252,18 @@ def main():
     if os.path.exists(args.original_vavae):
         print(f"加载预训练VA-VAE模型: {args.original_vavae}")
         try:
-            # 加载原始VA-VAE检查点
-            checkpoint = torch.load(args.original_vavae, map_location='cpu')
-
             # 从LightningDiT导入VA-VAE模型
             import sys
             sys.path.append('LightningDiT')
             from tokenizer.autoencoder import AutoencoderKL
 
-            # 创建VA-VAE模型实例 (使用AutoencoderKL)
+            # 创建VA-VAE模型实例并直接加载权重
             original_vavae = AutoencoderKL(
                 embed_dim=32,  # f16d32配置
                 ch_mult=(1, 1, 2, 2, 4),
-                ckpt_path=None  # 我们手动加载权重
+                ckpt_path=args.original_vavae,  # 直接使用ckpt_path参数
+                model_type='vavae'
             )
-
-            # 加载权重
-            if 'state_dict' in checkpoint:
-                original_vavae.load_state_dict(checkpoint['state_dict'])
-            else:
-                original_vavae.load_state_dict(checkpoint)
 
             print("✅ 预训练VA-VAE模型加载成功")
 

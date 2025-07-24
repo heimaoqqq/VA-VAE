@@ -147,6 +147,13 @@ class MicroDopplerDataset(Dataset):
                 pil_img = pil_img.resize((self.img_size, self.img_size), Image.LANCZOS)
                 spectrogram = np.array(pil_img).astype(np.float32) / 255.0
         
+        # 调试信息：检查转换前的维度
+        if not hasattr(self, '_debug_printed'):
+            print(f"🔍 数据加载调试 - 转换前维度: {spectrogram.shape}")
+            print(f"🔍 数据加载调试 - 数据类型: {spectrogram.dtype}")
+            print(f"🔍 数据加载调试 - 数据范围: [{spectrogram.min():.3f}, {spectrogram.max():.3f}]")
+            self._debug_printed = True
+
         # 转换为3通道 (LightningDiT期望RGB格式)
         if spectrogram.ndim == 2:
             # 灰度 -> RGB: 复制3次，格式为 (3, H, W)
@@ -187,11 +194,22 @@ class MicroDopplerDataset(Dataset):
                 image_tensor = image_tensor.permute(2, 0, 1)  # (H, W, C) -> (C, H, W)
 
         # 验证最终维度
-        assert image_tensor.dim() == 3, f"期望3维张量，得到{image_tensor.dim()}维"
-        assert image_tensor.shape[0] == 3, f"期望3个通道，得到{image_tensor.shape[0]}个通道"
-        assert image_tensor.shape[1] == self.img_size, f"期望高度{self.img_size}，得到{image_tensor.shape[1]}"
-        assert image_tensor.shape[2] == self.img_size, f"期望宽度{self.img_size}，得到{image_tensor.shape[2]}"
-        
+        try:
+            assert image_tensor.dim() == 3, f"期望3维张量，得到{image_tensor.dim()}维"
+            assert image_tensor.shape[0] == 3, f"期望3个通道，得到{image_tensor.shape[0]}个通道"
+            assert image_tensor.shape[1] == self.img_size, f"期望高度{self.img_size}，得到{image_tensor.shape[1]}"
+            assert image_tensor.shape[2] == self.img_size, f"期望宽度{self.img_size}，得到{image_tensor.shape[2]}"
+        except AssertionError as e:
+            print(f"❌ 维度验证失败: {e}")
+            print(f"❌ 实际张量形状: {image_tensor.shape}")
+            raise
+
+        # 最终调试信息
+        if not hasattr(self, '_final_debug_printed'):
+            print(f"✅ 最终张量维度: {image_tensor.shape}")
+            print(f"✅ 最终张量范围: [{image_tensor.min():.3f}, {image_tensor.max():.3f}]")
+            self._final_debug_printed = True
+
         return {
             'image': image_tensor,      # LightningDiT期望的键名
             'user_id': item['user_id']  # 新增的用户条件
