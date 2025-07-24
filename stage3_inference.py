@@ -29,11 +29,9 @@ class MicroDopplerGenerator:
     def __init__(self, dit_checkpoint, vavae_config, device='cuda'):
         self.device = device
         
-        # 加载VA-VAE (参考原项目)
+        # 加载VA-VAE (VA-VAE在初始化时已经设置为eval模式并移到GPU)
         print("📥 加载VA-VAE...")
         self.vavae = VA_VAE(vavae_config)
-        self.vavae.eval()
-        self.vavae.to(device)
         
         # 加载DiT模型 (参考原项目)
         print("📥 加载DiT模型...")
@@ -109,8 +107,8 @@ class MicroDopplerGenerator:
                 # 由于我们没有完整的采样器，这里使用简化版本
                 samples = self._sample_with_transport(z, model_kwargs, num_steps)
                 
-                # 使用VA-VAE解码为图像 (参考原项目)
-                images = self.vavae.decode(samples)
+                # 使用VA-VAE解码为图像 (使用正确的方法)
+                images = self.vavae.decode_to_images(samples)
                 
                 # 后处理图像 (参考原项目)
                 images = self._postprocess_images(images)
@@ -145,21 +143,15 @@ class MicroDopplerGenerator:
     
     def _postprocess_images(self, images):
         """
-        后处理图像 (参考原项目)
+        后处理图像 (VA-VAE的decode_to_images已经返回numpy数组)
         """
-        # 将张量转换为PIL图像
-        images = images.cpu()
-        images = (images + 1) / 2  # 从[-1,1]转换到[0,1]
-        images = torch.clamp(images, 0, 1)
-        
+        # decode_to_images已经返回了uint8格式的numpy数组 (B, H, W, C)
         pil_images = []
-        for img in images:
-            # 转换为PIL图像
-            img_np = img.permute(1, 2, 0).numpy()
-            img_np = (img_np * 255).astype(np.uint8)
+        for img_np in images:
+            # 直接从numpy数组创建PIL图像
             pil_img = Image.fromarray(img_np)
             pil_images.append(pil_img)
-        
+
         return pil_images
     
     def save_images(self, images, user_labels, output_dir, prefix="micro_doppler"):

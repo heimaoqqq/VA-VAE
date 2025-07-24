@@ -87,10 +87,8 @@ def main(args):
     if rank == 0:
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 创建VA-VAE模型 (参考原项目)
+    # 创建VA-VAE模型 (VA-VAE在初始化时已经设置为eval模式并移到GPU)
     tokenizer = VA_VAE(args.vavae_config)
-    tokenizer.eval()
-    tokenizer.cuda()
 
     # 数据预处理 (与原项目一致)
     transform = transforms.Compose([
