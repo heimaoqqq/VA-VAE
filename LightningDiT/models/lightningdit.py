@@ -34,7 +34,6 @@ except ImportError:
         sys.path.insert(0, project_root)
     from simple_rmsnorm import RMSNorm
 
-@torch.compile
 def modulate(x, shift, scale):
     if shift is None:
         return x * (1 + scale.unsqueeze(1))
@@ -141,7 +140,6 @@ class TimestepEmbedder(nn.Module):
             
         return embedding
     
-    @torch.compile
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
@@ -171,7 +169,6 @@ class LabelEmbedder(nn.Module):
         labels = torch.where(drop_ids, self.num_classes, labels)
         return labels
 
-    @torch.compile
     def forward(self, labels, train, force_drop_ids=None):
         use_dropout = self.dropout_prob > 0
         if (train and use_dropout) or (force_drop_ids is not None):
@@ -247,7 +244,6 @@ class LightningDiTBlock(nn.Module):
             )
         self.wo_shift = wo_shift
 
-    @torch.compile
     def forward(self, x, c, feat_rope=None):
         if self.wo_shift:
             scale_msa, gate_msa, scale_mlp, gate_mlp = self.adaLN_modulation(c).chunk(4, dim=1)
@@ -275,7 +271,6 @@ class FinalLayer(nn.Module):
             nn.SiLU(),
             nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
-    @torch.compile
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
         x = modulate(self.norm_final(x), shift, scale)

@@ -85,8 +85,10 @@ class VA_VAE:
             print(f"  解码前潜在特征范围: [{z.min():.3f}, {z.max():.3f}]")
             print(f"  解码后图像范围: [{images.min():.3f}, {images.max():.3f}]")
 
-            # 确保在[-1, 1]范围内
+            # 强制归一化到[-1, 1]范围 (处理超出范围的情况)
+            images = 2.0 * (images - images.min()) / (images.max() - images.min()) - 1.0
             images = torch.clamp(images, -1.0, 1.0)
+            print(f"  归一化后图像范围: [{images.min():.3f}, {images.max():.3f}]")
 
             # 对于微多普勒时频图，应用正确的颜色映射
             processed_images = []
@@ -103,9 +105,11 @@ class VA_VAE:
                 # 归一化到[0, 1]
                 intensity = (intensity + 1.0) / 2.0
                 intensity = torch.clamp(intensity, 0, 1)
+                print(f"  强度图范围: [{intensity.min():.3f}, {intensity.max():.3f}]")
 
                 # 应用微多普勒时频图的颜色映射 (类似matplotlib的jet colormap)
                 colored_img = self._apply_micro_doppler_colormap(intensity)
+                print(f"  颜色映射后范围: [{colored_img.min():.3f}, {colored_img.max():.3f}]")
                 processed_images.append(colored_img)
 
             # 转换为numpy数组

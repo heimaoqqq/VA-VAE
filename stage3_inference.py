@@ -128,7 +128,7 @@ class MicroDopplerGenerator:
         self.sampler = Sampler(self.transport)
         self.sample_fn = self.sampler.sample_ode(
             sampling_method="euler",  # 原项目使用euler
-            num_steps=250,
+            num_steps=50,            # 临时降低步数进行快速测试
             atol=0.000001,           # 原项目配置
             rtol=0.001,              # 原项目配置
             timestep_shift=0.3,      # 原项目配置
@@ -252,7 +252,7 @@ class MicroDopplerGenerator:
         self.dit_model.eval()
         self.dit_model.to(self.device)
     
-    def generate_samples(self, user_ids, num_samples_per_user=4, guidance_scale=4.0, num_steps=250):
+    def generate_samples(self, user_ids, num_samples_per_user=4, guidance_scale=4.0, num_steps=50):
         """
         生成用户条件化的微多普勒图像
         参考原项目的采样方法
@@ -484,7 +484,7 @@ def main(accelerator=None):
     parser.add_argument('--user_ids', type=int, nargs='+', default=[1, 2, 3, 4, 5], help='用户ID列表')
     parser.add_argument('--num_samples_per_user', type=int, default=4, help='每用户生成样本数')
     parser.add_argument('--guidance_scale', type=float, default=4.0, help='引导尺度')
-    parser.add_argument('--num_steps', type=int, default=250, help='采样步数')
+    parser.add_argument('--num_steps', type=int, default=50, help='采样步数')
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
     parser.add_argument('--dual_gpu', action='store_true', help='使用双GPU推理')
     parser.add_argument('--test_imports', action='store_true', help='仅测试导入，不进行推理')
