@@ -99,9 +99,14 @@ class MicroDopplerGenerator:
             print("📥 加载VA-VAE...")
         self.vavae = VA_VAE(vavae_config)
 
-        # 设置潜在特征的归一化参数 (参考原项目)
-        self.latent_multiplier = 0.18215  # 标准SD VAE缩放因子
+        # 设置潜在特征的归一化参数 (参考原项目配置)
+        self.latent_multiplier = 1.0  # VA-VAE使用1.0而不是0.18215
         self.use_latent_norm = True
+
+        # 加载潜在特征统计信息 (如果可用)
+        self.latent_mean = None
+        self.latent_std = None
+        # 注意：在实际使用中应该从latents_stats.pt加载这些统计信息
 
         # 加载DiT模型 (参考原项目)
         if not self.is_distributed or self.accelerator.is_main_process:
@@ -117,14 +122,15 @@ class MicroDopplerGenerator:
             sample_eps=1e-3
         )
 
-        # 创建采样器 (使用更适合的参数)
+        # 创建采样器 (使用原项目的正确参数)
         from transport import Sampler
         self.sampler = Sampler(self.transport)
         self.sample_fn = self.sampler.sample_ode(
-            sampling_method="dopri5",
-            num_steps=250,  # 使用更多步数提高质量
-            atol=1e-5,      # 稍微放松精度要求
-            rtol=1e-4,      # 稍微放松精度要求
+            sampling_method="euler",  # 原项目使用euler
+            num_steps=250,
+            atol=0.000001,           # 原项目配置
+            rtol=0.001,              # 原项目配置
+            timestep_shift=0.3,      # 原项目配置
         )
         
         print("✅ 模型加载完成!")
@@ -134,11 +140,11 @@ class MicroDopplerGenerator:
         # 这里需要根据实际的检查点格式来调整
         # 参考原项目的模型加载方式
         
-        # 使用与训练时一致的模型配置 (kaggle_training_wrapper.py中使用的是B模型)
-        self.dit_model = LightningDiT_models['LightningDiT-B/1'](
-            input_size=16,
-            num_classes=31,  # 假设31个用户
-            in_channels=32,
+        # 使用与原项目一致的模型配置 (参考配置文件)
+        self.dit_model = LightningDiT_models['LightningDiT-XL/1'](  # 使用XL模型
+            input_size=16,  # 256/16=16 (downsample_ratio=16)
+            num_classes=31,  # 微多普勒用户数
+            in_channels=32,  # VA-VAE使用32通道
             use_qknorm=False,
             use_swiglu=True,
             use_rope=True,
@@ -261,22 +267,41 @@ class MicroDopplerGenerator:
 
                     sample_idx += 1
                 
-                # 生成随机噪声 (参考原项目的正确方式)
+                # 生成随机噪声 (参考原项目)
                 z = torch.randn(batch_size, 32, 16, 16, device=self.device)
 
-                # 使用transport进行采样 (参考原项目)
-                model_kwargs = dict(y=y)
+                # 设置分类器自由引导 (参考原项目第206-214行)
+                if guidance_scale > 1.0:
+                    z = torch.cat([z, z], 0)  # 复制噪声
+                    y_null = torch.tensor([1000] * batch_size, device=self.device)  # null class
+                    y = torch.cat([y, y_null], 0)
+                    model_kwargs = dict(
+                        y=y,
+                        cfg_scale=guidance_scale,
+                        cfg_interval=True,
+                        cfg_interval_start=0.125  # 原项目配置
+                    )
+                    model_fn = self.dit_model.forward_with_cfg
+                else:
+                    model_kwargs = dict(y=y)
+                    model_fn = self.dit_model.forward
 
                 # 使用正确的采样方法
-                samples = self._sample_with_transport(z, model_kwargs, num_steps)
+                samples = self._sample_with_transport(z, model_fn, model_kwargs, num_steps)
 
-                # 应用潜在特征归一化 (参考原项目)
+                # 如果使用CFG，移除null class样本 (参考原项目第217-218行)
+                if guidance_scale > 1.0:
+                    samples, _ = samples.chunk(2, dim=0)
+
+                # 应用潜在特征反归一化 (参考原项目第220行)
+                # samples = (samples * latent_std) / latent_multiplier + latent_mean
                 if self.use_latent_norm:
-                    # 使用训练时的归一化参数
-                    samples = samples / self.latent_multiplier
+                    # 由于我们没有latent_stats.pt，使用简化版本
+                    # 原项目: samples = (samples * latent_std) / latent_multiplier + latent_mean
+                    samples = samples / self.latent_multiplier  # 简化版本
 
                 if not self.is_distributed or self.accelerator.is_main_process:
-                    print(f"🔍 归一化后样本范围: [{samples.min():.3f}, {samples.max():.3f}]")
+                    print(f"🔍 反归一化后样本范围: [{samples.min():.3f}, {samples.max():.3f}]")
 
                 # 使用VA-VAE解码为图像
                 images = self.vavae.decode_to_images(samples)
@@ -289,7 +314,7 @@ class MicroDopplerGenerator:
         
         return all_images, all_user_labels
     
-    def _sample_with_transport(self, z, model_kwargs, num_steps):
+    def _sample_with_transport(self, z, model_fn, model_kwargs, num_steps):
         """
         使用transport进行采样 - 正确版本
         """
@@ -298,8 +323,8 @@ class MicroDopplerGenerator:
             if not self.is_distributed or self.accelerator.is_main_process:
                 print(f"🎯 使用ODE采样器，步数: {num_steps}")
 
-            # 使用预配置的采样函数
-            samples = self.sample_fn(z, self.dit_model, **model_kwargs)
+            # 使用预配置的采样函数 (参考原项目第216行)
+            samples = self.sample_fn(z, model_fn, **model_kwargs)
 
             # 返回最后一个时间步的结果并修复维度
             if isinstance(samples, list):
@@ -335,7 +360,7 @@ class MicroDopplerGenerator:
 
                 # 模型预测 (velocity prediction)
                 with torch.no_grad():
-                    velocity = self.dit_model(x, t, **model_kwargs)
+                    velocity = model_fn(x, t, **model_kwargs)
 
                 # 使用velocity进行更新 (Euler方法)
                 x = x + velocity * dt
