@@ -2,26 +2,52 @@
 
 基于LightningDiT的微多普勒信号图像生成项目，使用VA-VAE进行特征提取和DiT进行条件化生成。
 
-## ⭐ 推荐方法：使用官方预训练模型
+## ⭐ 推荐方法：严格按照官方方法
 
-**最简单可靠的方式是使用LightningDiT官方预训练模型：**
+**我们完全按照LightningDiT官方README和教程实现，确保最佳效果：**
+
+### 🎯 官方方法对照表
+
+| 步骤 | 官方要求 | 我们的实现 | 状态 |
+|------|----------|------------|------|
+| 模型下载 | 手动下载3个文件 | `setup_official_models.py` | ✅ 自动化 |
+| 配置修改 | 修改reproductions配置 | 自动生成标准配置 | ✅ 标准化 |
+| VA-VAE配置 | 修改tokenizer配置路径 | 自动更新路径 | ✅ 自动化 |
+| 推理命令 | `bash run_fast_inference.sh` | 封装在Python脚本中 | ✅ 简化 |
 
 ### 1. 下载官方预训练模型
 ```bash
 python setup_official_models.py
 ```
+**下载内容**：
+- ✅ VA-VAE: `vavae-imagenet256-f16d32-dinov2.pt` (官方tokenizer)
+- ✅ LightningDiT-XL: `lightningdit-xl-imagenet256-800ep.pt` (FID=1.35性能)
+- ✅ 潜在统计: `latents_stats.pt` (数据归一化)
 
-### 2. 测试模型加载
+### 2. 验证设置正确性
+```bash
+python verify_official_setup.py
+```
+**检查项目**：
+- 📁 模型文件完整性
+- ⚙️ 配置参数正确性
+- 🔧 VA-VAE路径设置
+- 📋 与官方配置对比
+
+### 3. 测试模型加载
 ```bash
 python test_official_models.py
 ```
 
-### 3. 运行官方推理
+### 4. 运行官方推理
 ```bash
 python run_official_inference.py
 ```
-
-生成的图像将保存在 `LightningDiT/demo_images/demo_samples.png`
+**技术细节**：
+- 🎯 使用官方 `bash run_fast_inference.sh`
+- 🎨 Demo模式: cfg_scale=9.0 (自动覆盖配置)
+- 📊 250采样步数，Euler方法
+- 🖼️ 输出: `LightningDiT/demo_images/demo_samples.png`
 
 ---
 
