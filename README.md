@@ -2,6 +2,29 @@
 
 基于LightningDiT的微多普勒信号图像生成项目，使用VA-VAE进行特征提取和DiT进行条件化生成。
 
+## ⭐ 推荐方法：使用官方预训练模型
+
+**最简单可靠的方式是使用LightningDiT官方预训练模型：**
+
+### 1. 下载官方预训练模型
+```bash
+python setup_official_models.py
+```
+
+### 2. 测试模型加载
+```bash
+python test_official_models.py
+```
+
+### 3. 运行官方推理
+```bash
+python run_official_inference.py
+```
+
+生成的图像将保存在 `LightningDiT/demo_images/demo_samples.png`
+
+---
+
 ## 🎯 项目特点
 
 - **三阶段流水线**: 特征提取 → DiT训练 → 图像生成
