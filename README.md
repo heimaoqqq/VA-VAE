@@ -4,18 +4,27 @@
 
 ## ⭐ 官方方法：严格按照LightningDiT README
 
-**完全按照官方README步骤执行：**
-
-### 使用方法
+### 🚀 一键执行 (推荐)
 ```bash
 python setup_official_models.py
 ```
 
-**自动执行官方步骤**：
-1. 📥 下载预训练模型 (VA-VAE + LightningDiT-XL + latents_stats.pt)
-2. ⚙️ 修改配置文件 (基于官方reproductions配置)
-3. 🔧 更新VA-VAE配置路径 (官方教程要求)
-4. 🚀 运行 `bash run_fast_inference.sh` (官方推理脚本)
+### 📋 分步执行 (详细控制)
+
+**步骤1: 下载预训练模型**
+```bash
+python step1_download_models.py
+```
+
+**步骤2: 设置配置文件**
+```bash
+python step2_setup_configs.py
+```
+
+**步骤3: 运行推理**
+```bash
+python step3_run_inference.py
+```
 
 **输出**: `LightningDiT/demo_images/demo_samples.png`
 
