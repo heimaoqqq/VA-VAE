@@ -27,20 +27,22 @@ python install_dependencies.py --inference-only
 
 #### **Step 2.5: 下载预训练模型**
 ```bash
-# 微多普勒训练专用 (推荐，约800MB)
-python step1_download_models.py --training-only
+# 微多普勒训练专用 (强烈推荐，仅800MB)
+python step1_download_models.py --vae-only
 
-# 或最小下载 (仅VA-VAE，约800MB)
-python step1_download_models.py --minimal
-
-# 或完整下载 (包含6GB推理模型)
+# 或完整下载 (包含不必要的6GB推理模型)
 python step1_download_models.py
 ```
 
 **模型说明：**
-- ✅ **VA-VAE模型** (~800MB) - 微调训练的基础，必需
-- ✅ **潜在统计** (~1KB) - 特征归一化，有用
-- ❓ **扩散模型** (~6GB) - 推理演示用，训练时会创建新的
+- ✅ **VA-VAE模型** (~800MB) - 微调训练的基础，**必需**
+- ❌ **潜在统计** (~1KB) - ImageNet统计，**不适用**微多普勒数据
+- ❌ **扩散模型** (~6GB) - ImageNet 1000类，**不适用**31用户条件
+
+**为什么选择 --vae-only？**
+1. **latents_stats.pt**: 基于ImageNet计算，对微多普勒数据不准确
+2. **LightningDiT-XL**: 1000类ImageNet vs 31个用户，架构不匹配
+3. **重头训练**: 我们会训练专门的31用户条件扩散模型
 
 ---
 
