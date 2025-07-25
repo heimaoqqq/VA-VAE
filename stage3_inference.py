@@ -83,7 +83,7 @@ def test_imports():
 class MicroDopplerGenerator:
     """微多普勒图像生成器 (基于原项目inference.py)"""
 
-    def __init__(self, dit_checkpoint, vavae_config, model_name='LightningDiT-B/1', accelerator=None):
+    def __init__(self, dit_checkpoint, vavae_config, model_name='LightningDiT-XL/1', accelerator=None):
         self.model_name = model_name
         # 支持双GPU推理
         if accelerator is not None:
@@ -135,16 +135,44 @@ class MicroDopplerGenerator:
         )
         
         print("✅ 模型加载完成!")
-    
+
+    def _get_num_classes_from_checkpoint(self, checkpoint_path):
+        """从检查点或数据中获取正确的类别数"""
+        try:
+            # 方法1: 尝试从训练数据中获取用户数
+            latent_dir = os.path.dirname(checkpoint_path).replace('trained_models', 'latent_features')
+            train_file = os.path.join(latent_dir, 'train.safetensors')
+
+            if os.path.exists(train_file):
+                from safetensors import safe_open
+                with safe_open(train_file, framework="pt", device="cpu") as f:
+                    num_users = f.get_tensor('num_users').item()
+                    if not self.is_distributed or self.accelerator.is_main_process:
+                        print(f"📊 从训练数据获取用户数: {num_users}")
+                    return num_users
+
+            # 方法2: 如果找不到训练数据，使用默认值
+            if not self.is_distributed or self.accelerator.is_main_process:
+                print("⚠️  无法从训练数据获取用户数，使用默认值31")
+            return 31
+
+        except Exception as e:
+            if not self.is_distributed or self.accelerator.is_main_process:
+                print(f"⚠️  获取类别数失败: {e}，使用默认值31")
+            return 31
+
     def _load_dit_model(self, checkpoint_path):
         """加载DiT模型检查点"""
         # 这里需要根据实际的检查点格式来调整
         # 参考原项目的模型加载方式
         
-        # 使用与训练时一致的模型配置 (根据实际训练使用的模型)
+        # 首先尝试从检查点中获取正确的类别数
+        num_classes = self._get_num_classes_from_checkpoint(dit_checkpoint)
+
+        # 使用与训练时一致的模型配置
         self.dit_model = LightningDiT_models[self.model_name](  # 使用指定的模型
             input_size=16,  # 256/16=16 (downsample_ratio=16)
-            num_classes=31,  # 微多普勒用户数
+            num_classes=num_classes,  # 从检查点或数据中获取的正确类别数
             in_channels=32,  # VA-VAE使用32通道
             use_qknorm=False,
             use_swiglu=True,
@@ -274,7 +302,9 @@ class MicroDopplerGenerator:
                 # 设置分类器自由引导 (参考原项目第206-214行)
                 if guidance_scale > 1.0:
                     z = torch.cat([z, z], 0)  # 复制噪声
-                    y_null = torch.tensor([1000] * batch_size, device=self.device)  # null class
+                    # null class应该是num_classes (超出有效类别范围)
+                    null_class = self.dit_model.num_classes
+                    y_null = torch.tensor([null_class] * batch_size, device=self.device)
                     y = torch.cat([y, y_null], 0)
                     model_kwargs = dict(
                         y=y,
@@ -458,7 +488,7 @@ def main(accelerator=None):
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
     parser.add_argument('--dual_gpu', action='store_true', help='使用双GPU推理')
     parser.add_argument('--test_imports', action='store_true', help='仅测试导入，不进行推理')
-    parser.add_argument('--model_name', type=str, default='LightningDiT-B/1', help='DiT模型名称 (应与训练时一致)')
+    parser.add_argument('--model_name', type=str, default='LightningDiT-XL/1', help='DiT模型名称 (应与训练时一致)')
 
     args = parser.parse_args()
 
