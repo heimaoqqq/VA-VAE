@@ -10,9 +10,9 @@ import sys
 
 def check_environment():
     """检查环境依赖"""
-    
+
     print("🔍 检查环境依赖...")
-    
+
     # 检查PyTorch
     try:
         import torch
@@ -23,16 +23,43 @@ def check_environment():
     except ImportError:
         print("❌ PyTorch未安装")
         return False
-    
+
     # 检查Accelerate
     try:
         import accelerate
         print(f"✅ Accelerate: {accelerate.__version__}")
     except ImportError:
         print("❌ Accelerate未安装")
-        print("💡 请安装: pip install accelerate")
+        print("💡 请运行: python install_dependencies.py")
         return False
-    
+
+    # 检查torchdiffeq (关键缺失依赖)
+    try:
+        import torchdiffeq
+        print(f"✅ TorchDiffEq: 已安装")
+    except ImportError:
+        print("❌ TorchDiffEq未安装 - 这是推理失败的原因!")
+        print("💡 请运行: python install_dependencies.py")
+        return False
+
+    # 检查其他关键依赖
+    required_modules = [
+        ('timm', 'TIMM'),
+        ('diffusers', 'Diffusers'),
+        ('omegaconf', 'OmegaConf'),
+        ('einops', 'Einops'),
+        ('safetensors', 'SafeTensors')
+    ]
+
+    for module, name in required_modules:
+        try:
+            __import__(module)
+            print(f"✅ {name}: 已安装")
+        except ImportError:
+            print(f"❌ {name}未安装")
+            print("💡 请运行: python install_dependencies.py")
+            return False
+
     return True
 
 def check_files():

@@ -29,10 +29,16 @@ python step3_run_inference.py
 **输出**: `LightningDiT/demo_images/demo_samples.png`
 
 ### 环境要求
-- Python 3.10+
-- PyTorch 2.0+
-- Accelerate
-- CUDA (推荐)
+- Python 3.10+ (官方推荐3.10.12)
+- PyTorch 2.2.0 (官方指定版本)
+- TorchDiffEq (关键依赖)
+- Accelerate, TIMM, Diffusers等 (见官方requirements.txt)
+
+### 依赖安装
+```bash
+# 严格按照官方requirements.txt安装
+python install_dependencies.py
+```
 
 ## 📁 项目结构
 
