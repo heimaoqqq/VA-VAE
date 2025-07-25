@@ -60,8 +60,18 @@ class MicroDopplerGenerator:
             path_type="Linear",
             prediction="velocity",
             loss_weight=None,
-            train_eps=None,
-            sample_eps=None
+            train_eps=1e-5,
+            sample_eps=1e-3
+        )
+
+        # 创建采样器
+        from transport import Sampler
+        self.sampler = Sampler(self.transport)
+        self.sample_fn = self.sampler.sample_ode(
+            sampling_method="dopri5",
+            num_steps=50,
+            atol=1e-6,
+            rtol=1e-3,
         )
         
         print("✅ 模型加载完成!")
@@ -208,10 +218,14 @@ class MicroDopplerGenerator:
                 # 由于我们没有完整的采样器，这里使用简化版本
                 samples = self._sample_with_transport(z, model_kwargs, num_steps)
                 
-                # 使用VA-VAE解码为图像 (使用正确的方法)
+                # 确保样本在正确范围内 (VA-VAE期望[-1,1]范围的输入)
+                samples = torch.clamp(samples, -3.0, 3.0)  # 限制极值
+                samples = torch.tanh(samples)  # 确保在[-1,1]范围内
+
+                # 使用VA-VAE解码为图像
                 images = self.vavae.decode_to_images(samples)
-                
-                # 后处理图像 (参考原项目)
+
+                # 后处理图像
                 images = self._postprocess_images(images)
                 
                 all_images.extend(images)
@@ -221,37 +235,72 @@ class MicroDopplerGenerator:
     
     def _sample_with_transport(self, z, model_kwargs, num_steps):
         """
-        使用transport进行采样
-        这里是简化版本，实际应该使用原项目的完整采样器
+        使用transport进行采样 - 正确版本
         """
-        # 简化的采样过程
-        # 实际应该使用transport.sample()方法
-        
-        dt = 1.0 / num_steps
-        x = z.clone()
-        
-        for i in range(num_steps):
-            t = torch.full((x.shape[0],), i * dt, device=self.device)
-            
-            # 模型预测
-            with torch.no_grad():
-                pred = self.dit_model(x, t, **model_kwargs)
-            
-            # 简单的欧拉步骤 (实际应该使用更复杂的求解器)
-            x = x + pred * dt
-        
-        return x
+        # 使用正确的ODE采样器
+        try:
+            if not self.is_distributed or self.accelerator.is_main_process:
+                print(f"🎯 使用ODE采样器，步数: {num_steps}")
+
+            # 使用预配置的采样函数
+            samples = self.sample_fn(z, self.dit_model, **model_kwargs)
+
+            # 返回最后一个时间步的结果
+            if isinstance(samples, list):
+                return samples[-1]
+            else:
+                return samples
+
+        except Exception as e:
+            if not self.is_distributed or self.accelerator.is_main_process:
+                print(f"⚠️  ODE采样失败: {e}")
+                print("⚠️  使用简化采样方法")
+
+            # 改进的简化采样过程
+            dt = 1.0 / num_steps
+            x = z.clone()
+
+            for i in range(num_steps):
+                # 使用正确的时间步 (从0到1)
+                t = torch.full((x.shape[0],), i / num_steps, device=self.device)
+
+                # 模型预测 (velocity prediction)
+                with torch.no_grad():
+                    velocity = self.dit_model(x, t, **model_kwargs)
+
+                # 使用velocity进行更新 (Euler方法)
+                x = x + velocity * dt
+
+            return x
     
     def _postprocess_images(self, images):
         """
-        后处理图像 (VA-VAE的decode_to_images已经返回numpy数组)
+        后处理图像 - 改进版本
         """
+        if not self.is_distributed or self.accelerator.is_main_process:
+            print(f"🔍 图像后处理调试:")
+            print(f"  输入形状: {images.shape}")
+            print(f"  数据类型: {images.dtype}")
+            print(f"  值范围: [{images.min()}, {images.max()}]")
+
         # decode_to_images已经返回了uint8格式的numpy数组 (B, H, W, C)
         pil_images = []
-        for img_np in images:
-            # 直接从numpy数组创建PIL图像
-            pil_img = Image.fromarray(img_np)
-            pil_images.append(pil_img)
+        for i, img_np in enumerate(images):
+            # 确保数据类型正确
+            if img_np.dtype != np.uint8:
+                img_np = np.clip(img_np, 0, 255).astype(np.uint8)
+
+            # 确保形状正确 (H, W, C)
+            if img_np.ndim == 3 and img_np.shape[-1] in [1, 3]:
+                # 如果是单通道，转换为RGB
+                if img_np.shape[-1] == 1:
+                    img_np = np.repeat(img_np, 3, axis=-1)
+
+                # 创建PIL图像
+                pil_img = Image.fromarray(img_np)
+                pil_images.append(pil_img)
+            else:
+                print(f"⚠️  跳过异常形状的图像 {i}: {img_np.shape}")
 
         return pil_images
     
