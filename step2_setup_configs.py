@@ -72,6 +72,7 @@ def create_inference_config():
             'num_sampling_steps': 250,
             'cfg_scale': 6.7,  # 官方800ep模型使用6.7
             'per_proc_batch_size': 4,
+            'fid_num': 50000,  # 缺失的关键字段
             'cfg_interval_start': 0.125,
             'timestep_shift': 0.3
         }
