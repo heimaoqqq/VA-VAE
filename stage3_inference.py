@@ -83,7 +83,8 @@ def test_imports():
 class MicroDopplerGenerator:
     """微多普勒图像生成器 (基于原项目inference.py)"""
 
-    def __init__(self, dit_checkpoint, vavae_config, accelerator=None):
+    def __init__(self, dit_checkpoint, vavae_config, model_name='LightningDiT-B/1', accelerator=None):
+        self.model_name = model_name
         # 支持双GPU推理
         if accelerator is not None:
             self.accelerator = accelerator
@@ -140,8 +141,8 @@ class MicroDopplerGenerator:
         # 这里需要根据实际的检查点格式来调整
         # 参考原项目的模型加载方式
         
-        # 使用与原项目一致的模型配置 (参考配置文件)
-        self.dit_model = LightningDiT_models['LightningDiT-XL/1'](  # 使用XL模型
+        # 使用与训练时一致的模型配置 (根据实际训练使用的模型)
+        self.dit_model = LightningDiT_models[self.model_name](  # 使用指定的模型
             input_size=16,  # 256/16=16 (downsample_ratio=16)
             num_classes=31,  # 微多普勒用户数
             in_channels=32,  # VA-VAE使用32通道
@@ -457,6 +458,7 @@ def main(accelerator=None):
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
     parser.add_argument('--dual_gpu', action='store_true', help='使用双GPU推理')
     parser.add_argument('--test_imports', action='store_true', help='仅测试导入，不进行推理')
+    parser.add_argument('--model_name', type=str, default='LightningDiT-B/1', help='DiT模型名称 (应与训练时一致)')
 
     args = parser.parse_args()
 
@@ -494,6 +496,7 @@ def main(accelerator=None):
     generator = MicroDopplerGenerator(
         dit_checkpoint=args.dit_checkpoint,
         vavae_config=args.vavae_config,
+        model_name=args.model_name,
         accelerator=accelerator
     )
     
