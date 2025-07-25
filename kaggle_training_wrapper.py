@@ -81,9 +81,9 @@ def kaggle_stage1_extract_features():
         install_dependencies()
         setup_paths()
         
-        # 设置参数
+        # 导入并设置参数
         from stage1_extract_features import main
-        
+
         # 模拟命令行参数
         class Args:
             data_dir = '/kaggle/working/data_split'
@@ -91,9 +91,9 @@ def kaggle_stage1_extract_features():
             output_path = '/kaggle/working/latent_features'
             batch_size = 16
             seed = 42
-        
+
         args = Args()
-        
+
         # 运行特征提取
         main(args)
     
@@ -113,24 +113,22 @@ def kaggle_stage2_train_dit():
         # 强制更新代码
         os.system("cd /kaggle/working/VA-VAE && git reset --hard origin/master")
 
-        # 设置参数
+        # 设置命令行参数
+        sys.argv = [
+            'stage2_train_dit.py',
+            '--latent_dir', '/kaggle/working/latent_features',
+            '--output_dir', '/kaggle/working/trained_models',
+            '--model_name', 'LightningDiT-XL/1',
+            '--batch_size', '16',
+            '--max_epochs', '50',
+            '--lr', '1e-4',
+            '--seed', '42',
+            '--save_every', '10'
+        ]
+
+        # 导入并运行DiT训练
         from stage2_train_dit import main
-        
-        # 模拟命令行参数
-        class Args:
-            latent_dir = '/kaggle/working/latent_features'
-            output_dir = '/kaggle/working/trained_models'
-            model_name = 'LightningDiT-XL/1'
-            batch_size = 16
-            max_epochs = 50
-            lr = 1e-4
-            seed = 42
-            save_every = 10
-        
-        args = Args()
-        
-        # 运行DiT训练
-        main(args)
+        main()
     
     # 使用notebook_launcher启动双GPU训练
     print("🚀 启动双GPU DiT训练...")
