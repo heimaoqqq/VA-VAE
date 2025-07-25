@@ -132,13 +132,13 @@ def kaggle_stage2_train_dit():
                 print(f"🔧 GPU {i}: {torch.cuda.get_device_name(i)}")
                 print(f"🔧 GPU {i} 内存: {torch.cuda.get_device_properties(i).total_memory / 1e9:.1f}GB")
 
-        # 设置命令行参数 - 保守配置避免内存问题
+        # 设置命令行参数 - B模型配合大batch_size
         sys.argv = [
             'stage2_train_dit.py',
             '--latent_dir', '/kaggle/working/latent_features',
             '--output_dir', '/kaggle/working/trained_models',
-            '--model_name', 'LightningDiT-B/1',  # 使用较小的B模型
-            '--batch_size', '8',  # 减少batch_size避免内存不足
+            '--model_name', 'LightningDiT-B/1',  # 使用B模型节省内存
+            '--batch_size', '32',  # B模型可以使用更大的batch_size
             '--max_epochs', '50',
             '--lr', '1e-4',
             '--seed', '42',
