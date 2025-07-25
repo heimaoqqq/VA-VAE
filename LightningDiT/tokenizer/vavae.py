@@ -70,11 +70,11 @@ class VA_VAE:
             return posterior.sample()
 
     def decode_to_images(self, z):
-        """Decode latent representations to images
+        """Decode latent representations to images with proper micro-Doppler colormap
         Args:
             z: Latent representation tensor
         Returns:
-            np.ndarray: Decoded image array
+            np.ndarray: Decoded image array with proper colormap
         """
         with torch.no_grad():
             # 解码到[-1, 1]范围
@@ -88,17 +88,78 @@ class VA_VAE:
             # 确保在[-1, 1]范围内
             images = torch.clamp(images, -1.0, 1.0)
 
-            # 转换到[0, 255]范围
-            images = (images + 1.0) * 127.5
-            images = torch.clamp(images, 0, 255)
+            # 对于微多普勒时频图，应用正确的颜色映射
+            processed_images = []
+            for i in range(images.shape[0]):
+                img = images[i]  # (C, H, W)
 
-            # 转换为numpy数组 (B, H, W, C)
-            images = images.permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
+                # 如果是RGB图像，转换为灰度作为强度
+                if img.shape[0] == 3:
+                    # 使用标准RGB到灰度的权重
+                    intensity = 0.299 * img[0] + 0.587 * img[1] + 0.114 * img[2]
+                else:
+                    intensity = img[0]  # 使用第一个通道
 
-            print(f"  最终图像范围: [{images.min()}, {images.max()}]")
-            print(f"  最终图像形状: {images.shape}")
+                # 归一化到[0, 1]
+                intensity = (intensity + 1.0) / 2.0
+                intensity = torch.clamp(intensity, 0, 1)
 
-        return images
+                # 应用微多普勒时频图的颜色映射 (类似matplotlib的jet colormap)
+                colored_img = self._apply_micro_doppler_colormap(intensity)
+                processed_images.append(colored_img)
+
+            # 转换为numpy数组
+            result = torch.stack(processed_images).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
+
+            print(f"  最终图像范围: [{result.min()}, {result.max()}]")
+            print(f"  最终图像形状: {result.shape}")
+
+        return result
+
+    def _apply_micro_doppler_colormap(self, intensity):
+        """Apply micro-Doppler specific colormap (blue to red)
+        Args:
+            intensity: Normalized intensity tensor (H, W) in [0, 1]
+        Returns:
+            torch.Tensor: RGB image (3, H, W) in [0, 255]
+        """
+        # 创建类似jet colormap的微多普勒颜色映射
+        # 低强度 -> 深蓝色，高强度 -> 红色
+
+        # 定义颜色映射的关键点 (强度 -> RGB)
+        # 0.0: 深蓝 (0, 0, 128)
+        # 0.25: 蓝色 (0, 0, 255)
+        # 0.5: 青色 (0, 255, 255)
+        # 0.75: 黄色 (255, 255, 0)
+        # 1.0: 红色 (255, 0, 0)
+
+        h, w = intensity.shape
+        rgb_img = torch.zeros(3, h, w, device=intensity.device)
+
+        # Red channel
+        rgb_img[0] = torch.where(intensity < 0.5,
+                                0,
+                                torch.where(intensity < 0.75,
+                                           (intensity - 0.5) * 4 * 255,
+                                           255))
+
+        # Green channel
+        rgb_img[1] = torch.where(intensity < 0.25,
+                                0,
+                                torch.where(intensity < 0.5,
+                                           (intensity - 0.25) * 4 * 255,
+                                           torch.where(intensity < 0.75,
+                                                      255,
+                                                      255 - (intensity - 0.75) * 4 * 255)))
+
+        # Blue channel
+        rgb_img[2] = torch.where(intensity < 0.25,
+                                128 + intensity * 4 * 127,  # 深蓝到蓝
+                                torch.where(intensity < 0.5,
+                                           255 - (intensity - 0.25) * 4 * 255,
+                                           0))
+
+        return torch.clamp(rgb_img, 0, 255)
 
 def center_crop_arr(pil_image, image_size):
     """
