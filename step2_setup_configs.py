@@ -87,33 +87,57 @@ def create_inference_config():
 
 def update_vavae_config():
     """更新VA-VAE配置 - 官方tutorial要求的步骤"""
-    
+
+    print("\n🔧 更新VA-VAE配置...")
+
     vavae_config_path = "LightningDiT/tokenizer/configs/vavae_f16d32.yaml"
     models_dir = Path("./official_models")
-    
+
+    # 检查文件是否存在
     if not os.path.exists(vavae_config_path):
         print(f"❌ VA-VAE配置文件不存在: {vavae_config_path}")
+        print("🔍 检查LightningDiT目录结构...")
+        if os.path.exists("LightningDiT"):
+            print("✅ LightningDiT目录存在")
+            if os.path.exists("LightningDiT/tokenizer"):
+                print("✅ tokenizer目录存在")
+                if os.path.exists("LightningDiT/tokenizer/configs"):
+                    print("✅ configs目录存在")
+                    print("📁 configs目录内容:")
+                    for f in os.listdir("LightningDiT/tokenizer/configs"):
+                        print(f"   - {f}")
+                else:
+                    print("❌ configs目录不存在")
+            else:
+                print("❌ tokenizer目录不存在")
+        else:
+            print("❌ LightningDiT目录不存在")
         return False
-    
-    # 读取现有配置
-    with open(vavae_config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    
-    # 更新检查点路径 (官方tutorial步骤)
-    # 注意：VA-VAE配置也需要相对于LightningDiT/目录的路径
-    old_path = config.get('ckpt_path', 'N/A')
-    new_path = str(Path("..") / models_dir / "vavae-imagenet256-f16d32-dinov2.pt")
-    config['ckpt_path'] = new_path
-    
-    # 保存更新后的配置
-    with open(vavae_config_path, 'w') as f:
-        yaml.dump(config, f, default_flow_style=False, indent=2)
-    
-    print(f"✅ VA-VAE配置已更新:")
-    print(f"   旧路径: {old_path}")
-    print(f"   新路径: {new_path}")
-    
-    return True
+
+    try:
+        # 读取现有配置
+        with open(vavae_config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # 更新检查点路径 (官方tutorial步骤)
+        # 注意：VA-VAE配置也需要相对于LightningDiT/目录的路径
+        old_path = config.get('ckpt_path', 'N/A')
+        new_path = str(Path("..") / models_dir / "vavae-imagenet256-f16d32-dinov2.pt")
+        config['ckpt_path'] = new_path
+
+        # 保存更新后的配置
+        with open(vavae_config_path, 'w') as f:
+            yaml.dump(config, f, default_flow_style=False, indent=2)
+
+        print(f"✅ VA-VAE配置已更新:")
+        print(f"   旧路径: {old_path}")
+        print(f"   新路径: {new_path}")
+
+        return True
+
+    except Exception as e:
+        print(f"❌ 更新VA-VAE配置失败: {e}")
+        return False
 
 def main():
     """步骤2: 设置配置文件"""
@@ -148,14 +172,15 @@ def main():
     config_path = create_inference_config()
     
     # 更新VA-VAE配置
-    print("\n🔧 更新VA-VAE配置...")
-    if update_vavae_config():
-        print("\n✅ 步骤2完成！配置文件已设置")
-        print(f"📄 推理配置: {config_path}")
+    vavae_success = update_vavae_config()
+
+    print("\n✅ 步骤2完成！配置文件已设置")
+    print(f"📄 推理配置: {config_path}")
+    if vavae_success:
         print("📄 VA-VAE配置: LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
-        print("\n🎯 下一步: 运行 python step3_run_inference.py")
     else:
-        print("\n❌ VA-VAE配置更新失败")
+        print("⚠️ VA-VAE配置更新失败，但可以继续尝试推理")
+    print("\n🎯 下一步: 运行 python step3_run_inference.py")
 
 if __name__ == "__main__":
     main()
