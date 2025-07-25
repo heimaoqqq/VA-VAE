@@ -33,16 +33,26 @@ from tokenizer.vavae import VA_VAE
 
 class MicroDopplerGenerator:
     """微多普勒图像生成器 (基于原项目inference.py)"""
-    
-    def __init__(self, dit_checkpoint, vavae_config, device='cuda'):
-        self.device = device
+
+    def __init__(self, dit_checkpoint, vavae_config, accelerator=None):
+        # 支持双GPU推理
+        if accelerator is not None:
+            self.accelerator = accelerator
+            self.device = accelerator.device
+            self.is_distributed = True
+        else:
+            self.accelerator = None
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            self.is_distributed = False
         
         # 加载VA-VAE (VA-VAE在初始化时已经设置为eval模式并移到GPU)
-        print("📥 加载VA-VAE...")
+        if not self.is_distributed or self.accelerator.is_main_process:
+            print("📥 加载VA-VAE...")
         self.vavae = VA_VAE(vavae_config)
-        
+
         # 加载DiT模型 (参考原项目)
-        print("📥 加载DiT模型...")
+        if not self.is_distributed or self.accelerator.is_main_process:
+            print("📥 加载DiT模型...")
         self._load_dit_model(dit_checkpoint)
         
         # 创建transport (参考原项目)
@@ -90,20 +100,44 @@ class MicroDopplerGenerator:
         生成用户条件化的微多普勒图像
         参考原项目的采样方法
         """
-        print(f"🎨 开始生成图像...")
-        print(f"  用户ID: {user_ids}")
-        print(f"  每用户样本数: {num_samples_per_user}")
-        print(f"  引导尺度: {guidance_scale}")
-        print(f"  采样步数: {num_steps}")
-        
+        if not self.is_distributed or self.accelerator.is_main_process:
+            print(f"🎨 开始生成图像...")
+            print(f"  用户ID: {user_ids}")
+            print(f"  每用户样本数: {num_samples_per_user}")
+            print(f"  引导尺度: {guidance_scale}")
+            print(f"  采样步数: {num_steps}")
+            if self.is_distributed:
+                print(f"  分布式推理: {self.accelerator.num_processes} GPU")
+
         all_images = []
         all_user_labels = []
-        
+
+        # 计算分布式任务分配
+        total_samples = len(user_ids) * num_samples_per_user
+        if self.is_distributed:
+            samples_per_gpu = total_samples // self.accelerator.num_processes
+            start_idx = self.accelerator.process_index * samples_per_gpu
+            end_idx = start_idx + samples_per_gpu
+            if self.accelerator.process_index == self.accelerator.num_processes - 1:
+                end_idx = total_samples
+        else:
+            start_idx = 0
+            end_idx = total_samples
+
         with torch.no_grad():
-            for user_id in tqdm(user_ids, desc="生成用户图像"):
-                # 准备条件 (参考原项目)
-                batch_size = num_samples_per_user
-                y = torch.full((batch_size,), user_id - 1, dtype=torch.long, device=self.device)  # 0-based
+            sample_idx = 0
+            for user_id in user_ids:
+                for sample_num in range(num_samples_per_user):
+                    # 检查是否是当前GPU负责的样本
+                    if self.is_distributed and (sample_idx < start_idx or sample_idx >= end_idx):
+                        sample_idx += 1
+                        continue
+
+                    # 准备条件 (参考原项目)
+                    batch_size = 1  # 每次生成一个样本
+                    y = torch.full((batch_size,), user_id - 1, dtype=torch.long, device=self.device)  # 0-based
+
+                    sample_idx += 1
                 
                 # 生成随机噪声 (参考原项目)
                 z = torch.randn(batch_size, 32, 16, 16, device=self.device)
@@ -209,7 +243,7 @@ class MicroDopplerGenerator:
         grid_image.save(grid_path)
         print(f"📊 网格图像保存到: {grid_path}")
 
-def main():
+def main(accelerator=None):
     parser = argparse.ArgumentParser(description='微多普勒图像生成')
     parser.add_argument('--dit_checkpoint', type=str, required=True, help='DiT模型检查点')
     parser.add_argument('--vavae_config', type=str, required=True, help='VA-VAE配置文件')
@@ -219,21 +253,30 @@ def main():
     parser.add_argument('--guidance_scale', type=float, default=4.0, help='引导尺度')
     parser.add_argument('--num_steps', type=int, default=250, help='采样步数')
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
-    
+    parser.add_argument('--dual_gpu', action='store_true', help='使用双GPU推理')
+
     args = parser.parse_args()
-    
+
     # 设置随机种子
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    
-    print("🎯 微多普勒图像生成")
-    print("=" * 50)
+    if accelerator:
+        seed = args.seed * accelerator.num_processes + accelerator.process_index
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+    else:
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+
+    if not accelerator or accelerator.is_main_process:
+        print("🎯 微多普勒图像生成")
+        print("=" * 50)
+        if accelerator:
+            print(f"🔧 分布式推理: {accelerator.num_processes} GPU")
     
     # 创建生成器
     generator = MicroDopplerGenerator(
         dit_checkpoint=args.dit_checkpoint,
         vavae_config=args.vavae_config,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        accelerator=accelerator
     )
     
     # 生成图像
@@ -249,5 +292,24 @@ def main():
     
     print("✅ 图像生成完成!")
 
+def dual_gpu_inference():
+    """双GPU推理包装函数"""
+    def inference_worker():
+        from accelerate import Accelerator
+        accelerator = Accelerator()
+        main(accelerator)
+
+    from accelerate import notebook_launcher
+    print("🚀 启动双GPU推理...")
+    notebook_launcher(inference_worker, num_processes=2)
+    print("✅ 双GPU推理完成")
+
 if __name__ == "__main__":
-    main()
+    import sys
+
+    # 检查是否使用双GPU
+    if '--dual_gpu' in sys.argv:
+        sys.argv.remove('--dual_gpu')  # 移除这个参数，避免argparse报错
+        dual_gpu_inference()
+    else:
+        main()
