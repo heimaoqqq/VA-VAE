@@ -40,12 +40,25 @@ def create_inference_config():
             'in_chans': 32
         },
         'train': {
+            'max_steps': 80000,
+            'global_batch_size': 1024,
+            'global_seed': 0,  # 这是缺失的关键字段
             'output_dir': 'output',
-            'exp_name': 'lightningdit_xl_vavae_f16d32'
+            'exp_name': 'lightningdit_xl_vavae_f16d32',
+            'ckpt': None,
+            'log_every': 100,
+            'ckpt_every': 20000
+        },
+        'optimizer': {
+            'lr': 0.0002,
+            'beta2': 0.95
         },
         'transport': {
             'path_type': 'Linear',
             'prediction': 'velocity',
+            'loss_weight': None,
+            'sample_eps': None,
+            'train_eps': None,
             'use_cosine_loss': True,
             'use_lognorm': True
         },
