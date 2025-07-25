@@ -187,11 +187,31 @@ from accelerate import notebook_launcher
 
 def kaggle_stage1_extract_features():
     """阶段1: 特征提取 (Kaggle双GPU版本)"""
-    
+
     def extract_features_worker():
+        # 安装缺失的依赖
+        import subprocess
+        import sys
+
+        # 安装torchdiffeq和其他可能缺失的依赖
+        required_packages = [
+            "torchdiffeq>=0.2.3",
+            "scipy>=1.9.0",
+            "einops>=0.6.0",
+            "omegaconf>=2.3.0"
+        ]
+
+        for package in required_packages:
+            try:
+                subprocess.run([sys.executable, "-m", "pip", "install", package, "--quiet"],
+                             check=True, capture_output=True)
+                print(f"✅ 已安装: {package}")
+            except subprocess.CalledProcessError as e:
+                print(f"⚠️  安装失败: {package} - {e}")
+
         # 导入必要的模块
         sys.path.append('/kaggle/working/VA-VAE')
-        
+
         # 设置参数
         import argparse
         from stage1_extract_features import main
@@ -216,11 +236,31 @@ def kaggle_stage1_extract_features():
 
 def kaggle_stage2_train_dit():
     """阶段2: DiT训练 (Kaggle双GPU版本)"""
-    
+
     def train_dit_worker():
+        # 安装缺失的依赖
+        import subprocess
+        import sys
+
+        # 安装torchdiffeq和其他可能缺失的依赖
+        required_packages = [
+            "torchdiffeq>=0.2.3",
+            "scipy>=1.9.0",
+            "einops>=0.6.0",
+            "omegaconf>=2.3.0"
+        ]
+
+        for package in required_packages:
+            try:
+                subprocess.run([sys.executable, "-m", "pip", "install", package, "--quiet"],
+                             check=True, capture_output=True)
+                print(f"✅ 已安装: {package}")
+            except subprocess.CalledProcessError as e:
+                print(f"⚠️  安装失败: {package} - {e}")
+
         # 导入必要的模块
         sys.path.append('/kaggle/working/VA-VAE')
-        
+
         # 设置参数
         from stage2_train_dit import main
         
