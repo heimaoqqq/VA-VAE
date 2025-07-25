@@ -32,23 +32,46 @@ def install_dependencies():
 def setup_paths():
     """设置Python路径"""
     print("🔧 设置Python路径...")
-    
+
     # 获取当前工作目录
     if '/kaggle/working' in os.getcwd():
         base_dir = '/kaggle/working/VA-VAE'
     else:
         base_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # 添加必要的路径
+
+    # 清理旧的路径
+    paths_to_remove = []
+    for path in sys.path:
+        if 'VA-VAE' in path or 'LightningDiT' in path:
+            paths_to_remove.append(path)
+
+    for path in paths_to_remove:
+        sys.path.remove(path)
+        print(f"🗑️ 已移除旧路径: {path}")
+
+    # 添加必要的路径到开头
     paths_to_add = [
-        base_dir,
-        os.path.join(base_dir, 'LightningDiT')
+        os.path.join(base_dir, 'LightningDiT'),
+        base_dir
     ]
-    
-    for path in paths_to_add:
+
+    for path in reversed(paths_to_add):  # 反向添加，确保正确的优先级
         if path not in sys.path:
-            sys.path.append(path)
+            sys.path.insert(0, path)
             print(f"✅ 已添加路径: {path}")
+
+    # 清理模块缓存
+    modules_to_clear = []
+    for module_name in sys.modules.keys():
+        if any(x in module_name for x in ['stage2_train_dit', 'models.lightningdit', 'transport', 'datasets']):
+            modules_to_clear.append(module_name)
+
+    for module_name in modules_to_clear:
+        del sys.modules[module_name]
+        print(f"🗑️ 已清理模块缓存: {module_name}")
+
+    print(f"📍 当前工作目录: {os.getcwd()}")
+    print(f"📍 Python路径前3项: {sys.path[:3]}")
 
 def kaggle_stage1_extract_features():
     """阶段1: 特征提取 (Kaggle双GPU版本)"""
@@ -86,7 +109,10 @@ def kaggle_stage2_train_dit():
         # 安装依赖和设置路径
         install_dependencies()
         setup_paths()
-        
+
+        # 强制更新代码
+        os.system("cd /kaggle/working/VA-VAE && git reset --hard origin/master")
+
         # 设置参数
         from stage2_train_dit import main
         
