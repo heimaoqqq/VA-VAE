@@ -4,6 +4,7 @@
 处理Kaggle环境的预装包冲突问题
 """
 
+import os
 import subprocess
 import sys
 import pkg_resources
