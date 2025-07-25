@@ -211,6 +211,7 @@ def kaggle_stage1_extract_features():
 
         # 导入必要的模块
         sys.path.append('/kaggle/working/VA-VAE')
+        sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
 
         # 设置参数
         import argparse
@@ -260,6 +261,7 @@ def kaggle_stage2_train_dit():
 
         # 导入必要的模块
         sys.path.append('/kaggle/working/VA-VAE')
+        sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
 
         # 设置参数
         from stage2_train_dit import main

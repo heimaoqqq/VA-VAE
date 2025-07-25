@@ -23,7 +23,14 @@ from safetensors import safe_open
 
 # 导入LightningDiT组件
 import sys
-sys.path.append('LightningDiT')
+import os
+
+# 确保正确的路径设置
+current_dir = os.path.dirname(os.path.abspath(__file__))
+lightningdit_path = os.path.join(current_dir, 'LightningDiT')
+if lightningdit_path not in sys.path:
+    sys.path.append(lightningdit_path)
+
 from models.lightningdit import LightningDiT_models
 from transport import create_transport
 from datasets.img_latent_dataset import ImgLatentDataset
