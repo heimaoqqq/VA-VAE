@@ -90,29 +90,52 @@ def update_vavae_config():
 
     print("\n🔧 更新VA-VAE配置...")
 
-    vavae_config_path = "LightningDiT/tokenizer/configs/vavae_f16d32.yaml"
-    models_dir = Path("./official_models")
+    # 尝试多个可能的路径
+    possible_paths = [
+        "LightningDiT/tokenizer/configs/vavae_f16d32.yaml",
+        "./LightningDiT/tokenizer/configs/vavae_f16d32.yaml",
+        "tokenizer/configs/vavae_f16d32.yaml"
+    ]
 
-    # 检查文件是否存在
-    if not os.path.exists(vavae_config_path):
-        print(f"❌ VA-VAE配置文件不存在: {vavae_config_path}")
+    vavae_config_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            vavae_config_path = path
+            print(f"✅ 找到VA-VAE配置文件: {path}")
+            break
+
+    if not vavae_config_path:
+        print("❌ 在以下路径都未找到VA-VAE配置文件:")
+        for path in possible_paths:
+            print(f"   - {path}")
         print("🔍 检查LightningDiT目录结构...")
-        if os.path.exists("LightningDiT"):
-            print("✅ LightningDiT目录存在")
-            if os.path.exists("LightningDiT/tokenizer"):
-                print("✅ tokenizer目录存在")
-                if os.path.exists("LightningDiT/tokenizer/configs"):
-                    print("✅ configs目录存在")
-                    print("📁 configs目录内容:")
-                    for f in os.listdir("LightningDiT/tokenizer/configs"):
-                        print(f"   - {f}")
+
+        # 详细检查目录结构
+        base_dirs = [".", "LightningDiT"]
+        for base_dir in base_dirs:
+            if os.path.exists(base_dir):
+                print(f"✅ {base_dir} 目录存在")
+                tokenizer_path = os.path.join(base_dir, "tokenizer") if base_dir != "." else "tokenizer"
+                if os.path.exists(tokenizer_path):
+                    print(f"✅ {tokenizer_path} 目录存在")
+                    configs_path = os.path.join(tokenizer_path, "configs")
+                    if os.path.exists(configs_path):
+                        print(f"✅ {configs_path} 目录存在")
+                        print(f"📁 {configs_path} 目录内容:")
+                        try:
+                            for f in os.listdir(configs_path):
+                                print(f"   - {f}")
+                        except Exception as e:
+                            print(f"   ❌ 无法列出目录内容: {e}")
+                    else:
+                        print(f"❌ {configs_path} 目录不存在")
                 else:
-                    print("❌ configs目录不存在")
+                    print(f"❌ {tokenizer_path} 目录不存在")
             else:
-                print("❌ tokenizer目录不存在")
-        else:
-            print("❌ LightningDiT目录不存在")
+                print(f"❌ {base_dir} 目录不存在")
         return False
+
+    models_dir = Path("./official_models")
 
     try:
         # 读取现有配置
