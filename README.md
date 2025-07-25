@@ -34,6 +34,12 @@ python step3_run_inference.py
 - TorchDiffEq (关键依赖)
 - Accelerate, TIMM, Diffusers等 (见官方requirements.txt)
 
+### 项目重置（推荐）
+```bash
+# 获取100%纯净的LightningDiT代码
+python reset_project.py
+```
+
 ### 依赖安装
 ```bash
 # 严格按照官方requirements.txt安装

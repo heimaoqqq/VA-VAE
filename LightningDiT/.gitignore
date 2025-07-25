@@ -1,6 +1,0 @@
-submit_*
-demo_img/*
-output/*
-tensorboard_logs
-*internal*
-guided-diffusion
