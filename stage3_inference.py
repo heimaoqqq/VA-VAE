@@ -167,7 +167,7 @@ class MicroDopplerGenerator:
         # 参考原项目的模型加载方式
         
         # 首先尝试从检查点中获取正确的类别数
-        num_classes = self._get_num_classes_from_checkpoint(dit_checkpoint)
+        num_classes = self._get_num_classes_from_checkpoint(checkpoint_path)
 
         # 使用与训练时一致的模型配置
         self.dit_model = LightningDiT_models[self.model_name](  # 使用指定的模型
