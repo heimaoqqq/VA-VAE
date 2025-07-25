@@ -416,8 +416,8 @@ class MicroDopplerGenerator:
 def main(accelerator=None):
     parser = argparse.ArgumentParser(description='微多普勒图像生成')
     parser.add_argument('--dit_checkpoint', type=str, help='DiT模型检查点 (如果不存在将使用随机模型)')
-    parser.add_argument('--vavae_config', type=str, required=True, help='VA-VAE配置文件')
-    parser.add_argument('--output_dir', type=str, required=True, help='输出目录')
+    parser.add_argument('--vavae_config', type=str, help='VA-VAE配置文件')
+    parser.add_argument('--output_dir', type=str, help='输出目录')
     parser.add_argument('--user_ids', type=int, nargs='+', default=[1, 2, 3, 4, 5], help='用户ID列表')
     parser.add_argument('--num_samples_per_user', type=int, default=4, help='每用户生成样本数')
     parser.add_argument('--guidance_scale', type=float, default=4.0, help='引导尺度')
@@ -436,6 +436,12 @@ def main(accelerator=None):
         else:
             print("❌ 导入测试失败")
         return
+
+    # 对于推理，检查必需参数
+    if not args.vavae_config:
+        parser.error("推理模式需要 --vavae_config 参数")
+    if not args.output_dir:
+        parser.error("推理模式需要 --output_dir 参数")
 
     # 设置随机种子
     if accelerator:
