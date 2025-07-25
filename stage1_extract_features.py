@@ -34,6 +34,36 @@ if lightningdit_path not in sys.path:
 
 from tokenizer.vavae import VA_VAE
 
+def check_environment():
+    """检查环境配置"""
+    print("🔍 检查环境配置...")
+
+    # 检查CUDA
+    if torch.cuda.is_available():
+        print(f"✅ CUDA可用: {torch.cuda.device_count()} GPU(s)")
+        for i in range(torch.cuda.device_count()):
+            print(f"   GPU {i}: {torch.cuda.get_device_name(i)}")
+    else:
+        print("❌ CUDA不可用")
+        return False
+
+    # 检查必要的库
+    try:
+        from safetensors.torch import load_file
+        print("✅ Safetensors可用")
+    except ImportError:
+        print("❌ Safetensors不可用，请安装: pip install safetensors")
+        return False
+
+    # 检查VA-VAE配置
+    if os.path.exists('vavae_config.yaml'):
+        print("✅ VA-VAE配置文件存在")
+    else:
+        print("❌ VA-VAE配置文件不存在")
+        return False
+
+    return True
+
 class MicroDopplerDataset(torch.utils.data.Dataset):
     """微多普勒数据集"""
     
@@ -71,6 +101,11 @@ def main(args):
     """
     基于原项目extract_features.py的特征提取主函数
     """
+    # 检查环境
+    if not check_environment():
+        print("❌ 环境检查失败，请修复后重试")
+        return False
+
     assert torch.cuda.is_available(), "特征提取需要至少一个GPU"
 
     # 设置分布式训练 (参考原项目)

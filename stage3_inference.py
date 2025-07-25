@@ -31,6 +31,29 @@ from models.lightningdit import LightningDiT_models
 from transport import create_transport
 from tokenizer.vavae import VA_VAE
 
+def test_imports():
+    """测试导入是否正常"""
+    print("🧪 测试导入...")
+
+    try:
+        from models import LightningDiT_models
+        print("✅ LightningDiT_models导入成功")
+
+        from transport import create_transport
+        print("✅ Transport导入成功")
+
+        from tokenizer.vavae import VA_VAE
+        print("✅ VA_VAE导入成功")
+
+        from safetensors.torch import load_file
+        print("✅ Safetensors导入成功")
+
+        return True
+
+    except Exception as e:
+        print(f"❌ 导入测试失败: {e}")
+        return False
+
 class MicroDopplerGenerator:
     """微多普勒图像生成器 (基于原项目inference.py)"""
 
@@ -245,11 +268,24 @@ class MicroDopplerGenerator:
             # 使用预配置的采样函数
             samples = self.sample_fn(z, self.dit_model, **model_kwargs)
 
-            # 返回最后一个时间步的结果
+            # 返回最后一个时间步的结果并修复维度
             if isinstance(samples, list):
-                return samples[-1]
+                result = samples[-1]
             else:
-                return samples
+                result = samples
+
+            # 修复维度问题：从[num_steps, batch, channels, h, w]到[batch, channels, h, w]
+            if result.dim() == 5:
+                result = result[-1]  # 取最后一个时间步
+            elif result.dim() > 4:
+                # 如果还有其他维度问题，强制reshape
+                while result.dim() > 4:
+                    result = result[-1]
+
+            if not self.is_distributed or self.accelerator.is_main_process:
+                print(f"🔍 采样结果形状: {result.shape}")
+
+            return result
 
         except Exception as e:
             if not self.is_distributed or self.accelerator.is_main_process:
@@ -362,8 +398,18 @@ def main(accelerator=None):
     parser.add_argument('--num_steps', type=int, default=250, help='采样步数')
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
     parser.add_argument('--dual_gpu', action='store_true', help='使用双GPU推理')
+    parser.add_argument('--test_imports', action='store_true', help='仅测试导入，不进行推理')
 
     args = parser.parse_args()
+
+    # 如果只是测试导入
+    if args.test_imports:
+        success = test_imports()
+        if success:
+            print("✅ 所有导入测试通过!")
+        else:
+            print("❌ 导入测试失败")
+        return
 
     # 设置随机种子
     if accelerator:

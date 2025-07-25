@@ -1,46 +1,62 @@
-# 微多普勒时频图数据增广项目 - 最小改动版本
+# VA-VAE 微多普勒信号生成项目
 
-基于VA-VAE (Vision foundation model Aligned Variational AutoEncoder) 的微多普勒时频图数据增广项目。本项目在原始LightningDiT项目基础上进行**最小化修改**，实现用户条件化的时频图生成，专门适配31个用户的步态微多普勒时频图数据。
+基于LightningDiT的微多普勒信号图像生成项目，使用VA-VAE进行特征提取和DiT进行条件化生成。
 
 ## 🎯 项目特点
 
-- **最小改动**: 仅4个核心文件，基于原项目架构
-- **完全兼容**: 使用PyTorch Lightning，与原项目多GPU方式一致  
-- **即用性强**: 支持Kaggle数据集结构 (ID_1, ID_2...ID_31)
-- **实验可靠**: 最少修改确保结果可信和可对比
+- **三阶段流水线**: 特征提取 → DiT训练 → 图像生成
+- **环境检查**: 内置环境和依赖检查功能
+- **错误修复**: 解决了导入、颜色、维度等关键问题
+- **即用性强**: 支持Kaggle和本地环境
 
 ## 📁 项目结构
 
 ```
 VA-VAE/
-├── 核心代码文件 (仅4个)
-│   ├── minimal_micro_doppler_dataset.py    # 数据加载器
-│   ├── minimal_vavae_modification.py       # 用户条件化VA-VAE模型
-│   ├── minimal_training_modification.py    # PyTorch Lightning训练脚本
-│   └── data_split.py                       # 数据集划分工具
+├── 核心流水线 (3个阶段)
+│   ├── stage1_extract_features.py    # 阶段1: VA-VAE特征提取 (含环境检查)
+│   ├── stage2_train_dit.py          # 阶段2: DiT模型训练 (含环境检查)
+│   └── stage3_inference.py          # 阶段3: 图像生成推理 (含导入测试)
 │
-├── 配置和文档
-│   ├── README.md                           # 项目说明 (本文件)
-│   ├── requirements.txt                    # 依赖包列表
-│   └── .gitignore                         # Git忽略文件
+├── 辅助工具
+│   ├── data_split.py               # 数据集划分工具
+│   └── download_vavae_model.py     # VA-VAE模型下载
 │
-├── 原始项目 (未修改)
-│   └── LightningDiT/                      # 完整的原始VA-VAE项目
+├── 配置文件
+│   ├── vavae_config.yaml          # VA-VAE配置
+│   ├── accelerate_config.yaml     # Accelerate分布式配置
+│   └── requirements.txt           # 依赖包列表
+│
+├── 原始项目
+│   └── LightningDiT/              # 完整的LightningDiT项目
 │
 └── 数据目录
-    └── data/                              # 数据存储目录
-        ├── raw/                           # 原始数据
-        ├── processed/                     # 处理后数据
-        └── generated/                     # 生成数据
+    └── data/                      # 数据存储目录
+        ├── raw/                   # 原始数据
+        ├── processed/             # 处理后数据
+        └── generated/             # 生成数据
 ```
 
 ## 🚀 快速开始
 
+### 环境检查
+```bash
+# 1. 测试导入是否正常
+python stage3_inference.py --test_imports
+
+# 2. 检查特征提取环境
+python stage1_extract_features.py --help
+
+# 3. 检查训练环境
+python stage2_train_dit.py --help
+```
+
 ### 环境要求
 - Python 3.10+
 - PyTorch 2.0+
-- PyTorch Lightning 2.0+
-- CUDA 11.8+ (可选，用于GPU加速)
+- CUDA 11.8+ (GPU推理)
+- Accelerate (分布式训练)
+- Safetensors (模型保存)
 
 ### 安装依赖
 ```bash

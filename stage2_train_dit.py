@@ -21,6 +21,37 @@ from accelerate import Accelerator
 from accelerate.utils import set_seed
 from safetensors import safe_open
 
+def check_training_environment():
+    """检查训练环境配置"""
+    print("🔍 检查训练环境配置...")
+
+    # 检查CUDA
+    if torch.cuda.is_available():
+        print(f"✅ CUDA可用: {torch.cuda.device_count()} GPU(s)")
+        for i in range(torch.cuda.device_count()):
+            print(f"   GPU {i}: {torch.cuda.get_device_name(i)}")
+    else:
+        print("❌ CUDA不可用")
+        return False
+
+    # 检查Accelerate
+    try:
+        from accelerate import Accelerator
+        print("✅ Accelerate可用")
+    except ImportError:
+        print("❌ Accelerate不可用，请安装: pip install accelerate")
+        return False
+
+    # 检查Safetensors
+    try:
+        from safetensors.torch import save_file, load_file
+        print("✅ Safetensors可用")
+    except ImportError:
+        print("❌ Safetensors不可用，请安装: pip install safetensors")
+        return False
+
+    return True
+
 # 导入LightningDiT组件
 import sys
 import os
