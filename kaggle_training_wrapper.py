@@ -116,19 +116,29 @@ def kaggle_stage2_train_dit():
         # 设置GPU内存管理
         import torch
         if torch.cuda.is_available():
-            # 清理GPU缓存
-            torch.cuda.empty_cache()
+            # 清理所有GPU缓存
+            for i in range(torch.cuda.device_count()):
+                torch.cuda.set_device(i)
+                torch.cuda.empty_cache()
+                torch.cuda.reset_peak_memory_stats(i)
+
             # 设置内存分配策略
             os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
-            print(f"🔧 GPU内存管理已设置")
+            os.environ['CUDA_LAUNCH_BLOCKING'] = '1'  # 同步执行，便于调试
 
-        # 设置命令行参数 - 显存充足，使用更好的配置
+            print(f"🔧 GPU内存管理已设置")
+            print(f"🔧 可用GPU数量: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                print(f"🔧 GPU {i}: {torch.cuda.get_device_name(i)}")
+                print(f"🔧 GPU {i} 内存: {torch.cuda.get_device_properties(i).total_memory / 1e9:.1f}GB")
+
+        # 设置命令行参数 - 保守配置避免内存问题
         sys.argv = [
             'stage2_train_dit.py',
             '--latent_dir', '/kaggle/working/latent_features',
             '--output_dir', '/kaggle/working/trained_models',
-            '--model_name', 'LightningDiT-XL/1',  # 恢复使用XL模型
-            '--batch_size', '16',  # 增加batch_size提高训练效率
+            '--model_name', 'LightningDiT-B/1',  # 使用较小的B模型
+            '--batch_size', '8',  # 减少batch_size避免内存不足
             '--max_epochs', '50',
             '--lr', '1e-4',
             '--seed', '42',
