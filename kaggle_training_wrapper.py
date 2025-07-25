@@ -113,13 +113,22 @@ def kaggle_stage2_train_dit():
         # 强制更新代码
         os.system("cd /kaggle/working/VA-VAE && git reset --hard origin/master")
 
-        # 设置命令行参数
+        # 设置GPU内存管理
+        import torch
+        if torch.cuda.is_available():
+            # 清理GPU缓存
+            torch.cuda.empty_cache()
+            # 设置内存分配策略
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+            print(f"🔧 GPU内存管理已设置")
+
+        # 设置命令行参数 - 使用更小的batch_size和更小的模型
         sys.argv = [
             'stage2_train_dit.py',
             '--latent_dir', '/kaggle/working/latent_features',
             '--output_dir', '/kaggle/working/trained_models',
-            '--model_name', 'LightningDiT-XL/1',
-            '--batch_size', '16',
+            '--model_name', 'LightningDiT-B/1',  # 使用最小的B模型
+            '--batch_size', '4',  # 进一步减少到4
             '--max_epochs', '50',
             '--lr', '1e-4',
             '--seed', '42',
