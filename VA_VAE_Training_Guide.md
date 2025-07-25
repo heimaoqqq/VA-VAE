@@ -77,59 +77,196 @@
 
 ## 🎯 微多普勒时频图训练建议
 
-### 1. 数据准备
-```python
-# 创建自定义数据加载器 (参考 ldm/data/imagenet.py)
-class MicroDopplerDataset(Dataset):
-    def __init__(self, data_root, size=256):
-        self.data_root = data_root
-        self.size = size
-        # 加载时频图文件列表
-        
-    def __getitem__(self, idx):
-        # 加载时频图 (.png/.jpg)
-        # 预处理：归一化到[-1, 1]
-        # 如果是灰度图，转换为3通道或修改模型配置
-        pass
-```
+### **重要澄清**：
+- **我们使用的模型**：`vavae-imagenet256-f16d32-dinov2.pt` (800轮，生产级)
+- **HuggingFace实验版**：`vavae-imagenet256-f16d32-dinov2-50ep.ckpt` (50轮，实验级)
 
-### 2. 配置文件修改
+### **训练策略：先微调VA-VAE，再训练扩散模型**
+
+#### 阶段1：VA-VAE微调（必需）
 ```yaml
-# 基于 f16d32_vfdinov2.yaml 修改
+# micro_doppler_vavae_config.yaml
+ckpt_path: /path/to/vavae-imagenet256-f16d32-dinov2.pt  # 使用800轮版本
+weight_init: /path/to/vavae-imagenet256-f16d32-dinov2.pt  # 预训练权重
+
 model:
+  base_learning_rate: 1.0e-05  # 较小学习率，微调
+  target: ldm.models.autoencoder.AutoencoderKL
   params:
-    embed_dim: 32  # 或16/64
-    use_vf: dinov2  # 推荐用于微多普勒
+    monitor: val/rec_loss
+    embed_dim: 32
+    use_vf: dinov2  # 保持DINOv2特征对齐
+    reverse_proj: true
+    lossconfig:
+      target: ldm.modules.losses.LPIPSWithDiscriminator
+      params:
+        disc_start: 1000  # 延迟判别器启动
+        kl_weight: 1.0e-06
+        disc_weight: 0.3  # 降低判别器权重
+        vf_weight: 0.05   # 降低视觉特征权重，避免过度约束
+        adaptive_vf: true
     ddconfig:
-      in_channels: 1  # 灰度时频图
-      out_ch: 1       # 输出也是灰度
-      resolution: 256 # 时频图分辨率
+      double_z: true
+      z_channels: 32
+      resolution: 256
+      in_channels: 3    # 彩色时频图
+      out_ch: 3
+      ch: 128
+      ch_mult: [1, 1, 2, 2, 4]
+      num_res_blocks: 2
+      attn_resolutions: [16]
+      dropout: 0.0
 
 data:
+  target: main.DataModuleFromConfig
   params:
+    batch_size: 2  # 小批次，适合小数据集
+    wrap: false    # 不重复数据
     train:
       target: your.custom.MicroDopplerDataset
       params:
         data_root: /path/to/micro_doppler_data
+        size: 256
+        user_conditioning: true  # 启用用户条件
+    validation:
+      target: your.custom.MicroDopplerDataset
+      params:
+        data_root: /path/to/micro_doppler_val_data
+        size: 256
+        user_conditioning: true
+
+lightning:
+  trainer:
+    devices: 1
+    num_nodes: 1
+    strategy: auto
+    accelerator: gpu
+    max_epochs: 100  # 微调轮数
+    precision: 16    # 混合精度
+    check_val_every_n_epoch: 5
+    log_every_n_steps: 10
 ```
 
-### 3. 训练命令
+### 1. 数据准备（无数据增强）
+```python
+# 创建自定义数据加载器 (参考 ldm/data/imagenet.py)
+class MicroDopplerDataset(Dataset):
+    def __init__(self, data_root, size=256, user_conditioning=True):
+        self.data_root = data_root
+        self.size = size
+        self.user_conditioning = user_conditioning
+
+        # 加载31个用户的时频图文件
+        self.samples = []
+        for user_id in range(31):
+            user_path = os.path.join(data_root, f"user_{user_id:02d}")
+            if os.path.exists(user_path):
+                for img_file in os.listdir(user_path):
+                    if img_file.endswith(('.png', '.jpg', '.jpeg')):
+                        self.samples.append({
+                            'path': os.path.join(user_path, img_file),
+                            'user_id': user_id
+                        })
+
+        print(f"Loaded {len(self.samples)} micro-Doppler samples from {data_root}")
+
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+
+        # 加载时频图 (256x256x3)
+        image = Image.open(sample['path']).convert('RGB')
+        image = image.resize((self.size, self.size), Image.LANCZOS)
+
+        # 转换为tensor并归一化到[-1, 1]
+        image = np.array(image).astype(np.float32) / 127.5 - 1.0
+        image = torch.from_numpy(image).permute(2, 0, 1)
+
+        result = {'image': image}
+
+        if self.user_conditioning:
+            result['user_id'] = sample['user_id']
+            result['class_label'] = sample['user_id']  # 用于条件生成
+
+        return result
+
+    def __len__(self):
+        return len(self.samples)
+```
+
+### 2. VA-VAE微调训练命令
 ```bash
-# 从预训练模型微调
-bash LightningDiT/vavae/run_train.sh your_micro_doppler_config.yaml
+# 进入vavae目录
+cd LightningDiT/vavae
+
+# 启动VA-VAE微调训练
+bash run_train.sh configs/micro_doppler_vavae_config.yaml
 ```
 
-### 4. 推荐训练策略
+### 3. 监控训练过程
+```python
+# 关键指标监控
+- val/rec_loss: 重建损失（主要指标）
+- train/vf_loss: 视觉特征对齐损失
+- train/disc_loss: 判别器损失
+- train/kl_loss: KL散度损失
 
-#### 阶段1：预训练模型微调
-- 使用 `vavae-imagenet256-f16d32-dinov2-50ep.ckpt` 作为起点
-- 配置 `weight_init` 参数
-- 较小学习率 (1e-5)
+# 预期训练曲线：
+# - 前10轮：快速下降（适配时频图域）
+# - 10-50轮：缓慢优化（细节调整）
+# - 50轮后：收敛（用户特征学习）
+```
 
-#### 阶段2：领域适配
-- 逐步增加微多普勒数据比例
-- 调整损失权重
-- 监控重建质量
+#### 阶段2：扩散模型训练（VA-VAE微调完成后）
+```yaml
+# lightningdit_micro_doppler_config.yaml
+ckpt_path: /path/to/finetuned_vavae.ckpt  # 使用微调后的VA-VAE
+
+model:
+  model_type: LightningDiT-XL
+  in_chans: 32  # VA-VAE潜在空间维度
+
+vae:
+  ckpt_path: /path/to/finetuned_vavae.ckpt  # 关键：使用微调后的VA-VAE
+  downsample_ratio: 16
+
+data:
+  data_path: /path/to/micro_doppler_latents  # 预提取的潜在特征
+  image_size: 256
+  num_classes: 31  # 31个用户
+
+sample:
+  num_sampling_steps: 50
+  cfg_scale: 4.0  # 分类器自由引导
+```
+
+### 4. 完整训练流程
+
+#### 步骤1：VA-VAE微调（2-3天）
+```bash
+# 1. 准备数据集
+mkdir -p /data/micro_doppler/{train,val}
+# 组织为 user_00, user_01, ..., user_30 目录结构
+
+# 2. 启动VA-VAE微调
+cd LightningDiT/vavae
+bash run_train.sh configs/micro_doppler_vavae_config.yaml
+
+# 3. 验证微调效果
+python ../evaluate_tokenizer.py --config configs/micro_doppler_vavae_config.yaml
+```
+
+#### 步骤2：提取潜在特征（1天）
+```bash
+# 使用微调后的VA-VAE提取所有训练数据的潜在特征
+cd LightningDiT
+python extract_features.py --config configs/micro_doppler_vavae_config.yaml
+```
+
+#### 步骤3：扩散模型训练（1-2周）
+```bash
+# 训练LightningDiT扩散模型
+bash run_train.sh configs/lightningdit_micro_doppler_config.yaml
+```
 
 ## 🔍 关键技术点
 
@@ -151,12 +288,43 @@ bash LightningDiT/vavae/run_train.sh your_micro_doppler_config.yaml
 - **最小配置**：1x8 V100/A100 GPUs
 - **batch_size**：根据GPU内存调整
 
-## 📋 下一步行动计划
+## 📋 微多普勒时频图训练行动计划
 
-1. **准备微多普勒数据集**
-2. **选择合适的预训练模型** (推荐DINOv2变体)
-3. **修改配置文件** (通道数、数据加载器)
-4. **设置训练环境** (Taming-Transformers等)
-5. **开始微调训练**
+### **阶段1：VA-VAE微调（必需，2-3天）**
+1. **准备数据集**：
+   ```
+   /data/micro_doppler/
+   ├── train/
+   │   ├── user_00/ (用户0的时频图)
+   │   ├── user_01/
+   │   └── ... user_30/
+   └── val/
+       ├── user_00/
+       └── ...
+   ```
 
-这样就可以基于LightningDiT训练专门的微多普勒时频图扩散模型了！
+2. **配置VA-VAE微调**：
+   - 使用 `vavae-imagenet256-f16d32-dinov2.pt` (800轮版本)
+   - 学习率：1e-5 (微调)
+   - 批次大小：2 (小数据集)
+   - 训练轮数：100轮
+
+3. **启动训练**：
+   ```bash
+   cd LightningDiT/vavae
+   bash run_train.sh configs/micro_doppler_vavae_config.yaml
+   ```
+
+### **阶段2：扩散模型训练（1-2周）**
+1. **提取潜在特征**
+2. **训练LightningDiT**
+3. **条件生成测试**
+
+### **关键要点**
+- ✅ **不使用数据增强** (会破坏时频图特征)
+- ✅ **先微调VA-VAE** (领域适配)
+- ✅ **使用800轮预训练模型** (不是50轮实验版)
+- ✅ **保持彩色3通道** (256×256×3)
+- ✅ **用户条件生成** (31个用户ID)
+
+这样就可以训练出专门的微多普勒时频图数据增广模型了！
