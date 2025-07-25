@@ -49,6 +49,112 @@ cd VA-VAE
 pip install -r requirements.txt
 ```
 
+## 🎯 完整流水线 (推荐使用)
+
+### 一键运行
+```bash
+# 运行完整流水线 (特征提取 + 训练 + 生成)
+python complete_pipeline.py
+
+# 自定义训练轮数和输出目录
+python complete_pipeline.py --max_epochs 100 --output_dir ./my_samples
+
+# 只生成样本 (跳过训练，使用现有模型)
+python complete_pipeline.py --skip_extract --skip_train
+
+# 强制重新训练模型
+python complete_pipeline.py --force_retrain --max_epochs 100
+```
+
+### 流水线参数说明
+- `--max_epochs`: 训练轮数 (默认50)
+- `--checkpoint_dir`: 模型保存目录 (默认./checkpoints)
+- `--output_dir`: 生成样本输出目录 (默认./generated_samples)
+- `--skip_extract`: 跳过特征提取
+- `--skip_train`: 跳过模型训练
+- `--skip_generate`: 跳过样本生成
+- `--force_retrain`: 强制重新训练模型
+
+## 📋 分步执行 (高级用户)
+
+### 阶段1: 特征提取
+```bash
+python stage1_extract_features.py
+```
+
+### 阶段2: 模型训练
+```bash
+python stage2_train_dit.py \
+    --latent_dir ./data/processed \
+    --output_dir ./checkpoints \
+    --max_epochs 50 \
+    --batch_size 16
+```
+
+### 阶段3: 样本生成
+```bash
+python stage3_inference.py \
+    --dit_checkpoint ./checkpoints/best_model \
+    --vavae_config vavae_config.yaml \
+    --output_dir ./generated_samples \
+    --user_ids 1 2 3 4 5 \
+    --num_samples_per_user 4
+```
+
+## ⚠️ 常见问题和解决方案
+
+### 问题1: 生成的图像质量很差 (像噪声)
+**原因**: 模型没有正确加载训练好的权重，使用的是随机初始化的模型
+
+**解决方案**:
+1. 确保训练完成并保存了检查点:
+   ```bash
+   # 检查是否有训练好的模型
+   ls -la checkpoints/best_model/
+   ```
+
+2. 如果没有检查点，重新训练:
+   ```bash
+   python complete_pipeline.py --force_retrain --max_epochs 100
+   ```
+
+3. 如果有检查点但仍然质量差，增加训练轮数:
+   ```bash
+   python complete_pipeline.py --force_retrain --max_epochs 200
+   ```
+
+### 问题2: 训练过程中出现错误
+**常见错误和解决方案**:
+- `CUDA out of memory`: 减少batch_size
+- `模块导入错误`: 检查依赖安装
+- `数据加载错误`: 检查数据目录结构
+
+### 问题3: 特征提取失败
+**解决方案**:
+1. 检查VA-VAE模型是否正确下载:
+   ```bash
+   python verify_vavae_setup.py
+   ```
+
+2. 重新下载VA-VAE模型:
+   ```bash
+   python download_vavae_model.py
+   ```
+
+## 📊 性能优化建议
+
+### 训练优化
+- 使用更大的batch_size (如果GPU内存允许)
+- 增加训练轮数到100-200轮
+- 使用学习率调度器
+
+### 生成优化
+- 调整guidance_scale (2.0-8.0)
+- 增加采样步数 (250-1000)
+- 尝试不同的用户ID
+
+## 🔧 原始Kaggle方法 (已弃用)
+
 ### Step 1: 数据集划分
 ```bash
 # 针对Kaggle数据集结构 (ID_1, ID_2...ID_31)

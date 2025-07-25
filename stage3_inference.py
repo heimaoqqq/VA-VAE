@@ -71,8 +71,8 @@ class MicroDopplerGenerator:
         # 这里需要根据实际的检查点格式来调整
         # 参考原项目的模型加载方式
         
-        # 假设我们知道模型配置 (实际应该从检查点中读取)
-        self.dit_model = LightningDiT_models['LightningDiT-XL/1'](
+        # 使用与训练时一致的模型配置 (kaggle_training_wrapper.py中使用的是B模型)
+        self.dit_model = LightningDiT_models['LightningDiT-B/1'](
             input_size=16,
             num_classes=31,  # 假设31个用户
             in_channels=32,
@@ -83,14 +83,73 @@ class MicroDopplerGenerator:
             wo_shift=False
         )
         
-        # 加载权重 (需要根据实际保存格式调整)
-        if os.path.exists(checkpoint_path):
-            print(f"从 {checkpoint_path} 加载模型权重")
-            # 这里需要实际的加载逻辑
-            # checkpoint = torch.load(checkpoint_path, map_location='cpu')
-            # self.dit_model.load_state_dict(checkpoint['model'])
+        # 加载权重
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            if not self.is_distributed or self.accelerator.is_main_process:
+                print(f"📥 从 {checkpoint_path} 加载模型权重")
+
+            # 检查是否是Accelerate保存的检查点目录
+            # 优先检查safetensors格式
+            safetensors_path = os.path.join(checkpoint_path, "model.safetensors")
+            pytorch_model_path = os.path.join(checkpoint_path, "pytorch_model.bin")
+
+            if os.path.exists(safetensors_path):
+                # Accelerate保存的safetensors格式
+                if not self.is_distributed or self.accelerator.is_main_process:
+                    print(f"🔍 发现Accelerate检查点 (safetensors): {safetensors_path}")
+                try:
+                    from safetensors.torch import load_file
+                    checkpoint = load_file(safetensors_path)
+                    self.dit_model.load_state_dict(checkpoint)
+                    if not self.is_distributed or self.accelerator.is_main_process:
+                        print("✅ 成功加载Accelerate检查点 (safetensors)")
+                except Exception as e:
+                    if not self.is_distributed or self.accelerator.is_main_process:
+                        print(f"❌ 加载safetensors检查点失败: {e}")
+                        print("⚠️  使用随机初始化的模型")
+            elif os.path.exists(pytorch_model_path):
+                # Accelerate保存的pytorch_model.bin格式
+                if not self.is_distributed or self.accelerator.is_main_process:
+                    print(f"🔍 发现Accelerate检查点 (pytorch): {pytorch_model_path}")
+                try:
+                    checkpoint = torch.load(pytorch_model_path, map_location='cpu')
+                    self.dit_model.load_state_dict(checkpoint)
+                    if not self.is_distributed or self.accelerator.is_main_process:
+                        print("✅ 成功加载Accelerate检查点 (pytorch)")
+                except Exception as e:
+                    if not self.is_distributed or self.accelerator.is_main_process:
+                        print(f"❌ 加载pytorch检查点失败: {e}")
+                        print("⚠️  使用随机初始化的模型")
+            else:
+                # 尝试直接加载文件
+                try:
+                    if not self.is_distributed or self.accelerator.is_main_process:
+                        print(f"🔍 尝试直接加载: {checkpoint_path}")
+                    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+                    # 处理不同的检查点格式
+                    if 'model' in checkpoint:
+                        self.dit_model.load_state_dict(checkpoint['model'])
+                    elif 'state_dict' in checkpoint:
+                        self.dit_model.load_state_dict(checkpoint['state_dict'])
+                    elif 'ema' in checkpoint:
+                        self.dit_model.load_state_dict(checkpoint['ema'])
+                    else:
+                        self.dit_model.load_state_dict(checkpoint)
+
+                    if not self.is_distributed or self.accelerator.is_main_process:
+                        print("✅ 成功加载检查点")
+                except Exception as e:
+                    if not self.is_distributed or self.accelerator.is_main_process:
+                        print(f"❌ 加载检查点失败: {e}")
+                        print("⚠️  使用随机初始化的模型")
         else:
-            print("⚠️  检查点不存在，使用随机初始化的模型")
+            if not self.is_distributed or self.accelerator.is_main_process:
+                if checkpoint_path:
+                    print(f"⚠️  检查点不存在: {checkpoint_path}")
+                else:
+                    print("⚠️  未指定检查点路径")
+                print("⚠️  使用随机初始化的模型")
         
         self.dit_model.eval()
         self.dit_model.to(self.device)
@@ -245,7 +304,7 @@ class MicroDopplerGenerator:
 
 def main(accelerator=None):
     parser = argparse.ArgumentParser(description='微多普勒图像生成')
-    parser.add_argument('--dit_checkpoint', type=str, required=True, help='DiT模型检查点')
+    parser.add_argument('--dit_checkpoint', type=str, help='DiT模型检查点 (如果不存在将使用随机模型)')
     parser.add_argument('--vavae_config', type=str, required=True, help='VA-VAE配置文件')
     parser.add_argument('--output_dir', type=str, required=True, help='输出目录')
     parser.add_argument('--user_ids', type=int, nargs='+', default=[1, 2, 3, 4, 5], help='用户ID列表')
