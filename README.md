@@ -75,6 +75,23 @@ VA-VAE/
 
 基于LightningDiT官方预训练模型，实现ImageNet-256级别的高质量图像生成 (FID=1.35)。
 
+### 🔬 扩展资源
+
+**VA-VAE训练代码**：
+- 官方训练代码：https://github.com/hustvl/LightningDiT/tree/main/vavae
+- 可以训练自定义的VA-VAE模型
+
+**实验性模型变体**：
+- HuggingFace仓库：https://huggingface.co/hustvl/va-vae-imagenet256-experimental-variants
+- 包含多种配置的预训练模型：
+  - `vavae-imagenet256-f16d32-dinov2-50ep.ckpt` (1.57GB)
+  - `vavae-imagenet256-f16d32-mae-50ep.ckpt` (1.56GB)
+  - `vavae-imagenet256-f16d64-dinov2-50ep.ckpt` (1.57GB)
+  - `vavae-imagenet256-f16d64-mae-50ep.ckpt` (1.57GB)
+  - `ldm-imagenet256-f16d16-50ep.ckpt` (349MB)
+  - `ldm-imagenet256-f16d32-50ep.ckpt` (349MB)
+  - `ldm-imagenet256-f16d64-50ep.ckpt` (351MB)
+
 ## ⚠️ 常见问题
 
 ### 模型下载失败
