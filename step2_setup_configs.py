@@ -19,7 +19,7 @@ def create_inference_config():
     config = {
         'ckpt_path': str(Path("..") / models_dir / "lightningdit-xl-imagenet256-800ep.pt"),
         'data': {
-            'data_path': str(Path("..") / models_dir / "latents_stats.pt"),
+            'data_path': str(Path("..") / models_dir),  # 指向目录，不是文件
             'fid_reference_file': 'path/to/your/VIRTUAL_imagenet256_labeled.npz',
             'image_size': 256,
             'num_classes': 1000,

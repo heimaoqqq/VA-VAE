@@ -34,7 +34,7 @@ def fix_paths():
     old_data = config.get('data', {}).get('data_path', '')
     
     config['ckpt_path'] = '../official_models/lightningdit-xl-imagenet256-800ep.pt'
-    config['data']['data_path'] = '../official_models/latents_stats.pt'
+    config['data']['data_path'] = '../official_models'  # 指向目录，不是文件
     
     print(f"✅ ckpt_path: {old_ckpt} -> {config['ckpt_path']}")
     print(f"✅ data_path: {old_data} -> {config['data']['data_path']}")
