@@ -36,15 +36,22 @@ python step3_run_inference.py
 
 ### 依赖安装
 ```bash
-# 严格按照官方requirements.txt安装
+# 完整安装 (推理 + 训练)
 python install_dependencies.py
+
+# 或只安装推理依赖
+python install_dependencies.py --inference-only
 ```
 
 ## � 快速开始
 
 ### 1. 安装依赖
 ```bash
+# 推理 + 微多普勒训练 (推荐)
 python install_dependencies.py
+
+# 或只安装推理依赖
+python install_dependencies.py --inference-only
 ```
 
 ### 2. 下载模型

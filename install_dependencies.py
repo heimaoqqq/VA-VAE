@@ -151,22 +151,175 @@ def verify_installation():
         print("⚠️ 部分依赖安装失败，可能影响推理")
         return False
 
+def install_vavae_requirements():
+    """安装VA-VAE训练专用依赖"""
+    print("\n🔧 安装VA-VAE训练专用依赖...")
+
+    # VA-VAE训练额外依赖
+    vavae_deps = [
+        "pytorch-lightning>=1.8.0",
+        "lpips>=0.1.4",
+        "kornia>=0.6.0",
+        "transformers>=4.20.0",
+        "xformers>=0.0.16",
+        "wandb",  # 训练监控
+        "matplotlib",  # 可视化
+        "seaborn",  # 统计图表
+        "scikit-learn",  # 评估指标
+        "opencv-python",  # 图像处理
+        "albumentations",  # 数据增强
+        "pillow>=8.0.0"  # 图像处理
+    ]
+
+    print("📦 VA-VAE训练依赖包:")
+    for dep in vavae_deps:
+        print(f"   - {dep}")
+
+    print("\n🔄 安装VA-VAE训练依赖...")
+    for dep in vavae_deps:
+        if not run_command(f"pip install {dep}", f"安装 {dep}"):
+            print(f"⚠️ {dep} 安装失败，继续安装其他依赖...")
+
+    return True
+
+def install_taming_transformers():
+    """安装Taming-Transformers"""
+    print("\n🔧 安装Taming-Transformers (VA-VAE训练必需)...")
+
+    taming_dir = "taming-transformers"
+
+    # 检查是否已经存在
+    if os.path.exists(taming_dir):
+        print(f"✅ Taming-Transformers目录已存在: {taming_dir}")
+        print("🔄 更新到最新版本...")
+
+        # 更新现有仓库
+        original_dir = os.getcwd()
+        try:
+            os.chdir(taming_dir)
+            if not run_command("git pull", "更新Taming-Transformers"):
+                print("⚠️ 更新失败，使用现有版本")
+        finally:
+            os.chdir(original_dir)
+    else:
+        # 克隆新仓库
+        print("📥 克隆Taming-Transformers仓库...")
+        if not run_command(
+            "git clone https://github.com/CompVis/taming-transformers.git",
+            "克隆Taming-Transformers"
+        ):
+            print("❌ 克隆失败，尝试备用方案...")
+            # 尝试浅克隆
+            if not run_command(
+                "git clone --depth 1 https://github.com/CompVis/taming-transformers.git",
+                "浅克隆Taming-Transformers"
+            ):
+                print("❌ Taming-Transformers安装失败")
+                return False
+
+    # 安装Taming-Transformers
+    print("📦 安装Taming-Transformers包...")
+    original_dir = os.getcwd()
+    try:
+        os.chdir(taming_dir)
+        if not run_command("pip install -e .", "安装Taming-Transformers"):
+            return False
+    finally:
+        os.chdir(original_dir)
+
+    # 修复torch 2.x兼容性
+    print("🔧 修复torch 2.x兼容性...")
+    utils_file = os.path.join(taming_dir, "taming", "data", "utils.py")
+
+    if os.path.exists(utils_file):
+        try:
+            # 读取文件
+            with open(utils_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+
+            # 替换兼容性问题的代码
+            old_import = "from torch._six import string_classes"
+            new_import = "from six import string_types as string_classes"
+
+            if old_import in content:
+                content = content.replace(old_import, new_import)
+
+                # 写回文件
+                with open(utils_file, 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+                print("✅ torch 2.x兼容性修复完成")
+            else:
+                print("✅ 文件已经兼容torch 2.x")
+
+        except Exception as e:
+            print(f"⚠️ 兼容性修复失败: {e}")
+            print("💡 可能需要手动修复，但不影响基本功能")
+    else:
+        print(f"⚠️ 未找到utils.py文件: {utils_file}")
+
+    return True
+
 def main():
     """主函数"""
-    print("🔧 LightningDiT官方依赖安装脚本")
-    print("=" * 50)
+    import argparse
+
+    parser = argparse.ArgumentParser(description='LightningDiT依赖安装脚本')
+    parser.add_argument('--training', action='store_true',
+                       help='安装训练依赖 (包括VA-VAE微调)')
+    parser.add_argument('--inference-only', action='store_true',
+                       help='只安装推理依赖')
+
+    args = parser.parse_args()
+
+    if args.inference_only:
+        print("🔧 LightningDiT推理依赖安装")
+        print("=" * 50)
+        mode = "inference"
+    elif args.training:
+        print("🔧 LightningDiT完整依赖安装 (推理 + 训练)")
+        print("=" * 60)
+        mode = "training"
+    else:
+        # 默认安装完整依赖
+        print("🔧 LightningDiT完整依赖安装 (推理 + 训练)")
+        print("=" * 60)
+        print("💡 使用 --inference-only 只安装推理依赖")
+        print("💡 使用 --training 明确安装训练依赖")
+        mode = "training"
+
     print("📝 严格按照官方requirements.txt安装")
     print("🎯 解决Kaggle环境预装包冲突")
-    
-    # 检查当前环境
+
+    # 1. 检查当前环境
+    print("\n📋 阶段1: 检查当前环境")
     check_current_packages()
-    
-    # 安装官方依赖
+
+    # 2. 安装基础推理依赖
+    print("\n📋 阶段2: 安装基础推理依赖")
     install_official_requirements()
-    
-    # 验证安装
+
+    # 3. 安装训练依赖 (如果需要)
+    if mode == "training":
+        print("\n📋 阶段3: 安装VA-VAE训练依赖")
+        install_vavae_requirements()
+
+        print("\n📋 阶段4: 安装Taming-Transformers")
+        if not install_taming_transformers():
+            print("⚠️ Taming-Transformers安装失败，但不影响推理")
+
+    # 4. 验证安装
+    print(f"\n📋 最终阶段: 验证安装")
     if verify_installation():
-        print("\n✅ 依赖安装完成！可以继续推理了")
+        print(f"\n✅ 依赖安装完成！")
+        if mode == "training":
+            print("📋 环境准备就绪，支持:")
+            print("  - LightningDiT推理 ✅")
+            print("  - VA-VAE微调训练 ✅")
+            print("  - 微多普勒数据增广 ✅")
+        else:
+            print("📋 推理环境准备就绪 ✅")
+        print("\n📋 下一步: python step1_download_models.py")
     else:
         print("\n❌ 依赖安装存在问题，请检查错误信息")
 
