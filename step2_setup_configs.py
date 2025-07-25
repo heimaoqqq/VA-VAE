@@ -15,10 +15,11 @@ def create_inference_config():
     models_dir = Path("./official_models")
     
     # 基于官方configs/reproductions/lightningdit_xl_vavae_f16d32_800ep_cfg.yaml
+    # 注意：推理脚本在LightningDiT/目录下运行，所以路径需要相对于LightningDiT/
     config = {
-        'ckpt_path': str(models_dir / "lightningdit-xl-imagenet256-800ep.pt"),
+        'ckpt_path': str(Path("..") / models_dir / "lightningdit-xl-imagenet256-800ep.pt"),
         'data': {
-            'data_path': str(models_dir / "latents_stats.pt"),
+            'data_path': str(Path("..") / models_dir / "latents_stats.pt"),
             'fid_reference_file': 'path/to/your/VIRTUAL_imagenet256_labeled.npz',
             'image_size': 256,
             'num_classes': 1000,
@@ -99,8 +100,9 @@ def update_vavae_config():
         config = yaml.safe_load(f)
     
     # 更新检查点路径 (官方tutorial步骤)
+    # 注意：VA-VAE配置也需要相对于LightningDiT/目录的路径
     old_path = config.get('ckpt_path', 'N/A')
-    new_path = str(models_dir / "vavae-imagenet256-f16d32-dinov2.pt")
+    new_path = str(Path("..") / models_dir / "vavae-imagenet256-f16d32-dinov2.pt")
     config['ckpt_path'] = new_path
     
     # 保存更新后的配置
