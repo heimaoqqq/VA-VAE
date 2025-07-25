@@ -35,7 +35,7 @@ if lightningdit_path not in sys.path:
 try:
     from models.lightningdit import LightningDiT_models
     from transport import create_transport
-    from datasets.img_latent_dataset import ImgLatentDataset
+    print("✅ 相对导入成功")
 except ImportError as e:
     print(f"⚠️  相对导入失败: {e}")
     print("🔄 尝试绝对导入...")
@@ -57,14 +57,9 @@ except ImportError as e:
     spec.loader.exec_module(transport_module)
     create_transport = transport_module.create_transport
 
-    # 导入 ImgLatentDataset
-    dataset_path = os.path.join(lightningdit_path, 'datasets', 'img_latent_dataset.py')
-    spec = importlib.util.spec_from_file_location("img_latent_dataset", dataset_path)
-    dataset_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(dataset_module)
-    ImgLatentDataset = dataset_module.ImgLatentDataset
-
     print("✅ 绝对导入成功")
+
+# 注意：我们不需要导入ImgLatentDataset，因为我们有自己的MicroDopplerLatentDataset
 
 class MicroDopplerLatentDataset(torch.utils.data.Dataset):
     """微多普勒潜在特征数据集 (基于原项目ImgLatentDataset)"""
