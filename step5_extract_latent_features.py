@@ -126,10 +126,73 @@ def extract_features_from_dataset(model, dataset_dir, output_dir, split_name):
     print(f"  ✅ {split_name} 集完成: {total_samples} 个特征")
     return stats
 
-def create_latent_dataset_config(output_dir, train_stats, val_stats):
+def compute_latent_statistics(output_dir, train_stats, val_stats):
+    """计算微多普勒潜在特征的统计信息"""
+    print("\n📊 计算微多普勒潜在特征统计信息...")
+
+    # 收集所有训练集潜在特征
+    train_dir = Path(output_dir) / "train"
+    all_latents = []
+
+    print("  收集训练集潜在特征...")
+    for user_id in range(1, 32):
+        user_dir = train_dir / f"user{user_id}"
+        if user_dir.exists():
+            latent_files = list(user_dir.glob("*.pt"))
+            for latent_file in latent_files:
+                try:
+                    data = torch.load(latent_file, map_location='cpu')
+                    all_latents.append(data['latent'])
+                except Exception as e:
+                    print(f"    ⚠️ 跳过损坏文件 {latent_file}: {e}")
+
+    if not all_latents:
+        print("❌ 未找到有效的潜在特征文件")
+        return None
+
+    # 堆叠所有潜在特征
+    print(f"  处理 {len(all_latents)} 个潜在特征...")
+    all_latents = torch.stack(all_latents)  # [N, C, H, W]
+
+    print(f"  潜在特征张量形状: {all_latents.shape}")
+
+    # 计算统计信息
+    print("  计算统计信息...")
+    stats = {
+        'mean': all_latents.mean(dim=[0, 2, 3]),  # [C] - 每个通道的均值
+        'std': all_latents.std(dim=[0, 2, 3]),    # [C] - 每个通道的标准差
+        'min': all_latents.min().item(),          # 全局最小值
+        'max': all_latents.max().item(),          # 全局最大值
+        'shape': list(all_latents.shape),         # 完整形状信息
+        'num_samples': len(all_latents)           # 样本数量
+    }
+
+    # 保存统计信息
+    stats_file = Path(output_dir) / "micro_doppler_latents_stats.pt"
+    torch.save(stats, stats_file)
+
+    print(f"✅ 统计信息已保存: {stats_file}")
+    print(f"  均值范围: [{stats['mean'].min():.3f}, {stats['mean'].max():.3f}]")
+    print(f"  标准差范围: [{stats['std'].min():.3f}, {stats['std'].max():.3f}]")
+    print(f"  全局范围: [{stats['min']:.3f}, {stats['max']:.3f}]")
+    print(f"  样本数量: {stats['num_samples']}")
+
+    return stats
+
+def create_latent_dataset_config(output_dir, train_stats, val_stats, latent_stats=None):
     """创建潜在特征数据集配置"""
     print("\n📝 创建潜在特征数据集配置...")
-    
+
+    # 添加统计信息到配置
+    stats_info = ""
+    if latent_stats:
+        stats_info = f"""
+  # 微多普勒潜在特征统计
+  latent_stats_file: "{output_dir}/micro_doppler_latents_stats.pt"
+  latent_mean_range: [{latent_stats['mean'].min():.3f}, {latent_stats['mean'].max():.3f}]
+  latent_std_range: [{latent_stats['std'].min():.3f}, {latent_stats['std'].max():.3f}]
+  latent_global_range: [{latent_stats['min']:.3f}, {latent_stats['max']:.3f}]"""
+
     config_content = f"""# 微多普勒潜在特征数据集配置
 # 用于LightningDiT扩散模型训练
 
@@ -137,15 +200,15 @@ dataset:
   name: "micro_doppler_latents"
   num_users: 31
   latent_shape: {train_stats['latent_shape']}
-  
+
   # 数据路径
   train_dir: "{output_dir}/train"
   val_dir: "{output_dir}/val"
-  
+
   # 数据统计
   train_samples: {train_stats['total_samples']}
-  val_samples: {val_stats['total_samples']}
-  
+  val_samples: {val_stats['total_samples']}{stats_info}
+
   # 用户分布
   train_user_counts: {train_stats['user_counts']}
   val_user_counts: {val_stats['user_counts']}
@@ -155,21 +218,21 @@ lightningdit:
   model_type: "LightningDiT-XL"
   in_chans: {train_stats['latent_shape'][0] if train_stats['latent_shape'] else 32}
   num_classes: 31  # 31个用户
-  
+
   # 训练参数
   batch_size: 2  # T4×2 GPU
   learning_rate: 1.0e-04
   max_epochs: 800
-  
+
   # 采样参数
   num_sampling_steps: 50
   cfg_scale: 4.0
 """
-    
+
     config_file = Path(output_dir) / "latent_dataset_config.yaml"
     with open(config_file, 'w', encoding='utf-8') as f:
         f.write(config_content)
-    
+
     print(f"✅ 潜在特征配置已保存: {config_file}")
 
 def main():
@@ -222,13 +285,20 @@ def main():
         model, args.dataset_dir, args.output_dir, 'val'
     )
     
-    # 6. 创建配置文件
-    create_latent_dataset_config(args.output_dir, train_stats, val_stats)
-    
-    print("\n✅ 步骤5完成！潜在特征提取完成")
+    # 6. 计算微多普勒潜在特征统计信息
+    latent_stats = compute_latent_statistics(args.output_dir, train_stats, val_stats)
+
+    # 7. 创建配置文件
+    create_latent_dataset_config(args.output_dir, train_stats, val_stats, latent_stats)
+
+    print("\n✅ 步骤5完成！潜在特征提取和统计计算完成")
     print(f"📁 特征位置: {args.output_dir}")
     print(f"📊 训练集: {train_stats['total_samples']} 个特征")
     print(f"📊 验证集: {val_stats['total_samples']} 个特征")
+    if latent_stats:
+        print(f"📈 统计信息: micro_doppler_latents_stats.pt")
+        print(f"   样本数量: {latent_stats['num_samples']}")
+        print(f"   特征范围: [{latent_stats['min']:.3f}, {latent_stats['max']:.3f}]")
     print("📋 下一步: python step6_train_diffusion_model.py")
     
     return True
