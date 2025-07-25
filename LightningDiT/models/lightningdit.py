@@ -27,7 +27,11 @@ except ImportError:
     # 如果fairscale不可用，使用简化版本
     import sys
     import os
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+    # 添加项目根目录到路径
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(os.path.dirname(current_dir))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
     from simple_rmsnorm import RMSNorm
 
 @torch.compile

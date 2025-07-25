@@ -36,22 +36,48 @@ def test_imports():
     print("🧪 测试导入...")
 
     try:
+        # 测试RMSNorm
+        try:
+            from simple_rmsnorm import RMSNorm
+            print("✅ simple_rmsnorm导入成功")
+        except ImportError as e:
+            print(f"⚠️  simple_rmsnorm导入失败: {e}")
+
+        # 测试LightningDiT模型
         from models import LightningDiT_models
         print("✅ LightningDiT_models导入成功")
 
+        # 测试Transport
         from transport import create_transport
         print("✅ Transport导入成功")
 
+        # 测试VA-VAE
         from tokenizer.vavae import VA_VAE
         print("✅ VA_VAE导入成功")
 
+        # 测试Safetensors
         from safetensors.torch import load_file
         print("✅ Safetensors导入成功")
+
+        # 测试模型创建
+        model = LightningDiT_models['LightningDiT-B/1'](
+            input_size=16,
+            num_classes=31,
+            in_channels=32,
+            use_qknorm=False,
+            use_swiglu=True,
+            use_rope=True,
+            use_rmsnorm=True,
+            wo_shift=False
+        )
+        print("✅ 模型创建成功")
 
         return True
 
     except Exception as e:
         print(f"❌ 导入测试失败: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 class MicroDopplerGenerator:
