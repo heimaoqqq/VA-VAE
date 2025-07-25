@@ -122,13 +122,13 @@ def kaggle_stage2_train_dit():
             os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
             print(f"🔧 GPU内存管理已设置")
 
-        # 设置命令行参数 - 使用更小的batch_size和更小的模型
+        # 设置命令行参数 - 显存充足，使用更好的配置
         sys.argv = [
             'stage2_train_dit.py',
             '--latent_dir', '/kaggle/working/latent_features',
             '--output_dir', '/kaggle/working/trained_models',
-            '--model_name', 'LightningDiT-B/1',  # 使用最小的B模型
-            '--batch_size', '4',  # 进一步减少到4
+            '--model_name', 'LightningDiT-XL/1',  # 恢复使用XL模型
+            '--batch_size', '16',  # 增加batch_size提高训练效率
             '--max_epochs', '50',
             '--lr', '1e-4',
             '--seed', '42',
