@@ -36,55 +36,129 @@ def download_file(url, local_path):
         return False
 
 def main():
-    """步骤1: 下载官方预训练模型"""
-    
-    print("📥 步骤1: 下载官方预训练模型")
-    print("=" * 50)
-    
+    """步骤1: 下载预训练模型"""
+    import argparse
+
+    parser = argparse.ArgumentParser(description='下载LightningDiT预训练模型')
+    parser.add_argument('--inference-only', action='store_true',
+                       help='只下载推理所需模型 (全部3个)')
+    parser.add_argument('--training-only', action='store_true',
+                       help='只下载微多普勒训练所需模型 (VA-VAE + 统计)')
+    parser.add_argument('--minimal', action='store_true',
+                       help='最小下载 (只下载VA-VAE，约800MB)')
+
+    args = parser.parse_args()
+
+    if args.training_only:
+        print("📥 步骤1: 下载微多普勒训练所需模型")
+        print("=" * 60)
+        mode = "training"
+    elif args.minimal:
+        print("📥 步骤1: 最小下载 (仅VA-VAE)")
+        print("=" * 50)
+        mode = "minimal"
+    else:
+        print("📥 步骤1: 下载完整预训练模型")
+        print("=" * 60)
+        print("💡 使用 --training-only 只下载训练所需模型")
+        print("💡 使用 --minimal 只下载VA-VAE (约800MB)")
+        mode = "full"
+
     # 创建模型目录
     models_dir = Path("./official_models")
     models_dir.mkdir(exist_ok=True)
-    
-    # 官方README中的下载链接
-    models = [
+
+    # 定义所有可用模型
+    all_models = [
         {
             "name": "VA-VAE Tokenizer",
             "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/vavae-imagenet256-f16d32-dinov2.pt",
-            "filename": "vavae-imagenet256-f16d32-dinov2.pt"
-        },
-        {
-            "name": "LightningDiT-XL-800ep",
-            "url": "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-800ep/resolve/main/lightningdit-xl-imagenet256-800ep.pt",
-            "filename": "lightningdit-xl-imagenet256-800ep.pt"
+            "filename": "vavae-imagenet256-f16d32-dinov2.pt",
+            "size": "~800MB",
+            "required_for": ["inference", "training", "minimal"],
+            "description": "VA-VAE编码器/解码器，微多普勒训练的基础模型"
         },
         {
             "name": "Latent Statistics",
             "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/latents_stats.pt",
-            "filename": "latents_stats.pt"
+            "filename": "latents_stats.pt",
+            "size": "~1KB",
+            "required_for": ["inference", "training"],
+            "description": "潜在空间统计信息，用于特征归一化"
+        },
+        {
+            "name": "LightningDiT-XL-800ep",
+            "url": "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-800ep/resolve/main/lightningdit-xl-imagenet256-800ep.pt",
+            "filename": "lightningdit-xl-imagenet256-800ep.pt",
+            "size": "~6GB",
+            "required_for": ["inference"],
+            "description": "预训练扩散模型，用于推理演示"
         }
     ]
+
+    # 根据模式选择要下载的模型
+    if mode == "training":
+        models = [m for m in all_models if "training" in m["required_for"]]
+    elif mode == "minimal":
+        models = [m for m in all_models if "minimal" in m["required_for"]]
+    else:  # full
+        models = all_models
+
+    # 显示下载计划
+    print(f"\n📋 下载计划 ({mode} 模式):")
+    total_size_info = []
+    for model in models:
+        print(f"  ✅ {model['name']} ({model['size']})")
+        print(f"     {model['description']}")
+        if model['size'].replace('~', '').replace('MB', '').replace('GB', '').replace('KB', '').isdigit():
+            if 'GB' in model['size']:
+                total_size_info.append(float(model['size'].replace('~', '').replace('GB', '')) * 1000)
+            elif 'MB' in model['size']:
+                total_size_info.append(float(model['size'].replace('~', '').replace('MB', '')))
+
+    if total_size_info:
+        total_mb = sum(total_size_info)
+        if total_mb > 1000:
+            print(f"\n📊 预计总大小: ~{total_mb/1000:.1f}GB")
+        else:
+            print(f"\n📊 预计总大小: ~{total_mb:.0f}MB")
     
     success_count = 0
-    
+
     for model in models:
         filepath = models_dir / model["filename"]
-        
+
         if filepath.exists():
             print(f"✅ {model['name']}: 已存在 ({filepath.stat().st_size / (1024*1024):.1f} MB)")
             success_count += 1
         else:
-            print(f"\n📥 下载 {model['name']}...")
+            print(f"\n📥 下载 {model['name']} ({model['size']})...")
             if download_file(model["url"], str(filepath)):
                 success_count += 1
-    
+
     print(f"\n📊 下载结果: {success_count}/{len(models)} 个文件成功")
-    
+
     if success_count == len(models):
-        print("✅ 步骤1完成！所有模型文件已下载")
+        print("✅ 步骤1完成！模型文件已下载")
         print(f"📁 模型位置: {models_dir.absolute()}")
-        print("\n🎯 下一步: 运行 python step2_setup_configs.py")
+
+        # 根据模式给出不同的下一步建议
+        if mode == "training":
+            print("\n🎯 微多普勒训练准备就绪！")
+            print("📋 下一步: python step3_prepare_micro_doppler_dataset.py")
+        elif mode == "minimal":
+            print("\n🎯 VA-VAE模型已下载！")
+            print("💡 如需完整功能，请运行: python step1_download_models.py")
+            print("📋 下一步: python step3_prepare_micro_doppler_dataset.py")
+        else:
+            print("\n🎯 完整模型已下载！")
+            print("📋 推理测试: python step2_setup_configs.py")
+            print("📋 微多普勒训练: python step3_prepare_micro_doppler_dataset.py")
     else:
         print("❌ 部分文件下载失败，请检查网络连接")
+        print("💡 可以尝试:")
+        print("   - 使用 --minimal 只下载VA-VAE (约800MB)")
+        print("   - 使用 --training-only 只下载训练所需模型")
 
 if __name__ == "__main__":
     main()

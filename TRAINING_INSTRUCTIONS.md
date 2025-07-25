@@ -27,8 +27,20 @@ python install_dependencies.py --inference-only
 
 #### **Step 2.5: 下载预训练模型**
 ```bash
+# 微多普勒训练专用 (推荐，约800MB)
+python step1_download_models.py --training-only
+
+# 或最小下载 (仅VA-VAE，约800MB)
+python step1_download_models.py --minimal
+
+# 或完整下载 (包含6GB推理模型)
 python step1_download_models.py
 ```
+
+**模型说明：**
+- ✅ **VA-VAE模型** (~800MB) - 微调训练的基础，必需
+- ✅ **潜在统计** (~1KB) - 特征归一化，有用
+- ❓ **扩散模型** (~6GB) - 推理演示用，训练时会创建新的
 
 ---
 
