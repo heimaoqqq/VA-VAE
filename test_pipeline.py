@@ -23,7 +23,7 @@ def test_imports():
         print("✅ 基础库导入成功")
         
         # 测试自定义模块导入
-        sys.path.append('LightningDiT')
+        sys.path.insert(0, 'LightningDiT')
         from models import LightningDiT_models
         print("✅ LightningDiT模型导入成功")
         
@@ -64,7 +64,7 @@ def test_model_creation():
     print("\n🔍 测试模型创建...")
     
     try:
-        sys.path.append('LightningDiT')
+        sys.path.insert(0, 'LightningDiT')
         from models import LightningDiT_models
         
         # 创建DiT模型

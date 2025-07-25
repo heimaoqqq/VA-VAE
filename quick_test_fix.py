@@ -20,7 +20,7 @@ def test_safetensors_loading():
     
     try:
         # 添加路径
-        sys.path.append('LightningDiT')
+        sys.path.insert(0, 'LightningDiT')
         from models import LightningDiT_models
         from safetensors.torch import load_file
         
