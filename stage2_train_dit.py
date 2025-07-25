@@ -29,11 +29,42 @@ import os
 current_dir = os.path.dirname(os.path.abspath(__file__))
 lightningdit_path = os.path.join(current_dir, 'LightningDiT')
 if lightningdit_path not in sys.path:
-    sys.path.append(lightningdit_path)
+    sys.path.insert(0, lightningdit_path)
 
-from models.lightningdit import LightningDiT_models
-from transport import create_transport
-from datasets.img_latent_dataset import ImgLatentDataset
+# 尝试导入，如果失败则使用绝对导入
+try:
+    from models.lightningdit import LightningDiT_models
+    from transport import create_transport
+    from datasets.img_latent_dataset import ImgLatentDataset
+except ImportError as e:
+    print(f"⚠️  相对导入失败: {e}")
+    print("🔄 尝试绝对导入...")
+
+    # 直接导入模块文件
+    import importlib.util
+
+    # 导入 LightningDiT_models
+    models_path = os.path.join(lightningdit_path, 'models', 'lightningdit.py')
+    spec = importlib.util.spec_from_file_location("lightningdit", models_path)
+    lightningdit_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(lightningdit_module)
+    LightningDiT_models = lightningdit_module.LightningDiT_models
+
+    # 导入 create_transport
+    transport_path = os.path.join(lightningdit_path, 'transport', '__init__.py')
+    spec = importlib.util.spec_from_file_location("transport", transport_path)
+    transport_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(transport_module)
+    create_transport = transport_module.create_transport
+
+    # 导入 ImgLatentDataset
+    dataset_path = os.path.join(lightningdit_path, 'datasets', 'img_latent_dataset.py')
+    spec = importlib.util.spec_from_file_location("img_latent_dataset", dataset_path)
+    dataset_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dataset_module)
+    ImgLatentDataset = dataset_module.ImgLatentDataset
+
+    print("✅ 绝对导入成功")
 
 class MicroDopplerLatentDataset(torch.utils.data.Dataset):
     """微多普勒潜在特征数据集 (基于原项目ImgLatentDataset)"""
