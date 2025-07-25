@@ -77,8 +77,27 @@ class VA_VAE:
             np.ndarray: Decoded image array
         """
         with torch.no_grad():
+            # 解码到[-1, 1]范围
             images = self.model.decode(z.cuda())
-            images = torch.clamp(127.5 * images + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
+
+            # 调试信息
+            print(f"🔍 VA-VAE解码调试:")
+            print(f"  解码前潜在特征范围: [{z.min():.3f}, {z.max():.3f}]")
+            print(f"  解码后图像范围: [{images.min():.3f}, {images.max():.3f}]")
+
+            # 确保在[-1, 1]范围内
+            images = torch.clamp(images, -1.0, 1.0)
+
+            # 转换到[0, 255]范围
+            images = (images + 1.0) * 127.5
+            images = torch.clamp(images, 0, 255)
+
+            # 转换为numpy数组 (B, H, W, C)
+            images = images.permute(0, 2, 3, 1).to("cpu", dtype=torch.uint8).numpy()
+
+            print(f"  最终图像范围: [{images.min()}, {images.max()}]")
+            print(f"  最终图像形状: {images.shape}")
+
         return images
 
 def center_crop_arr(pil_image, image_size):

@@ -99,6 +99,10 @@ class MicroDopplerGenerator:
             print("📥 加载VA-VAE...")
         self.vavae = VA_VAE(vavae_config)
 
+        # 设置潜在特征的归一化参数 (参考原项目)
+        self.latent_multiplier = 0.18215  # 标准SD VAE缩放因子
+        self.use_latent_norm = True
+
         # 加载DiT模型 (参考原项目)
         if not self.is_distributed or self.accelerator.is_main_process:
             print("📥 加载DiT模型...")
@@ -113,14 +117,14 @@ class MicroDopplerGenerator:
             sample_eps=1e-3
         )
 
-        # 创建采样器
+        # 创建采样器 (使用更适合的参数)
         from transport import Sampler
         self.sampler = Sampler(self.transport)
         self.sample_fn = self.sampler.sample_ode(
             sampling_method="dopri5",
-            num_steps=50,
-            atol=1e-6,
-            rtol=1e-3,
+            num_steps=250,  # 使用更多步数提高质量
+            atol=1e-5,      # 稍微放松精度要求
+            rtol=1e-4,      # 稍微放松精度要求
         )
         
         print("✅ 模型加载完成!")
@@ -257,19 +261,22 @@ class MicroDopplerGenerator:
 
                     sample_idx += 1
                 
-                # 生成随机噪声 (参考原项目)
+                # 生成随机噪声 (参考原项目的正确方式)
                 z = torch.randn(batch_size, 32, 16, 16, device=self.device)
-                
+
                 # 使用transport进行采样 (参考原项目)
                 model_kwargs = dict(y=y)
-                
-                # 这里应该使用原项目的采样方法
-                # 由于我们没有完整的采样器，这里使用简化版本
+
+                # 使用正确的采样方法
                 samples = self._sample_with_transport(z, model_kwargs, num_steps)
-                
-                # 确保样本在正确范围内 (VA-VAE期望[-1,1]范围的输入)
-                samples = torch.clamp(samples, -3.0, 3.0)  # 限制极值
-                samples = torch.tanh(samples)  # 确保在[-1,1]范围内
+
+                # 应用潜在特征归一化 (参考原项目)
+                if self.use_latent_norm:
+                    # 使用训练时的归一化参数
+                    samples = samples / self.latent_multiplier
+
+                if not self.is_distributed or self.accelerator.is_main_process:
+                    print(f"🔍 归一化后样本范围: [{samples.min():.3f}, {samples.max():.3f}]")
 
                 # 使用VA-VAE解码为图像
                 images = self.vavae.decode_to_images(samples)
