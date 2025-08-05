@@ -94,12 +94,12 @@
 
 ### VA-VAE微调训练
 ```bash
-!python run_vavae_finetune.py
+!python finetune_vavae.py
 ```
 **功能**: 在微多普勒数据上微调VA-VAE，提升重建质量
-**时间**: 2-5小时 (分两阶段: 解码器微调 + 全模型微调)
-**输出**: vavae_finetuned/ 目录包含微调后的模型
-**策略**: 先冻结编码器只训练解码器，再解冻全模型微调
+**时间**: 3-8小时 (100 epochs + 早停, 实际可能更短)
+**输出**: vavae_finetuned/ 目录包含微调后的模型和训练日志
+**策略**: 同时训练编码器和解码器 (基于研究证据的最佳实践)
 
 ### 微调效果评估
 ```bash
@@ -130,8 +130,7 @@ VA-VAE/
 ├── step3_setup_configs.py                 # 配置设置脚本
 ├── step4_inference.py                     # 智能推理脚本 (最终版)
 ├── evaluate_vae_quality.py                # VA-VAE质量评估脚本 (MSE+FID+微调预测)
-├── finetune_vavae.py                      # VA-VAE微调核心脚本
-├── run_vavae_finetune.py                  # 一键运行VA-VAE微调
+├── finetune_vavae.py                      # VA-VAE微调完整脚本 (一键运行)
 ├── evaluate_finetuned_vae.py              # 微调效果评估脚本
 └── README.md                              # 本文档
 ```
