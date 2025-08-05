@@ -119,28 +119,43 @@ class VAEReconstructionTester:
     def load_vae_model(self):
         """加载预训练的VA-VAE模型"""
         try:
-            vae = VA_VAE(
-                model_name='vavae_f16d32',
-                ckpt_path=self.vae_model_path
-            ).to(self.device)
-            vae.eval()
-            
+            # 首先更新配置文件中的模型路径
+            config_path = "LightningDiT/tokenizer/configs/vavae_f16d32.yaml"
+
+            # 读取配置
+            import yaml
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+
+            # 更新模型路径
+            config['ckpt_path'] = self.vae_model_path
+
+            # 保存临时配置
+            temp_config_path = "temp_vavae_config.yaml"
+            with open(temp_config_path, 'w') as f:
+                yaml.dump(config, f)
+
+            # 使用正确的初始化方式
+            vae = VA_VAE(config=temp_config_path)
+
             print(f"✅ VA-VAE模型加载成功")
-            print(f"📊 模型参数量: {sum(p.numel() for p in vae.parameters()) / 1e6:.1f}M")
+            print(f"📊 模型参数量: {sum(p.numel() for p in vae.model.parameters()) / 1e6:.1f}M")
             return vae
-            
+
         except Exception as e:
             print(f"❌ VA-VAE模型加载失败: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def test_single_image(self, image_tensor, image_path, user_id=None):
         """测试单张图像的重建"""
         with torch.no_grad():
             # 编码到潜在空间
-            latent = self.vae.encode(image_tensor.unsqueeze(0).to(self.device))
+            latent = self.vae.encode_images(image_tensor.unsqueeze(0))
 
             # 从潜在空间解码
-            reconstructed = self.vae.decode(latent)
+            reconstructed = self.vae.model.decode(latent)
 
             # 计算重建误差
             mse_loss = F.mse_loss(image_tensor.to(self.device), reconstructed.squeeze(0)).item()
