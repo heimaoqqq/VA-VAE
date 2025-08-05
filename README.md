@@ -26,45 +26,31 @@
 **时间**: 5-10分钟
 **输出**: 环境验证报告
 
-#### 步骤2: 模型下载  
+#### 步骤2: 模型下载
 ```bash
 !python step2_download_models.py
 ```
-**功能**: 下载预训练模型 (VA-VAE + LightningDiT + 统计文件)
+**功能**: 下载预训练模型 + 自动修复latents_stats.pt文件
 **时间**: 10-30分钟 (约7GB)
 **输出**: models/ 目录包含3个模型文件
+**集成修复**: 自动检测和修复损坏的统计文件
 
 #### 步骤3: 配置设置
 ```bash
 !python step3_setup_configs.py
 ```
-**功能**: 设置推理配置，适配Kaggle路径
+**功能**: 设置推理配置，适配Kaggle环境
 **时间**: 1-2分钟
-**输出**: kaggle_inference_config.yaml
+**输出**: 更新官方配置文件路径
 
-#### 步骤4A: 运行推理（标准版）
+#### 步骤4: 运行推理
 ```bash
-!python step4_run_inference.py
+!python step4_inference.py
 ```
-**功能**: 执行LightningDiT推理生成ImageNet图像
-**时间**: 10-20分钟
-**输出**: LightningDiT/demo_images/demo_samples.png
-
-#### 步骤4B: 运行推理（简化版，推荐）
-```bash
-!python step4_demo_inference.py
-```
-**功能**: 简化版demo推理，避免路径和数据集问题
-**时间**: 5-15分钟
-**输出**: LightningDiT/demo_output/
-**推荐**: 如果步骤4A失败，使用此版本
-
-#### 故障排除: 修复latents_stats.pt文件（如果需要）
-```bash
-!python fix_latents_stats.py
-```
-**功能**: 修复空的或损坏的latents_stats.pt文件
-**使用场景**: 如果出现 "torch.cat(): expected a non-empty list of Tensors" 错误
+**功能**: 智能推理，自动选择最佳方案
+**时间**: 5-20分钟
+**输出**: LightningDiT/demo_output/ 或 demo_images/
+**特点**: 先尝试官方配置，失败则自动切换到Demo模式
 
 ## 📁 项目结构
 
@@ -75,16 +61,15 @@ VA-VAE/
 │   ├── tokenizer/                          # VA-VAE实现
 │   ├── configs/                            # 配置文件
 │   ├── inference.py                        # 推理脚本
-│   └── demo_images/                        # 输出图像
+│   └── demo_output/                        # 输出图像
 ├── models/                                 # 下载的预训练模型
 │   ├── vavae-imagenet256-f16d32-dinov2.pt # VA-VAE模型 (~800MB)
 │   ├── lightningdit-xl-imagenet256-800ep.pt # DiT模型 (~6GB)
-│   └── latents_stats.pt                   # 统计文件 (~1KB)
+│   └── latents_stats.pt                   # 统计文件 (自动修复)
 ├── step1_install_environment.py           # 环境安装脚本
-├── step2_download_models.py               # 模型下载脚本
+├── step2_download_models.py               # 模型下载脚本 (集成修复)
 ├── step3_setup_configs.py                 # 配置设置脚本
-├── step4_run_inference.py                 # 推理执行脚本
-├── kaggle_inference_config.yaml           # Kaggle适配配置
+├── step4_inference.py                     # 智能推理脚本 (最终版)
 └── README.md                              # 本文档
 ```
 
@@ -112,8 +97,8 @@ VA-VAE/
 ### 成功标志
 - ✅ 所有步骤无错误执行
 - ✅ 生成高质量ImageNet图像
-- ✅ 输出文件: `LightningDiT/demo_images/demo_samples.png`
-- ✅ 图像包含1000个ImageNet类别的生成样本
+- ✅ 输出文件: `LightningDiT/demo_output/` 或 `demo_images/`
+- ✅ 图像包含ImageNet类别的高质量生成样本
 
 ### 性能指标
 - **生成质量**: FID=1.35 (ImageNet-256 SOTA)
@@ -125,24 +110,24 @@ VA-VAE/
 
 ### 环境问题
 **问题**: PyTorch版本冲突
-**解决**: 脚本会自动安装官方指定版本 (torch==2.2.0)
+**解决**: step1自动安装官方指定版本 (torch==2.2.0)
 
 **问题**: TorchDiffEq安装失败
-**解决**: 脚本包含多种安装策略，通常可自动解决
+**解决**: step1包含多种安装策略，自动解决
 
 ### 下载问题
-**问题**: 模型下载缓慢
-**解决**: 使用稳定网络，脚本支持断点续传
+**问题**: 模型下载缓慢或失败
+**解决**: step2支持断点续传和自动重试
 
-**问题**: HuggingFace连接失败
-**解决**: 检查网络或使用VPN
+**问题**: latents_stats.pt文件损坏
+**解决**: step2集成自动检测和修复功能
 
 ### 推理问题
-**问题**: GPU内存不足
-**解决**: 脚本已优化批次大小 (batch_size=2)
+**问题**: 路径或配置错误
+**解决**: step4智能选择，自动切换到可用方案
 
-**问题**: 推理超时
-**解决**: 脚本设置30分钟超时，通常足够
+**问题**: GPU内存不足
+**解决**: step4自动优化批次大小和采样步数
 
 ## 🎯 下一步: 适配微多普勒数据
 

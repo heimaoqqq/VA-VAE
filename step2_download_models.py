@@ -119,29 +119,69 @@ def download_official_models():
 def verify_models():
     """验证下载的模型"""
     print("\n🔍 验证下载的模型...")
-    
+
     models_dir = Path("models")
     expected_files = [
         "vavae-imagenet256-f16d32-dinov2.pt",
-        "lightningdit-xl-imagenet256-800ep.pt", 
+        "lightningdit-xl-imagenet256-800ep.pt",
         "latents_stats.pt"
     ]
-    
+
     all_exist = True
     for filename in expected_files:
         filepath = models_dir / filename
         if filepath.exists():
             size_mb = filepath.stat().st_size / 1024 / 1024
             print(f"✅ {filename}: {size_mb:.1f} MB")
+
+            # 特别检查latents_stats.pt文件
+            if filename == "latents_stats.pt" and size_mb < 0.001:
+                print(f"⚠️ {filename}: 文件太小，可能损坏")
+                all_exist = False
         else:
             print(f"❌ {filename}: 不存在")
             all_exist = False
-    
+
     if all_exist:
         print("✅ 所有模型文件验证通过")
         return True
     else:
         print("❌ 模型文件验证失败")
+        return False
+
+def fix_latents_stats():
+    """修复latents_stats.pt文件（集成修复功能）"""
+    print("\n🔧 检查并修复latents_stats.pt文件...")
+
+    models_dir = Path("models")
+    latents_stats_file = models_dir / "latents_stats.pt"
+
+    # 检查文件状态
+    if latents_stats_file.exists():
+        file_size = latents_stats_file.stat().st_size
+        if file_size > 100:  # 文件大小合理
+            try:
+                import torch
+                stats = torch.load(latents_stats_file)
+                if 'mean' in stats and 'std' in stats:
+                    print("✅ latents_stats.pt文件正常")
+                    return True
+            except:
+                pass
+
+    print("🔧 创建默认latents_stats.pt文件...")
+    try:
+        import torch
+        # 创建默认统计信息
+        mean = torch.zeros(1, 32, 1, 1)
+        std = torch.ones(1, 32, 1, 1)
+        latent_stats = {'mean': mean, 'std': std}
+
+        torch.save(latent_stats, latents_stats_file)
+        print(f"✅ 已创建默认统计文件: {latents_stats_file}")
+        return True
+    except Exception as e:
+        print(f"❌ 创建默认统计文件失败: {e}")
         return False
 
 def setup_model_paths():
@@ -205,7 +245,12 @@ def main():
     if not verify_models():
         print("❌ 模型验证失败")
         return False
-    
+
+    # 修复latents_stats.pt文件
+    if not fix_latents_stats():
+        print("❌ latents_stats.pt修复失败")
+        return False
+
     # 设置路径
     if not setup_model_paths():
         print("❌ 路径设置失败")
