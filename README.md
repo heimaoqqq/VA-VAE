@@ -88,6 +88,28 @@
 **输出**: 详细评估报告和对比图像
 **评估**: 基于MSE、FID等多指标决定下一步方案
 
+---
+
+## 🎯 **阶段1B: VA-VAE微调 (可选)**
+
+### VA-VAE微调训练
+```bash
+!python run_vavae_finetune.py
+```
+**功能**: 在微多普勒数据上微调VA-VAE，提升重建质量
+**时间**: 2-5小时 (分两阶段: 解码器微调 + 全模型微调)
+**输出**: vavae_finetuned/ 目录包含微调后的模型
+**策略**: 先冻结编码器只训练解码器，再解冻全模型微调
+
+### 微调效果评估
+```bash
+!python evaluate_finetuned_vae.py
+```
+**功能**: 对比微调前后的重建质量 (MSE + FID对比)
+**时间**: 5-10分钟
+**输出**: 详细对比报告和可视化结果
+**决策**: 基于改善幅度决定是否使用微调模型
+
 ## 📁 项目结构
 
 ```
@@ -108,6 +130,9 @@ VA-VAE/
 ├── step3_setup_configs.py                 # 配置设置脚本
 ├── step4_inference.py                     # 智能推理脚本 (最终版)
 ├── evaluate_vae_quality.py                # VA-VAE质量评估脚本 (MSE+FID+微调预测)
+├── finetune_vavae.py                      # VA-VAE微调核心脚本
+├── run_vavae_finetune.py                  # 一键运行VA-VAE微调
+├── evaluate_finetuned_vae.py              # 微调效果评估脚本
 └── README.md                              # 本文档
 ```
 
