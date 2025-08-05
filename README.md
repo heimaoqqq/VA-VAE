@@ -50,6 +50,13 @@
 **时间**: 10-20分钟
 **输出**: LightningDiT/demo_images/demo_samples.png
 
+#### 故障排除: 修复latents_stats.pt文件（如果需要）
+```bash
+!python fix_latents_stats.py
+```
+**功能**: 修复空的或损坏的latents_stats.pt文件
+**使用场景**: 如果步骤4出现 "torch.cat(): expected a non-empty list of Tensors" 错误
+
 ## 📁 项目结构
 
 ```
