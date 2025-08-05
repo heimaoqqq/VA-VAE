@@ -90,25 +90,34 @@
 
 ---
 
-## 🎯 **阶段1B: VA-VAE微调 (可选)**
+## 🎯 **VA-VAE专项微调**
 
-### VA-VAE微调训练 (官方方案)
+### 微调环境检查
+```bash
+!python run_vavae_finetune.py
+```
+**功能**: 检查微调环境，显示两种微调方案选择
+**时间**: 10秒
+**输出**: 环境状态 + 方案说明
+**选择**: 官方3阶段 vs 简化版本
+
+### 方案A: 官方3阶段微调 (推荐)
 ```bash
 !python finetune_vavae_official.py
 ```
-**功能**: 基于原项目的官方3阶段微调策略
-**时间**: 4-8小时 (50+15+15 epochs, 3阶段训练)
-**输出**: 官方配置文件 + 训练指令
-**策略**: 完全按照原项目的f16d32_vfdinov2_long.yaml配置
+**功能**: 基于原项目f16d32_vfdinov2_long.yaml的完整策略
+**时间**: 4-8小时 (对齐50 + 重建15 + 边距15 epochs)
+**特点**: 完整LDM框架 (判别器 + LPIPS + DINOv2对齐)
+**优势**: 原项目验证的最佳效果
 
-### VA-VAE微调训练 (简化方案)
+### 方案B: 简化版微调 (快速)
 ```bash
 !python finetune_vavae.py
 ```
-**功能**: 简化版微调，集成DINOv2对齐
-**时间**: 3-8小时 (80 epochs + 早停)
-**输出**: vavae_finetuned/ 目录包含微调后的模型
-**策略**: 基于原项目参数的简化实现
+**功能**: 集成DINOv2对齐的简化实现
+**时间**: 3-6小时 (80 epochs + 早停)
+**特点**: 基于原项目参数的单阶段训练
+**优势**: 快速验证，易于调试
 
 ### 微调效果评估
 ```bash
@@ -117,7 +126,7 @@
 **功能**: 对比微调前后的重建质量 (MSE + FID对比)
 **时间**: 5-10分钟
 **输出**: 详细对比报告和可视化结果
-**决策**: 基于改善幅度决定是否使用微调模型
+**决策**: 基于改善幅度决定微调效果
 
 ## 📁 项目结构
 
@@ -139,8 +148,9 @@ VA-VAE/
 ├── step3_setup_configs.py                 # 配置设置脚本
 ├── step4_inference.py                     # 智能推理脚本 (最终版)
 ├── evaluate_vae_quality.py                # VA-VAE质量评估脚本 (MSE+FID+微调预测)
-├── finetune_vavae.py                      # VA-VAE微调完整脚本 (简化版)
-├── finetune_vavae_official.py             # VA-VAE官方微调脚本 (原项目3阶段)
+├── run_vavae_finetune.py                  # VA-VAE微调环境检查和方案选择
+├── finetune_vavae_official.py             # 方案A: 官方3阶段微调 (推荐)
+├── finetune_vavae.py                      # 方案B: 简化版微调 (快速)
 ├── evaluate_finetuned_vae.py              # 微调效果评估脚本
 └── README.md                              # 本文档
 ```
