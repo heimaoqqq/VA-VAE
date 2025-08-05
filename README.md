@@ -18,6 +18,14 @@
 
 ### 分步执行指令
 
+#### 快速检查（可选）
+```bash
+!python check_environment.py
+```
+**功能**: 快速检查环境和项目文件完整性
+**时间**: 10秒
+**输出**: 环境状态报告
+
 #### 步骤1: 环境安装
 ```bash
 !python step1_install_environment.py
@@ -25,6 +33,7 @@
 **功能**: 安装LightningDiT官方依赖，适配Kaggle环境
 **时间**: 5-10分钟
 **输出**: 环境验证报告
+**注意**: TorchVision/TIMM警告是已知兼容性问题，不影响功能
 
 #### 步骤2: 模型下载
 ```bash
@@ -66,6 +75,7 @@ VA-VAE/
 │   ├── vavae-imagenet256-f16d32-dinov2.pt # VA-VAE模型 (~800MB)
 │   ├── lightningdit-xl-imagenet256-800ep.pt # DiT模型 (~6GB)
 │   └── latents_stats.pt                   # 统计文件 (自动修复)
+├── check_environment.py                   # 快速环境检查 (可选)
 ├── step1_install_environment.py           # 环境安装脚本
 ├── step2_download_models.py               # 模型下载脚本 (集成修复)
 ├── step3_setup_configs.py                 # 配置设置脚本

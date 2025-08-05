@@ -158,11 +158,20 @@ def verify_configuration():
         return False
 
     # 检查推理脚本
-    inference_script = Path("step4_run_inference.py")
-    if inference_script.exists():
-        print(f"✅ 推理脚本: 存在")
-    else:
-        print(f"❌ 推理脚本: 不存在")
+    inference_scripts = [
+        Path("step4_inference.py"),      # 新的推理脚本
+        Path("step4_run_inference.py")   # 旧的推理脚本（兼容）
+    ]
+
+    script_found = False
+    for script in inference_scripts:
+        if script.exists():
+            print(f"✅ 推理脚本: {script}")
+            script_found = True
+            break
+
+    if not script_found:
+        print(f"❌ 推理脚本: 未找到 step4_inference.py")
         return False
 
     print("✅ 配置验证通过")
@@ -194,11 +203,11 @@ def main():
         return False
     
     print("\n✅ 步骤3完成！配置设置完成")
-    print("📋 下一步: !python step4_run_inference.py")
+    print("📋 下一步: !python step4_inference.py")
     print("📝 配置文件:")
     print("   - LightningDiT/configs/reproductions/lightningdit_xl_vavae_f16d32_800ep_cfg.yaml (主配置)")
     print("   - LightningDiT/tokenizer/configs/vavae_f16d32.yaml (VA-VAE配置)")
-    print("💡 使用官方accelerate launch + --demo模式进行推理")
+    print("💡 智能推理：自动选择最佳方案（官方配置 -> Demo配置）")
     
     return True
 
