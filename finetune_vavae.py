@@ -404,21 +404,22 @@ def run_complete_finetune():
         print("💡 请先运行 step2_download_models.py")
         return False
 
-    # 基于研究证据的配置
+    # 基于原项目参数的简化微调配置
     config = {
-        'batch_size': 4,           # 适合Kaggle GPU内存
-        'epochs': 100,             # 基于研究证据的合理epoch数
-        'learning_rate': 2e-5,     # 域适应的最佳学习率
-        'patience': 10,            # 早停patience
+        'batch_size': 4,           # 适合Kaggle GPU内存 (原项目用8)
+        'epochs': 80,              # 原项目总计130，我们适当减少
+        'learning_rate': 1e-4,     # 原项目的学习率
+        'patience': 15,            # 适当的早停patience
     }
 
-    print("⚙️ 微调配置 (基于研究证据):")
+    print("⚙️ 微调配置 (基于原项目参数的简化版):")
     print(f"   同时训练编码器和解码器: ✅")
     print(f"   最大训练轮数: {config['epochs']} epochs")
-    print(f"   学习率: {config['learning_rate']:.2e}")
+    print(f"   学习率: {config['learning_rate']:.2e} (原项目标准)")
     print(f"   早停patience: {config['patience']}")
     print(f"   批次大小: {config['batch_size']}")
-    print(f"   预计时间: 3-8小时 (取决于收敛速度)")
+    print(f"   预计时间: 4-8小时")
+    print(f"   注意: 简化版本，专注重建损失优化")
 
     # 创建微调器
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
