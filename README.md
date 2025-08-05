@@ -92,14 +92,23 @@
 
 ## 🎯 **阶段1B: VA-VAE微调 (可选)**
 
-### VA-VAE微调训练
+### VA-VAE微调训练 (官方方案)
+```bash
+!python finetune_vavae_official.py
+```
+**功能**: 基于原项目的官方3阶段微调策略
+**时间**: 4-8小时 (50+15+15 epochs, 3阶段训练)
+**输出**: 官方配置文件 + 训练指令
+**策略**: 完全按照原项目的f16d32_vfdinov2_long.yaml配置
+
+### VA-VAE微调训练 (简化方案)
 ```bash
 !python finetune_vavae.py
 ```
-**功能**: 在微多普勒数据上微调VA-VAE，提升重建质量
-**时间**: 3-8小时 (100 epochs + 早停, 实际可能更短)
-**输出**: vavae_finetuned/ 目录包含微调后的模型和训练日志
-**策略**: 同时训练编码器和解码器 (基于研究证据的最佳实践)
+**功能**: 简化版微调，集成DINOv2对齐
+**时间**: 3-8小时 (80 epochs + 早停)
+**输出**: vavae_finetuned/ 目录包含微调后的模型
+**策略**: 基于原项目参数的简化实现
 
 ### 微调效果评估
 ```bash
@@ -130,7 +139,8 @@ VA-VAE/
 ├── step3_setup_configs.py                 # 配置设置脚本
 ├── step4_inference.py                     # 智能推理脚本 (最终版)
 ├── evaluate_vae_quality.py                # VA-VAE质量评估脚本 (MSE+FID+微调预测)
-├── finetune_vavae.py                      # VA-VAE微调完整脚本 (一键运行)
+├── finetune_vavae.py                      # VA-VAE微调完整脚本 (简化版)
+├── finetune_vavae_official.py             # VA-VAE官方微调脚本 (原项目3阶段)
 ├── evaluate_finetuned_vae.py              # 微调效果评估脚本
 └── README.md                              # 本文档
 ```
