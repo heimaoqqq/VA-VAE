@@ -82,52 +82,52 @@ def check_files():
     return True
 
 def run_inference():
-    """运行推理"""
+    """运行推理 - 使用官方accelerate launch方式"""
     print("\n🚀 开始LightningDiT推理...")
-    
+
     # 切换到LightningDiT目录
     original_cwd = os.getcwd()
     lightningdit_dir = Path("LightningDiT")
-    
+
     try:
         os.chdir(lightningdit_dir)
         print(f"📁 切换到目录: {lightningdit_dir.absolute()}")
-        
-        # 设置配置文件路径
-        config_path = "../kaggle_inference_config.yaml"
+
+        # 使用官方配置文件
+        config_path = "configs/reproductions/lightningdit_xl_vavae_f16d32_800ep_cfg.yaml"
         config_abs_path = Path(config_path).absolute()
-        
-        print(f"📋 使用配置: {config_abs_path}")
-        
-        # 构建推理命令
-        cmd = f"python inference.py --config {config_path}"
-        print(f"💻 执行命令: {cmd}")
-        
+
+        print(f"📋 使用官方配置: {config_abs_path}")
+
+        # 构建官方推理命令 - 使用accelerate launch + --demo参数
+        cmd = f"accelerate launch --mixed_precision bf16 inference.py --config {config_path} --demo"
+        print(f"💻 执行官方命令: {cmd}")
+
         # 运行推理
         result = subprocess.run(
-            cmd, 
-            shell=True, 
-            capture_output=True, 
+            cmd,
+            shell=True,
+            capture_output=True,
             text=True,
             timeout=1800  # 30分钟超时
         )
-        
+
         # 输出结果
         if result.stdout:
             print("📤 标准输出:")
             print(result.stdout)
-        
+
         if result.stderr:
             print("📤 错误输出:")
             print(result.stderr)
-        
+
         if result.returncode == 0:
             print("✅ 推理成功完成！")
             return True
         else:
             print(f"❌ 推理失败，返回码: {result.returncode}")
             return False
-            
+
     except subprocess.TimeoutExpired:
         print("❌ 推理超时（30分钟）")
         return False
