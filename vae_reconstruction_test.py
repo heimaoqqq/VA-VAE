@@ -21,50 +21,77 @@ sys.path.append('LightningDiT')
 from tokenizer.vavae import VA_VAE
 
 class MicroDopplerDataset(Dataset):
-    """微多普勒数据集加载器"""
-    
-    def __init__(self, data_dir, transform=None):
+    """微多普勒数据集加载器 - 支持嵌套用户目录结构"""
+
+    def __init__(self, data_dir, transform=None, max_images_per_user=None):
         self.data_dir = Path(data_dir)
         self.transform = transform
-        
+        self.max_images_per_user = max_images_per_user
+
         # 支持的图像格式
         self.image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
         self.image_files = []
-        
-        # 收集所有图像文件
-        for ext in self.image_extensions:
-            self.image_files.extend(list(self.data_dir.glob(f'*{ext}')))
-            self.image_files.extend(list(self.data_dir.glob(f'*{ext.upper()}')))
-        
-        print(f"📁 找到 {len(self.image_files)} 张图像")
+        self.user_labels = []  # 存储用户ID信息
+
+        # 收集所有用户目录下的图像文件
+        self._collect_images()
+
+        print(f"📁 找到 {len(self.image_files)} 张图像，来自 {len(set(self.user_labels))} 个用户")
+
+    def _collect_images(self):
+        """收集所有用户目录下的图像"""
+        user_dirs = [d for d in self.data_dir.iterdir() if d.is_dir() and d.name.startswith('ID_')]
+        user_dirs.sort()  # 按用户ID排序
+
+        print(f"🔍 发现 {len(user_dirs)} 个用户目录")
+
+        for user_dir in user_dirs:
+            user_id = user_dir.name  # ID_1, ID_2, etc.
+            user_images = []
+
+            # 收集该用户的所有图像
+            for ext in self.image_extensions:
+                user_images.extend(list(user_dir.glob(f'*{ext}')))
+                user_images.extend(list(user_dir.glob(f'*{ext.upper()}')))
+
+            # 限制每个用户的图像数量（如果指定）
+            if self.max_images_per_user and len(user_images) > self.max_images_per_user:
+                user_images = user_images[:self.max_images_per_user]
+
+            # 添加到总列表
+            self.image_files.extend(user_images)
+            self.user_labels.extend([user_id] * len(user_images))
+
+            print(f"   {user_id}: {len(user_images)} 张图像")
     
     def __len__(self):
         return len(self.image_files)
     
     def __getitem__(self, idx):
         image_path = self.image_files[idx]
-        
+        user_id = self.user_labels[idx]
+
         try:
             # 加载图像
             image = Image.open(image_path)
-            
+
             # 确保是RGB格式
             if image.mode != 'RGB':
                 image = image.convert('RGB')
-            
+
             # 应用变换
             if self.transform:
                 image = self.transform(image)
-            
-            return image, str(image_path)
-            
+
+            return image, str(image_path), user_id
+
         except Exception as e:
             print(f"❌ 加载图像失败 {image_path}: {e}")
             # 返回一个黑色图像作为fallback
             black_image = Image.new('RGB', (256, 256), (0, 0, 0))
             if self.transform:
                 black_image = self.transform(black_image)
-            return black_image, str(image_path)
+            return black_image, str(image_path), user_id
 
 class VAEReconstructionTester:
     """VA-VAE重建测试器"""
@@ -106,24 +133,25 @@ class VAEReconstructionTester:
             print(f"❌ VA-VAE模型加载失败: {e}")
             return None
     
-    def test_single_image(self, image_tensor, image_path):
+    def test_single_image(self, image_tensor, image_path, user_id=None):
         """测试单张图像的重建"""
         with torch.no_grad():
             # 编码到潜在空间
             latent = self.vae.encode(image_tensor.unsqueeze(0).to(self.device))
-            
+
             # 从潜在空间解码
             reconstructed = self.vae.decode(latent)
-            
+
             # 计算重建误差
             mse_loss = F.mse_loss(image_tensor.to(self.device), reconstructed.squeeze(0)).item()
-            
+
             return {
                 'original': image_tensor,
                 'reconstructed': reconstructed.squeeze(0).cpu(),
                 'latent': latent.cpu(),
                 'mse_loss': mse_loss,
-                'image_path': image_path
+                'image_path': image_path,
+                'user_id': user_id
             }
     
     def test_batch_reconstruction(self, data_dir, output_dir, batch_size=8, max_images=50):
@@ -137,36 +165,44 @@ class VAEReconstructionTester:
         output_path.mkdir(parents=True, exist_ok=True)
         
         # 创建数据集和数据加载器
-        dataset = MicroDopplerDataset(data_dir, transform=self.transform)
-        
+        dataset = MicroDopplerDataset(data_dir, transform=self.transform, max_images_per_user=max_images//31 if max_images else None)
+
         if len(dataset) == 0:
             print("❌ 未找到图像文件")
             return None
-        
+
         # 限制测试图像数量
         if len(dataset) > max_images:
             indices = np.random.choice(len(dataset), max_images, replace=False)
             dataset.image_files = [dataset.image_files[i] for i in indices]
-        
+            dataset.user_labels = [dataset.user_labels[i] for i in indices]
+
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        
+
         all_results = []
         total_mse = 0
         processed_count = 0
-        
+        user_stats = {}  # 统计每个用户的结果
+
         print(f"🔍 开始处理 {len(dataset)} 张图像...")
-        
-        for batch_idx, (images, image_paths) in enumerate(dataloader):
+
+        for batch_idx, (images, image_paths, user_ids) in enumerate(dataloader):
             print(f"处理批次 {batch_idx + 1}/{len(dataloader)}")
-            
+
             batch_results = []
-            
+
             for i in range(images.size(0)):
-                result = self.test_single_image(images[i], image_paths[i])
+                result = self.test_single_image(images[i], image_paths[i], user_ids[i])
                 batch_results.append(result)
                 total_mse += result['mse_loss']
                 processed_count += 1
-            
+
+                # 统计用户结果
+                user_id = user_ids[i]
+                if user_id not in user_stats:
+                    user_stats[user_id] = []
+                user_stats[user_id].append(result['mse_loss'])
+
             # 保存批次对比图
             self.save_batch_comparison(batch_results, output_path / f"batch_{batch_idx + 1:03d}.png")
             all_results.extend(batch_results)
@@ -174,16 +210,23 @@ class VAEReconstructionTester:
         # 计算总体统计
         avg_mse = total_mse / processed_count
         mse_values = [r['mse_loss'] for r in all_results]
-        
+
         print(f"\n📊 重建测试结果:")
         print(f"   处理图像数量: {processed_count}")
+        print(f"   用户数量: {len(user_stats)}")
         print(f"   平均MSE: {avg_mse:.6f}")
         print(f"   MSE标准差: {np.std(mse_values):.6f}")
         print(f"   MSE范围: {np.min(mse_values):.6f} - {np.max(mse_values):.6f}")
-        
+
+        # 打印每个用户的统计
+        print(f"\n👥 各用户重建质量:")
+        for user_id in sorted(user_stats.keys()):
+            user_mse = user_stats[user_id]
+            print(f"   {user_id}: {len(user_mse)}张图像, 平均MSE={np.mean(user_mse):.6f}")
+
         # 保存统计结果
-        self.save_statistics(all_results, output_path / "reconstruction_stats.txt")
-        
+        self.save_statistics(all_results, user_stats, output_path / "reconstruction_stats.txt")
+
         return all_results
 
     def save_batch_comparison(self, batch_results, save_path):
@@ -199,38 +242,48 @@ class VAEReconstructionTester:
             original = self.denormalize(result['original'])
             original = torch.clamp(original, 0, 1)
             axes[0, i].imshow(original.permute(1, 2, 0))
-            axes[0, i].set_title(f'Original {i+1}')
+            user_id = result.get('user_id', 'Unknown')
+            axes[0, i].set_title(f'{user_id}\nOriginal')
             axes[0, i].axis('off')
 
             # 重建图
             reconstructed = self.denormalize(result['reconstructed'])
             reconstructed = torch.clamp(reconstructed, 0, 1)
             axes[1, i].imshow(reconstructed.permute(1, 2, 0))
-            axes[1, i].set_title(f'Recon {i+1}\nMSE: {result["mse_loss"]:.4f}')
+            axes[1, i].set_title(f'Reconstructed\nMSE: {result["mse_loss"]:.4f}')
             axes[1, i].axis('off')
 
         plt.tight_layout()
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.close()
 
-    def save_statistics(self, results, save_path):
+    def save_statistics(self, results, user_stats, save_path):
         """保存统计结果到文件"""
         mse_values = [r['mse_loss'] for r in results]
 
         with open(save_path, 'w') as f:
             f.write("VA-VAE重建测试统计结果\n")
-            f.write("=" * 40 + "\n")
+            f.write("=" * 50 + "\n")
             f.write(f"测试图像数量: {len(results)}\n")
+            f.write(f"用户数量: {len(user_stats)}\n")
             f.write(f"平均MSE: {np.mean(mse_values):.6f}\n")
             f.write(f"MSE标准差: {np.std(mse_values):.6f}\n")
             f.write(f"MSE最小值: {np.min(mse_values):.6f}\n")
             f.write(f"MSE最大值: {np.max(mse_values):.6f}\n")
             f.write(f"MSE中位数: {np.median(mse_values):.6f}\n")
-            f.write("\n详细结果:\n")
 
+            f.write("\n各用户统计:\n")
+            f.write("-" * 30 + "\n")
+            for user_id in sorted(user_stats.keys()):
+                user_mse = user_stats[user_id]
+                f.write(f"{user_id}: {len(user_mse)}张图像, 平均MSE={np.mean(user_mse):.6f}, 标准差={np.std(user_mse):.6f}\n")
+
+            f.write("\n详细结果:\n")
+            f.write("-" * 30 + "\n")
             for i, result in enumerate(results):
                 filename = Path(result['image_path']).name
-                f.write(f"{i+1:3d}. {filename}: MSE={result['mse_loss']:.6f}\n")
+                user_id = result.get('user_id', 'Unknown')
+                f.write(f"{i+1:3d}. {user_id}/{filename}: MSE={result['mse_loss']:.6f}\n")
 
         print(f"📊 统计结果已保存: {save_path}")
 
