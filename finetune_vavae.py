@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-VA-VAE微调脚本 - 完整版本
-基于研究证据的最佳实践：同时训练编码器和解码器
-支持早停、学习率调度、完整的训练监控
+VA-VAE微调脚本 - 完整版本 (集成DINOv2对齐)
+基于原项目的核心创新：DINOv2视觉基础模型对齐
+支持完整的VA-VAE训练流程
 """
 
 import os
@@ -22,6 +22,15 @@ import time
 # 添加LightningDiT路径
 sys.path.append('LightningDiT')
 from tokenizer.vavae import VA_VAE
+
+# 添加DINOv2支持
+try:
+    import timm
+    DINOV2_AVAILABLE = True
+    print("✅ DINOv2支持已启用")
+except ImportError:
+    DINOV2_AVAILABLE = False
+    print("⚠️ timm未安装，DINOv2对齐将被禁用")
 
 class MicroDopplerDataset(Dataset):
     """微多普勒数据集 - 用于VA-VAE微调"""
@@ -76,14 +85,23 @@ class MicroDopplerDataset(Dataset):
 class VAEFineTuner:
     """VA-VAE微调器"""
     
-    def __init__(self, vae_model_path, device='cuda'):
+    def __init__(self, vae_model_path, device='cuda', enable_dinov2=True):
         self.device = device
         self.vae_model_path = vae_model_path
-        
+        self.enable_dinov2 = enable_dinov2 and DINOV2_AVAILABLE
+
         # 加载预训练VA-VAE
         print("🔧 加载预训练VA-VAE模型...")
         self.vae = self.load_vae_model()
-        
+
+        # 加载DINOv2模型 (VA-VAE的核心创新)
+        if self.enable_dinov2:
+            print("🔧 加载DINOv2模型 (VA-VAE核心创新)...")
+            self.dinov2_model = self.load_dinov2_model()
+        else:
+            self.dinov2_model = None
+            print("⚠️ DINOv2对齐已禁用")
+
         # 图像预处理
         self.transform = transforms.Compose([
             transforms.Resize((256, 256)),
@@ -109,6 +127,19 @@ class VAEFineTuner:
             return vae
         except Exception as e:
             print(f"❌ VA-VAE模型加载失败: {e}")
+            return None
+
+    def load_dinov2_model(self):
+        """加载DINOv2模型 - VA-VAE的核心创新"""
+        try:
+            model = timm.create_model("hf-hub:timm/vit_large_patch14_dinov2.lvd142m", pretrained=True, dynamic_img_size=True)
+            model.requires_grad_(False)
+            model.to(self.device)
+            model.eval()
+            print("✅ DINOv2模型加载成功")
+            return model
+        except Exception as e:
+            print(f"❌ DINOv2模型加载失败: {e}")
             return None
     
     def create_optimizer(self, learning_rate):
@@ -137,35 +168,72 @@ class VAEFineTuner:
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
         return scheduler
     
-    def compute_loss(self, images):
-        """计算重建损失"""
+    def compute_dinov2_features(self, images):
+        """计算DINOv2特征 - VA-VAE的核心创新"""
+        if self.dinov2_model is None:
+            return None
+
+        with torch.no_grad():
+            # 调整图像尺寸到224x224 (DINOv2标准输入)
+            resized_images = F.interpolate(images, size=(224, 224), mode='bilinear', align_corners=False)
+            # 获取DINOv2特征 (去掉CLS token)
+            features = self.dinov2_model.forward_features(resized_images)[:, 1:]
+            # 重塑为空间特征图
+            b, n, d = features.shape
+            h = w = int(n ** 0.5)  # 16x16 for 224x224 input
+            features = features.reshape(b, h, w, d).permute(0, 3, 1, 2)
+            return features
+
+    def compute_loss(self, images, vf_weight=0.1):
+        """计算完整损失 (重建 + DINOv2对齐)"""
         with torch.cuda.amp.autocast():
             # 编码
             latents = self.vae.model.encode(images).latent_dist.sample()
-            
+
             # 解码
             reconstructed = self.vae.model.decode(latents).sample
-            
+
             # 重建损失 (L1 + L2)
             l1_loss = F.l1_loss(reconstructed, images)
             l2_loss = F.mse_loss(reconstructed, images)
             recon_loss = l1_loss + 0.1 * l2_loss
-            
+
             # KL散度损失
             kl_loss = torch.mean(torch.sum(latents ** 2, dim=[1, 2, 3]))
-            
+
+            # DINOv2对齐损失 (VA-VAE核心创新)
+            dinov2_loss = 0.0
+            if self.enable_dinov2 and self.dinov2_model is not None:
+                # 获取原图和重建图的DINOv2特征
+                orig_features = self.compute_dinov2_features(images)
+                recon_features = self.compute_dinov2_features(reconstructed)
+
+                if orig_features is not None and recon_features is not None:
+                    # 特征对齐损失 (余弦相似度)
+                    orig_flat = orig_features.flatten(2)  # [B, D, H*W]
+                    recon_flat = recon_features.flatten(2)
+
+                    # 归一化
+                    orig_norm = F.normalize(orig_flat, dim=1)
+                    recon_norm = F.normalize(recon_flat, dim=1)
+
+                    # 余弦相似度损失
+                    cos_sim = F.cosine_similarity(orig_norm, recon_norm, dim=1)
+                    dinov2_loss = 1.0 - cos_sim.mean()
+
             # 总损失
-            total_loss = recon_loss + 1e-6 * kl_loss
-            
-            return total_loss, recon_loss, kl_loss, reconstructed
+            total_loss = recon_loss + 1e-6 * kl_loss + vf_weight * dinov2_loss
+
+            return total_loss, recon_loss, kl_loss, dinov2_loss, reconstructed
     
-    def train_epoch(self, dataloader, optimizer, scheduler, epoch):
+    def train_epoch(self, dataloader, optimizer, scheduler, epoch, vf_weight=0.1):
         """训练一个epoch"""
         self.vae.model.train()
 
         total_loss = 0
         total_recon_loss = 0
         total_kl_loss = 0
+        total_dinov2_loss = 0
 
         pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
 
@@ -174,8 +242,8 @@ class VAEFineTuner:
 
             optimizer.zero_grad()
 
-            # 前向传播
-            loss, recon_loss, kl_loss, _ = self.compute_loss(images)
+            # 前向传播 (包含DINOv2对齐)
+            loss, recon_loss, kl_loss, dinov2_loss, _ = self.compute_loss(images, vf_weight)
 
             # 反向传播
             loss.backward()
@@ -190,40 +258,47 @@ class VAEFineTuner:
             total_loss += loss.item()
             total_recon_loss += recon_loss.item()
             total_kl_loss += kl_loss.item()
+            if isinstance(dinov2_loss, torch.Tensor):
+                total_dinov2_loss += dinov2_loss.item()
 
             # 更新进度条
             current_lr = optimizer.param_groups[0]['lr']
-            pbar.set_postfix({
+            postfix = {
                 'Loss': f'{loss.item():.6f}',
                 'Recon': f'{recon_loss.item():.6f}',
                 'KL': f'{kl_loss.item():.8f}',
                 'LR': f'{current_lr:.2e}'
-            })
+            }
+            if self.enable_dinov2:
+                postfix['DINOv2'] = f'{dinov2_loss.item():.6f}' if isinstance(dinov2_loss, torch.Tensor) else '0.000'
+
+            pbar.set_postfix(postfix)
 
         avg_loss = total_loss / len(dataloader)
         avg_recon_loss = total_recon_loss / len(dataloader)
         avg_kl_loss = total_kl_loss / len(dataloader)
+        avg_dinov2_loss = total_dinov2_loss / len(dataloader) if self.enable_dinov2 else 0
 
-        return avg_loss, avg_recon_loss, avg_kl_loss
+        return avg_loss, avg_recon_loss, avg_kl_loss, avg_dinov2_loss
     
-    def validate(self, dataloader):
+    def validate(self, dataloader, vf_weight=0.1):
         """验证"""
         self.vae.model.eval()
-        
+
         total_loss = 0
         total_recon_loss = 0
-        
+
         with torch.no_grad():
             for images, _ in dataloader:
                 images = images.to(self.device)
-                loss, recon_loss, _, _ = self.compute_loss(images)
-                
+                loss, recon_loss, _, _, _ = self.compute_loss(images, vf_weight)
+
                 total_loss += loss.item()
                 total_recon_loss += recon_loss.item()
-        
+
         avg_loss = total_loss / len(dataloader)
         avg_recon_loss = total_recon_loss / len(dataloader)
-        
+
         return avg_loss, avg_recon_loss
     
     def save_checkpoint(self, epoch, optimizer, loss, save_path):
@@ -281,11 +356,13 @@ class VAEFineTuner:
         for epoch in range(1, config['epochs'] + 1):
             print(f"\n🔥 Epoch {epoch}/{config['epochs']}")
 
-            # 训练
-            train_loss, train_recon, train_kl = self.train_epoch(train_loader, optimizer, scheduler, epoch)
+            # 训练 (包含DINOv2对齐)
+            train_loss, train_recon, train_kl, train_dinov2 = self.train_epoch(
+                train_loader, optimizer, scheduler, epoch, config['vf_weight']
+            )
 
             # 验证
-            val_loss, val_recon = self.validate(val_loader)
+            val_loss, val_recon = self.validate(val_loader, config['vf_weight'])
 
             # 记录历史
             train_losses.append(train_loss)
@@ -293,7 +370,10 @@ class VAEFineTuner:
 
             # 打印结果
             current_lr = optimizer.param_groups[0]['lr']
-            print(f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, LR: {current_lr:.2e}")
+            result_str = f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, LR: {current_lr:.2e}"
+            if self.enable_dinov2:
+                result_str += f", DINOv2: {train_dinov2:.6f}"
+            print(result_str)
 
             # 早停检查
             if val_loss < best_val_loss:
@@ -404,28 +484,32 @@ def run_complete_finetune():
         print("💡 请先运行 step2_download_models.py")
         return False
 
-    # 基于原项目参数的简化微调配置
+    # 基于原项目参数的完整微调配置 (集成DINOv2对齐)
     config = {
         'batch_size': 4,           # 适合Kaggle GPU内存 (原项目用8)
         'epochs': 80,              # 原项目总计130，我们适当减少
         'learning_rate': 1e-4,     # 原项目的学习率
         'patience': 15,            # 适当的早停patience
+        'vf_weight': 0.1,          # DINOv2对齐权重 (原项目关键参数)
+        'enable_dinov2': True,     # 启用VA-VAE核心创新
     }
 
-    print("⚙️ 微调配置 (基于原项目参数的简化版):")
+    print("⚙️ 微调配置 (基于原项目的完整VA-VAE方案):")
     print(f"   同时训练编码器和解码器: ✅")
+    print(f"   DINOv2对齐 (核心创新): {'✅' if config['enable_dinov2'] else '❌'}")
     print(f"   最大训练轮数: {config['epochs']} epochs")
     print(f"   学习率: {config['learning_rate']:.2e} (原项目标准)")
+    print(f"   DINOv2权重: {config['vf_weight']} (原项目参数)")
     print(f"   早停patience: {config['patience']}")
     print(f"   批次大小: {config['batch_size']}")
     print(f"   预计时间: 4-8小时")
-    print(f"   注意: 简化版本，专注重建损失优化")
+    print(f"   注意: 完整VA-VAE方案，包含语义对齐")
 
     # 创建微调器
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"🔥 使用设备: {device}")
 
-    tuner = VAEFineTuner(vae_model_path, device)
+    tuner = VAEFineTuner(vae_model_path, device, enable_dinov2=config['enable_dinov2'])
     if tuner.vae is None:
         print("❌ VA-VAE模型加载失败")
         return False
