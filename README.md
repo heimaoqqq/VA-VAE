@@ -79,14 +79,14 @@
     └── ...
 ```
 
-### VA-VAE重建测试
+### VA-VAE重建质量评估
 ```bash
-!python run_vae_test.py
+!python evaluate_vae_quality.py
 ```
-**功能**: 测试预训练VA-VAE在微多普勒数据上的重建效果
-**时间**: 5-15分钟
-**输出**: vae_test_results/ 目录包含对比图像和统计结果
-**评估**: 基于MSE和视觉质量决定下一步方案
+**功能**: 完整评估VA-VAE重建质量 (MSE + FID + 微调收益预测)
+**时间**: 10-20分钟
+**输出**: 详细评估报告和对比图像
+**评估**: 基于MSE、FID等多指标决定下一步方案
 
 ## 📁 项目结构
 
@@ -107,9 +107,7 @@ VA-VAE/
 ├── step2_download_models.py               # 模型下载脚本 (集成修复)
 ├── step3_setup_configs.py                 # 配置设置脚本
 ├── step4_inference.py                     # 智能推理脚本 (最终版)
-├── vae_reconstruction_test.py              # VA-VAE重建测试脚本
-├── calculate_fid.py                        # FID计算工具
-├── run_vae_test.py                         # 一键运行VA-VAE测试
+├── evaluate_vae_quality.py                # VA-VAE质量评估脚本 (MSE+FID+微调预测)
 └── README.md                              # 本文档
 ```
 
