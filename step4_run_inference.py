@@ -91,13 +91,19 @@ def run_inference():
 
     try:
         os.chdir(lightningdit_dir)
-        print(f"📁 切换到目录: {lightningdit_dir.absolute()}")
+        current_dir = Path.cwd()
+        print(f"📁 切换到目录: {current_dir}")
 
         # 使用官方配置文件
         config_path = "configs/reproductions/lightningdit_xl_vavae_f16d32_800ep_cfg.yaml"
         config_abs_path = Path(config_path).absolute()
 
         print(f"📋 使用官方配置: {config_abs_path}")
+
+        # 验证配置文件存在
+        if not Path(config_path).exists():
+            print(f"❌ 配置文件不存在: {config_path}")
+            return False
 
         # 构建官方推理命令 - 使用accelerate launch + --demo参数
         cmd = f"accelerate launch --mixed_precision bf16 inference.py --config {config_path} --demo"

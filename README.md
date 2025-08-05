@@ -42,7 +42,7 @@
 **时间**: 1-2分钟
 **输出**: kaggle_inference_config.yaml
 
-#### 步骤4: 运行推理
+#### 步骤4A: 运行推理（标准版）
 ```bash
 !python step4_run_inference.py
 ```
@@ -50,12 +50,21 @@
 **时间**: 10-20分钟
 **输出**: LightningDiT/demo_images/demo_samples.png
 
+#### 步骤4B: 运行推理（简化版，推荐）
+```bash
+!python step4_demo_inference.py
+```
+**功能**: 简化版demo推理，避免路径和数据集问题
+**时间**: 5-15分钟
+**输出**: LightningDiT/demo_output/
+**推荐**: 如果步骤4A失败，使用此版本
+
 #### 故障排除: 修复latents_stats.pt文件（如果需要）
 ```bash
 !python fix_latents_stats.py
 ```
 **功能**: 修复空的或损坏的latents_stats.pt文件
-**使用场景**: 如果步骤4出现 "torch.cat(): expected a non-empty list of Tensors" 错误
+**使用场景**: 如果出现 "torch.cat(): expected a non-empty list of Tensors" 错误
 
 ## 📁 项目结构
 
