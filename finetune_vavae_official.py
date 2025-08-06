@@ -365,30 +365,48 @@ def validate_config_consistency():
     return True
 
 def install_dependencies():
-    """安装必要的依赖"""
+    """安装必要的依赖 - Kaggle优化版"""
     import subprocess
     import sys
     
     print("🔧 检查和安装依赖...")
     
-    # 检查并安装 taming-transformers
+    # 在Kaggle中，必须在主进程中安装并重启
+    taming_installed = False
     try:
         import taming
         print("✅ taming-transformers 已安装")
+        taming_installed = True
     except ImportError:
-        print("🔧 安装 taming-transformers...")
+        print("🔧 在主进程中安装 taming-transformers...")
         try:
-            # 安装 taming-transformers
+            # 在Kaggle中强制安装
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install", 
                 "git+https://github.com/CompVis/taming-transformers.git",
-                "--quiet"
+                "--force-reinstall", "--no-cache-dir"
             ])
             print("✅ taming-transformers 安装成功")
+            
+            # 在Kaggle中，需要重新导入sys.path
+            import importlib
+            import site
+            importlib.reload(site)
+            
+            # 再次尝试导入
+            try:
+                import taming
+                print("✅ taming-transformers 验证成功")
+                taming_installed = True
+            except ImportError:
+                print("⚠️ taming-transformers 安装后仍无法导入")
+                print("💡 这是Kaggle环境的常见问题，将在训练中处理")
+                
         except Exception as e:
             print(f"❌ taming-transformers 安装失败: {str(e)}")
-            print("💡 尝试手动安装:")
+            print("💡 请手动在Kaggle中执行:")
             print("   !pip install git+https://github.com/CompVis/taming-transformers.git")
+            print("   然后重启内核")
             return False
     
     # 检查其他依赖
