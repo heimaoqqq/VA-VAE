@@ -60,12 +60,24 @@ data:
           degradation: pil_nearest
 
 lightning:
-  find_unused_parameters: false
+  trainer:
+    devices: 2                 # 双GPU训练
+    num_nodes: 1
+    strategy: ddp_find_unused_parameters_true
+    accelerator: gpu
+    max_epochs: 15             # 阶段3: 15 epochs
+    precision: 32
+    benchmark: True
+    val_check_interval: 2000
+    num_sanity_val_steps: 0
+    accumulate_grad_batches: 1
+  
   modelcheckpoint:
     params:
       every_n_train_steps: 2000
       save_top_k: -1
       monitor: null
+  
   callbacks:
     image_logger:
       target: main.ImageLogger
@@ -83,12 +95,3 @@ lightning:
           unconditional_guidance_scale: 3.0
           unconditional_guidance_label: [""]
           ddim_steps: 50
-
-  trainer:
-    benchmark: True
-    val_check_interval: 2000
-    num_sanity_val_steps: 0
-    accumulate_grad_batches: 1
-    max_epochs: 15             # 阶段3: 15 epochs
-    gpus: 2                    # 双GPU训练
-    strategy: ddp
