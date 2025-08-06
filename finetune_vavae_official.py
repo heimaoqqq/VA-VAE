@@ -543,28 +543,28 @@ def auto_execute_training():
             print(f"❌ 配置文件不存在: {config_path}")
             return False
         
-        # 在子进程中验证和安装依赖
-        pre_script = f"""
+        # 在子进程中验证和安装依赖 - 使用纯ASCII字符避免编码错误
+        pre_script = """
 import sys
 import subprocess
 
-# 验证并安装 taming
+# Verify and install taming
 try:
     import taming
-    print("\u2705 taming-transformers 已可用")
+    print("[OK] taming-transformers available")
 except ImportError:
-    print("\ud83d\udd27 在子进程中安装 taming-transformers...")
+    print("[INFO] Installing taming-transformers in subprocess...")
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", 
         "git+https://github.com/CompVis/taming-transformers.git",
         "--quiet", "--no-warn-script-location"
     ])
-    print("\u2705 taming-transformers 安装完成")
+    print("[OK] taming-transformers installation completed")
 
-# 执行主训练脚本
+# Execute main training script
 import os
-os.system('python main.py --base ../../{config_path} --train')
-"""
+os.system('python main.py --base ../../{} --train')
+""".format(config_path)
         
         # 创建临时脚本文件
         temp_script = vavae_dir / f"temp_stage{i}_train.py"
