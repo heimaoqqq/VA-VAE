@@ -8,6 +8,7 @@ import os
 import sys
 import subprocess
 import time
+import shutil
 from pathlib import Path
 import inspect
 
@@ -101,13 +102,15 @@ def run_training_stage(stage_name, config_path, stage_num):
         print(f"❌ 目录不存在: {vavae_dir}")
         return False
     
-    # 构建训练命令
-    cmd = [
-        sys.executable, "main.py",
-        "--base", f"../../{config_path}",
-        "--train"
-    ]
+    # 复制main_wrapper.py到vavae目录
+    wrapper_src = Path("main_wrapper.py")
+    wrapper_dst = vavae_dir / "main_wrapper.py"
+    if wrapper_src.exists():
+        shutil.copy2(wrapper_src, wrapper_dst)
+        print(f"📋 已复制包装器到: {wrapper_dst}")
     
+    # 构建训练命令，使用包装器
+    cmd = [sys.executable, "main_wrapper.py", "--base", f"../../{config_path}", "--train"]
     print(f"🔧 执行命令: {' '.join(cmd)}")
     print(f"📁 工作目录: {vavae_dir.absolute()}")
     
