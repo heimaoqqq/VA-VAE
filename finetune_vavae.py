@@ -14,13 +14,21 @@ def check_dependencies():
     """检查必要的依赖"""
     print("🔍 检查依赖...")
     
-    # 检查taming-transformers
+    # 检查taming-transformers - 使用正确的导入方式
     try:
-        import taming
-        print("✅ taming-transformers 已安装")
-    except ImportError:
-        print("❌ taming-transformers 未安装")
-        print("💡 请先安装: pip install git+https://github.com/CompVis/taming-transformers.git")
+        import taming.data.utils as tdu
+        import taming.modules.losses.vqperceptual
+        from taming.modules.vqvae.quantize import VectorQuantizer2
+        print("✅ taming-transformers 已安装并可正常导入")
+    except ImportError as e:
+        print("❌ taming-transformers 未正确安装")
+        print(f"   导入错误: {e}")
+        print("💡 请按照官方方式安装:")
+        print("   git clone https://github.com/CompVis/taming-transformers.git")
+        print("   cd taming-transformers")
+        print("   pip install -e .")
+        print("   # 修复torch 2.x兼容性:")
+        print("   sed -i 's/from torch._six import string_classes/from six import string_types as string_classes/' taming/data/utils.py")
         return False
     
     # 检查pytorch-lightning
@@ -30,6 +38,16 @@ def check_dependencies():
     except ImportError:
         print("❌ pytorch-lightning 未安装")
         print("💡 请先安装: pip install pytorch-lightning")
+        return False
+    
+    # 检查其他必要依赖
+    try:
+        import omegaconf
+        import einops
+        print("✅ 其他依赖检查通过")
+    except ImportError as e:
+        print(f"❌ 缺少依赖: {e}")
+        print("💡 请安装: pip install omegaconf einops")
         return False
     
     return True
