@@ -135,26 +135,49 @@ def run_training_stage(stage_name, config_path, stage_num):
     try:
         start_time = time.time()
         
-        # 运行训练
-        result = subprocess.run(
+        # 使用Popen实时显示输出
+        process = subprocess.Popen(
             cmd,
             cwd=vavae_dir,
             env=env,
-            check=True,
-            capture_output=False  # 实时显示输出
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1
         )
+        
+        # 实时读取并显示输出
+        output_lines = []
+        while True:
+            output = process.stdout.readline()
+            if output == '' and process.poll() is not None:
+                break
+            if output:
+                print(output.strip())
+                output_lines.append(output.strip())
+        
+        # 等待进程完成
+        return_code = process.poll()
         
         end_time = time.time()
         duration = (end_time - start_time) / 60  # 转换为分钟
         
-        print(f"✅ {stage_name}完成 (用时: {duration:.1f}分钟)")
-        return True
+        if return_code == 0:
+            print(f"✅ {stage_name}完成 (用时: {duration:.1f}分钟)")
+            return True
+        else:
+            print(f"❌ {stage_name}失败 (退出码: {return_code})")
+            # 显示最后几行输出用于调试
+            if output_lines:
+                print("最后的输出:")
+                for line in output_lines[-10:]:
+                    print(f"  {line}")
+            return False
         
-    except subprocess.CalledProcessError as e:
-        print(f"❌ {stage_name}失败: {e}")
-        return False
     except KeyboardInterrupt:
         print(f"⚠️ {stage_name}被用户中断")
+        if 'process' in locals():
+            process.terminate()
         return False
     except Exception as e:
         print(f"❌ {stage_name}出错: {e}")
