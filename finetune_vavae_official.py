@@ -364,6 +364,100 @@ def validate_config_consistency():
     print("✅ 配置验证通过 - 与原项目完全一致")
     return True
 
+def install_dependencies():
+    """安装必要的依赖"""
+    import subprocess
+    import sys
+    
+    print("🔧 检查和安装依赖...")
+    
+    # 检查并安装 taming-transformers
+    try:
+        import taming
+        print("✅ taming-transformers 已安装")
+    except ImportError:
+        print("🔧 安装 taming-transformers...")
+        try:
+            # 安装 taming-transformers
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install", 
+                "git+https://github.com/CompVis/taming-transformers.git",
+                "--quiet"
+            ])
+            print("✅ taming-transformers 安装成功")
+        except Exception as e:
+            print(f"❌ taming-transformers 安装失败: {str(e)}")
+            print("💡 尝试手动安装:")
+            print("   !pip install git+https://github.com/CompVis/taming-transformers.git")
+            return False
+    
+    # 检查其他依赖
+    dependencies = {
+        'pytorch_lightning': 'pytorch-lightning',
+        'omegaconf': 'omegaconf',
+        'einops': 'einops',
+        'transformers': 'transformers'
+    }
+    
+    missing_deps = []
+    for module, package in dependencies.items():
+        try:
+            __import__(module)
+            print(f"✅ {module} 已安装")
+        except ImportError:
+            missing_deps.append(package)
+    
+    if missing_deps:
+        print(f"🔧 安装缺少的依赖: {', '.join(missing_deps)}")
+        try:
+            subprocess.check_call([
+                sys.executable, "-m", "pip", "install"
+            ] + missing_deps)
+            print("✅ 依赖安装成功")
+        except Exception as e:
+            print(f"❌ 依赖安装失败: {str(e)}")
+            return False
+    
+    return True
+
+def fix_taming_compatibility():
+    """修复 taming-transformers 兼容性问题"""
+    import os
+    from pathlib import Path
+    
+    print("🔧 修复 taming-transformers 兼容性...")
+    
+    # 查找 taming 安装路径
+    try:
+        import taming
+        taming_path = Path(taming.__file__).parent
+        utils_file = taming_path / "data" / "utils.py"
+        
+        if utils_file.exists():
+            # 读取文件内容
+            with open(utils_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 修复 torch._six 导入问题
+            if "from torch._six import string_classes" in content:
+                content = content.replace(
+                    "from torch._six import string_classes",
+                    "from six import string_types as string_classes"
+                )
+                
+                with open(utils_file, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                
+                print("✅ 修复 taming-transformers 兼容性成功")
+            else:
+                print("✅ taming-transformers 已是兼容版本")
+        else:
+            print("⚠️ 未找到 taming utils.py 文件")
+            
+    except Exception as e:
+        print(f"⚠️ taming 兼容性修复失败: {str(e)}")
+        print("💡 可能需要手动修复，但不影响训练")
+
 def auto_execute_training():
     """自动执行3阶段训练 - 一键运行"""
     import subprocess
@@ -371,6 +465,13 @@ def auto_execute_training():
     
     print("\n🤖 开始自动执行3阶段训练...")
     print("="*60)
+    
+    # 安装依赖
+    if not install_dependencies():
+        return False
+    
+    # 修复兼容性
+    fix_taming_compatibility()
     
     # 检查Python环境和依赖
     try:
