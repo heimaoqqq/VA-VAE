@@ -207,7 +207,7 @@ def main():
         return
     
     # 检查模型和数据
-    if not check_models_and_data():
+    if not check_model_and_data():
         print("❌ 模型或数据检查失败")
         return
     
@@ -220,26 +220,26 @@ def main():
         print(f"📋 已复制自定义数据加载器到: {custom_loader_dst}")
     
     # 阶段1: DINOv2对齐训练（使用自定义数据配置）
-    if not run_stage("stage1_custom_data.yaml", "DINOv2对齐训练"):
+    if not run_training_stage("DINOv2对齐训练", "configs/stage1_custom_data.yaml", 1):
         print("❌ DINOv2对齐训练失败，停止后续训练")
         return
     
     # 定义剩余2个阶段
     stages = [
-        ("stage2_reconstruction.yaml", "重建优化训练"),
-        ("stage3_margin.yaml", "Margin优化训练")
+        ("重建优化训练", "configs/stage2_reconstruction.yaml", 2),
+        ("Margin优化训练", "configs/stage3_margin.yaml", 3)
     ]
     
     # 依次执行剩余2个阶段
-    for config_file, stage_name in stages:
-        success = run_stage(config_file, stage_name)
+    for stage_name, config_path, stage_num in stages:
+        success = run_training_stage(stage_name, config_path, stage_num)
         
         if not success:
             print(f"❌ {stage_name}失败，停止后续训练")
             return
         
         # 在阶段2之后，提示用户更新配置文件
-        if config_file == "stage2_reconstruction.yaml":
+        if stage_num == 2:
             print(f"\n⚠️ 请检查并更新阶段3配置文件中的weight_init路径")
             print("💡 路径通常在: LightningDiT/vavae/logs/*/checkpoints/last.ckpt")
             
