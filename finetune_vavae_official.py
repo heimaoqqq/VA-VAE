@@ -487,10 +487,44 @@ def auto_execute_training():
         print(f"❌ 训练目录不存在: {vavae_dir}")
         return False
     
-    # 设置环境变量
+    # 设置环境变量 - 修复Kaggle子进程包找不到问题
     env = os.environ.copy()
     env['CUDA_VISIBLE_DEVICES'] = '0,1'
-    env['PYTHONPATH'] = f"{env.get('PYTHONPATH', '')}:{os.path.abspath('LightningDiT/vavae')}"
+    
+    # 获取当前 Python 的 site-packages 路径
+    import site
+    import sys
+    
+    # 构建完整的 PYTHONPATH
+    python_paths = [
+        os.path.abspath('LightningDiT/vavae'),  # VA-VAE 路径
+    ]
+    
+    # 添加当前 Python 的所有路径
+    python_paths.extend(sys.path)
+    
+    # 添加 site-packages 路径
+    python_paths.extend(site.getsitepackages())
+    
+    # 添加用户站点包路径
+    if hasattr(site, 'getusersitepackages'):
+        python_paths.append(site.getusersitepackages())
+    
+    # 设置 PYTHONPATH
+    env['PYTHONPATH'] = ':'.join(filter(None, python_paths))
+    
+    print(f"🔧 设置 PYTHONPATH: {len(python_paths)} 个路径")
+    
+    # 验证 taming 是否可用
+    try:
+        import taming
+        taming_path = os.path.dirname(taming.__file__)
+        print(f"✅ taming 路径: {taming_path}")
+        # 确保 taming路径在PYTHONPATH中
+        if taming_path not in env['PYTHONPATH']:
+            env['PYTHONPATH'] = f"{taming_path}:{env['PYTHONPATH']}"
+    except ImportError:
+        print("⚠️ taming 仍然不可用，将在子进程中重试")
     
     stages = [
         ("stage1_alignment.yaml", "阶段1: DINOv2对齐", "50 epochs, vf_weight=0.5"),
@@ -509,12 +543,36 @@ def auto_execute_training():
             print(f"❌ 配置文件不存在: {config_path}")
             return False
         
-        # 构建训练命令
-        cmd = [
-            sys.executable, "main.py",
-            "--base", f"../../{config_path}",
-            "--train"
-        ]
+        # 在子进程中验证和安装依赖
+        pre_script = f"""
+import sys
+import subprocess
+
+# 验证并安装 taming
+try:
+    import taming
+    print("\u2705 taming-transformers 已可用")
+except ImportError:
+    print("\ud83d\udd27 在子进程中安装 taming-transformers...")
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", 
+        "git+https://github.com/CompVis/taming-transformers.git",
+        "--quiet", "--no-warn-script-location"
+    ])
+    print("\u2705 taming-transformers 安装完成")
+
+# 执行主训练脚本
+import os
+os.system('python main.py --base ../../{config_path} --train')
+"""
+        
+        # 创建临时脚本文件
+        temp_script = vavae_dir / f"temp_stage{i}_train.py"
+        with open(temp_script, 'w', encoding='utf-8') as f:
+            f.write(pre_script.format(config_path=config_path))
+        
+        # 构建训练命令 - 使用临时脚本
+        cmd = [sys.executable, str(temp_script.name)]
         
         print(f"🚀 执行命令: {' '.join(cmd)}")
         print(f"📁 工作目录: {vavae_dir.absolute()}")
@@ -556,6 +614,13 @@ def auto_execute_training():
         except Exception as e:
             print(f"❌ {stage_name}执行出错: {str(e)}")
             return False
+        finally:
+            # 清理临时文件
+            try:
+                if temp_script.exists():
+                    temp_script.unlink()
+            except:
+                pass
     
     total_time = time.time() - total_start_time
     print(f"\n🎉 VA-VAE 3阶段微调全部完成！")
