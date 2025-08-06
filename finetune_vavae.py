@@ -106,9 +106,23 @@ def run_training_stage(stage_name, config_path, stage_num):
     print(f"🔧 执行命令: {' '.join(cmd)}")
     print(f"📁 工作目录: {vavae_dir.absolute()}")
     
-    # 设置环境变量
+    # 设置环境变量，包含taming路径
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0,1"  # 双GPU
+    
+    # 添加taming-transformers到PYTHONPATH
+    taming_path = str(Path("taming-transformers").absolute())
+    if taming_path not in sys.path:
+        sys.path.insert(0, taming_path)
+    
+    # 设置PYTHONPATH环境变量供子进程使用
+    current_pythonpath = env.get("PYTHONPATH", "")
+    if current_pythonpath:
+        env["PYTHONPATH"] = f"{taming_path}{os.pathsep}{current_pythonpath}"
+    else:
+        env["PYTHONPATH"] = taming_path
+    
+    print(f"🔧 设置PYTHONPATH: {env['PYTHONPATH']}")
     
     try:
         start_time = time.time()
