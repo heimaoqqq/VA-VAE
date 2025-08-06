@@ -10,6 +10,17 @@ import subprocess
 import time
 from pathlib import Path
 
+# Kaggle环境自动设置
+def setup_kaggle_paths():
+    """自动设置Kaggle环境路径"""
+    taming_path = Path("taming-transformers").absolute()
+    if taming_path.exists() and str(taming_path) not in sys.path:
+        sys.path.insert(0, str(taming_path))
+        print(f"🔧 自动添加taming路径: {taming_path}")
+
+# 在导入检查前先设置路径
+setup_kaggle_paths()
+
 def check_dependencies():
     """检查必要的依赖"""
     print("🔍 检查依赖...")

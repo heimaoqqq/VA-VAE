@@ -1,6 +1,6 @@
 # VA-VAE Kaggle使用指南
 
-本指南专门针对在Kaggle环境中使用VA-VAE进行微调的完整流程。
+在Kaggle环境中使用VA-VAE进行3阶段微调的完整指南。
 
 ## 🚀 快速开始
 
@@ -10,45 +10,20 @@
 %cd VA-VAE
 ```
 
-### 第二步：安装依赖
-**重要：请使用我们提供的安装脚本，它会按照官方要求正确安装所有依赖**
-
+### 第二步：一键环境设置
 ```bash
 !python install_dependencies.py
 ```
 
-如果安装脚本失败，请手动执行以下步骤：
+这个脚本会自动：
+- ✅ 安装所有必要依赖
+- ✅ 克隆并设置taming-transformers
+- ✅ 修复torch 2.x兼容性
+- ✅ 配置Python路径
 
-#### 手动安装taming-transformers（官方方式）
+### 第三步：开始微调
 ```bash
-# 克隆并安装taming-transformers
-!git clone https://github.com/CompVis/taming-transformers.git
-%cd taming-transformers
-!pip install -e .
-
-# 修复torch 2.x兼容性
-!sed -i 's/from torch._six import string_classes/from six import string_types as string_classes/' taming/data/utils.py
-
-%cd ..
-```
-
-#### 安装其他依赖
-```bash
-!pip install pytorch-lightning omegaconf einops transformers accelerate
-```
-
-### 第三步：验证安装
-```python
-# 运行依赖检查
-!python -c "
-import taming.data.utils as tdu
-import taming.modules.losses.vqperceptual
-from taming.modules.vqvae.quantize import VectorQuantizer2
-import pytorch_lightning as pl
-import omegaconf
-import einops
-print('✅ 所有依赖安装成功！')
-"
+!python finetune_vavae.py
 ```
 
 ### 第四步：准备数据和模型
