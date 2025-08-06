@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-VA-VAE官方3阶段微调脚本
-基于官方LightningDiT框架的标准微调流程
+VA-VAE 官方3阶段微调脚本
+按照官方LightningDiT推荐的策略依次执行3个阶段的训练
 """
 
 import os
@@ -9,6 +9,11 @@ import sys
 import subprocess
 import time
 from pathlib import Path
+import inspect
+
+# 修复 academictorrents 在 Python 3.11 中的兼容性问题
+if not hasattr(inspect, 'getargspec'):
+    inspect.getargspec = inspect.getfullargspec
 
 # Kaggle环境自动设置
 def setup_kaggle_paths():

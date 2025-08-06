@@ -16,11 +16,20 @@ def main():
     
     # 1. 安装基础依赖
     print("📦 安装基础依赖...")
-    deps = ["pytorch-lightning", "omegaconf", "einops", "transformers", "six", "academictorrents"]
+    deps = ["pytorch-lightning", "omegaconf", "einops", "transformers", "six"]
     for dep in deps:
         print(f"   安装 {dep}...")
         subprocess.run([sys.executable, "-m", "pip", "install", dep, "-q"], 
                       capture_output=True)
+    
+    # 修复academictorrents的Python 3.11兼容性问题
+    print("   修复academictorrents兼容性...")
+    # 先安装pypubsub的兼容版本
+    subprocess.run([sys.executable, "-m", "pip", "install", "pypubsub==4.0.3", "-q"], 
+                  capture_output=True)
+    # 然后安装academictorrents
+    subprocess.run([sys.executable, "-m", "pip", "install", "academictorrents", "-q"], 
+                  capture_output=True)
     
     # 2. 设置taming-transformers
     taming_dir = Path("taming-transformers")
