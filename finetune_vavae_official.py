@@ -543,33 +543,57 @@ def auto_execute_training():
             print(f"❌ 配置文件不存在: {config_path}")
             return False
         
-        # 在子进程中验证和安装依赖 - 使用纯ASCII字符避免编码错误
+        # 在子进程中验证和安装依赖 - 增强版本
         pre_script = """
 import sys
 import subprocess
+import os
+import time
 
-# Verify and install taming
+print("[INFO] Starting stage training subprocess...")
+
+# Force install taming-transformers
+print("[INFO] Force installing taming-transformers...")
 try:
-    import taming
-    print("[OK] taming-transformers available")
-except ImportError:
-    print("[INFO] Installing taming-transformers in subprocess...")
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", 
         "git+https://github.com/CompVis/taming-transformers.git",
-        "--quiet", "--no-warn-script-location"
+        "--force-reinstall", "--no-cache-dir", "--quiet"
     ])
-    print("[OK] taming-transformers installation completed")
+    print("[OK] taming-transformers force installation completed")
+except Exception as e:
+    print(f"[ERROR] Failed to install taming-transformers: {{e}}")
+    sys.exit(1)
 
-# Execute main training script
-import os
-os.system('python main.py --base ../../{} --train')
+# Verify installation
+try:
+    import taming
+    print(f"[OK] taming-transformers verified: {{taming.__file__}}")
+except ImportError as e:
+    print(f"[ERROR] taming-transformers still not available: {{e}}")
+    sys.exit(1)
+
+# Execute main training script with proper error handling
+print("[INFO] Starting main training script...")
+start_time = time.time()
+
+result = os.system('python main.py --base ../../{} --train')
+
+end_time = time.time()
+print(f"[INFO] Training completed in {{end_time - start_time:.1f}} seconds")
+print(f"[INFO] Exit code: {{result}}")
+
+if result != 0:
+    print("[ERROR] Training failed with non-zero exit code")
+    sys.exit(1)
+else:
+    print("[OK] Training completed successfully")
 """.format(config_path)
         
         # 创建临时脚本文件
         temp_script = vavae_dir / f"temp_stage{i}_train.py"
         with open(temp_script, 'w', encoding='utf-8') as f:
-            f.write(pre_script.format(config_path=config_path))
+            f.write(pre_script)  # pre_script已经格式化过了
         
         # 构建训练命令 - 使用临时脚本
         cmd = [sys.executable, str(temp_script.name)]
@@ -591,25 +615,47 @@ os.system('python main.py --base ../../{} --train')
                 bufsize=1
             )
             
-            # 实时显示输出
+            # 实时显示输出并检测训练进度
+            epoch_count = 0
+            error_messages = []
+            training_started = False
+            
             while True:
                 output = process.stdout.readline()
                 if output == '' and process.poll() is not None:
                     break
                 if output:
-                    # 过滤重要信息
-                    if any(keyword in output.lower() for keyword in 
-                          ['epoch', 'loss', 'val/', 'error', 'exception', 'finished']):
+                    output_lower = output.lower()
+                    # 检测训练开始
+                    if 'epoch' in output_lower and ('/' in output or 'training' in output_lower):
+                        training_started = True
+                        epoch_count += 1
+                        print(f"  📊 {output.strip()}")
+                    # 检测错误信息
+                    elif any(keyword in output_lower for keyword in 
+                          ['error', 'exception', 'traceback', 'failed', 'modulenotfounderror']):
+                        error_messages.append(output.strip())
+                        print(f"  ❌ {output.strip()}")
+                    # 显示其他重要信息
+                    elif any(keyword in output_lower for keyword in 
+                          ['loss', 'val/', 'finished', 'completed', 'saving']):
                         print(f"  📊 {output.strip()}")
             
             return_code = process.poll()
+            stage_time = time.time() - stage_start_time
             
-            if return_code != 0:
-                print(f"❌ {stage_name}训练失败 (返回码: {return_code})")
+            # 检查训练是否真正完成
+            if return_code != 0 or not training_started or stage_time < 60:  # 少于1分钟可能是失败
+                print(f"❌ {stage_name}训练失败:")
+                print(f"   - 返回码: {return_code}")
+                print(f"   - 训练开始: {'Yes' if training_started else 'No'}")
+                print(f"   - 用时: {stage_time:.1f}秒")
+                print(f"   - Epoch数: {epoch_count}")
+                if error_messages:
+                    print(f"   - 错误信息: {error_messages[-1]}")
                 return False
             
-            stage_time = time.time() - stage_start_time
-            print(f"✅ {stage_name}完成 (用时: {stage_time/60:.1f}分钟)")
+            print(f"✅ {stage_name}完成 (用时: {stage_time/60:.1f}分钟, {epoch_count} epochs)")
             
         except Exception as e:
             print(f"❌ {stage_name}执行出错: {str(e)}")
