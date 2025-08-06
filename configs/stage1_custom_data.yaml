@@ -1,40 +1,44 @@
+# VA-VAE微调 - 阶段1: DINOv2对齐训练（自定义数据）
+# 100 epochs: 使用大权重weight=0.5，无margin，专注于与视觉基础模型对齐
+
+# 预训练模型路径
+weight_init: models/vavae-imagenet256-f16d32-dinov2.pt
+
 model:
-  base_learning_rate: 4.5e-06
-  target: ldm.models.autoencoder.VQModelInterface
+  base_learning_rate: 1.0e-04
+  target: ldm.models.autoencoder.AutoencoderKL
   params:
+    monitor: val/rec_loss
     embed_dim: 32
-    n_embed: 16384
+    # 视觉基础模型对齐参数
+    use_vf: dinov2
+    reverse_proj: true        # 从vae维度投影到dinov2维度
+    
+    lossconfig:
+      target: ldm.modules.losses.LPIPSWithDiscriminator
+      params:
+        disc_start: 5001        # 阶段1: 延迟判别器启动
+        kl_weight: 1.0e-06
+        disc_weight: 0.5
+        # 视觉基础模型对齐参数
+        vf_weight: 0.5          # 阶段1: 大权重专注对齐
+        adaptive_vf: true
+        distmat_weight: 1.0     # 距离矩阵权重
+        cos_weight: 1.0         # 余弦相似度权重
+        distmat_margin: 0       # 阶段1: 无margin
+        cos_margin: 0           # 阶段1: 无margin
+        
     ddconfig:
-      double_z: false
+      double_z: true
       z_channels: 32
       resolution: 256
       in_channels: 3
       out_ch: 3
       ch: 128
-      ch_mult:
-      - 1
-      - 1
-      - 2
-      - 2
-      - 4
+      ch_mult: [1, 1, 2, 2, 4]
       num_res_blocks: 2
       attn_resolutions: [16]
       dropout: 0.0
-    lossconfig:
-      target: ldm.modules.losses.vqperceptual.VQLPIPSWithDiscriminator
-      params:
-        disc_conditional: false
-        disc_in_channels: 3
-        disc_start: 5001
-        disc_weight: 0.8
-        codebook_weight: 1.0
-        pixelloss_weight: 1.0
-        perceptual_weight: 1.0
-        vf_weight: 0.5  # 阶段1特有：DINOv2对齐
-        distmat_weight: 1.0
-        cos_weight: 1.0
-        distmat_margin: 0  # 阶段1：无边界
-        cos_margin: 0      # 阶段1：无边界
 
 data:
   target: main.DataModuleFromConfig
