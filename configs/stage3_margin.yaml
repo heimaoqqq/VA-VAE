@@ -49,12 +49,14 @@ data:
     train:
       target: ldm.data.imagenet.ImageNetTrain
       params:
+        data_root: /kaggle/input/dataset
         config:
           size: 256
           degradation: pil_nearest
     validation:
       target: ldm.data.imagenet.ImageNetValidation  
       params:
+        data_root: /kaggle/input/dataset
         config:
           size: 256
           degradation: pil_nearest

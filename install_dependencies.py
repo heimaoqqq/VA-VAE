@@ -16,7 +16,7 @@ def main():
     
     # 1. 安装基础依赖
     print("📦 安装基础依赖...")
-    deps = ["pytorch-lightning", "omegaconf", "einops", "transformers", "six"]
+    deps = ["pytorch-lightning", "omegaconf", "einops", "transformers", "six", "academictorrents"]
     for dep in deps:
         print(f"   安装 {dep}...")
         subprocess.run([sys.executable, "-m", "pip", "install", dep, "-q"], 
