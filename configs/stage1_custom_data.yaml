@@ -1,0 +1,74 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: ldm.models.autoencoder.VQModelInterface
+  params:
+    embed_dim: 32
+    n_embed: 16384
+    ddconfig:
+      double_z: false
+      z_channels: 32
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult:
+      - 1
+      - 1
+      - 2
+      - 2
+      - 4
+      num_res_blocks: 2
+      attn_resolutions: [16]
+      dropout: 0.0
+    lossconfig:
+      target: ldm.modules.losses.vqperceptual.VQLPIPSWithDiscriminator
+      params:
+        disc_conditional: false
+        disc_in_channels: 3
+        disc_start: 5001
+        disc_weight: 0.8
+        codebook_weight: 1.0
+        pixelloss_weight: 1.0
+        perceptual_weight: 1.0
+        vf_weight: 0.5  # 阶段1特有：DINOv2对齐
+        distmat_weight: 1.0
+        cos_weight: 1.0
+        distmat_margin: 0  # 阶段1：无边界
+        cos_margin: 0      # 阶段1：无边界
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 8
+    num_workers: 4
+    wrap: false
+    train:
+      target: custom_data_loader.CustomImageTrain
+      params:
+        data_root: /kaggle/input/dataset
+        size: 256
+    validation:
+      target: custom_data_loader.CustomImageValidation
+      params:
+        data_root: /kaggle/input/dataset
+        size: 256
+
+lightning:
+  trainer:
+    benchmark: True
+    max_epochs: 100
+    accumulate_grad_batches: 2
+    strategy: ddp
+    devices: 2
+    precision: 16
+  callbacks:
+    model_checkpoint:
+      target: pytorch_lightning.callbacks.ModelCheckpoint
+      params:
+        dirpath: logs/stage1_custom/checkpoints
+        filename: '{epoch:06}'
+        verbose: True
+        save_last: True
+        monitor: val/rec_loss
+        save_top_k: -1
+        every_n_train_steps: 5000

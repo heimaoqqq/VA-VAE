@@ -204,31 +204,43 @@ def main():
     # 检查依赖
     if not check_dependencies():
         print("❌ 依赖检查失败，请先安装必要的依赖")
-        return False
+        return
     
     # 检查模型和数据
-    if not check_model_and_data():
+    if not check_models_and_data():
         print("❌ 模型或数据检查失败")
-        return False
+        return
     
-    # 定义3个阶段
+    # 复制自定义数据加载器到vavae目录
+    vavae_dir = Path("LightningDiT/vavae")
+    custom_loader_src = Path("custom_data_loader.py")
+    custom_loader_dst = vavae_dir / "custom_data_loader.py"
+    if custom_loader_src.exists():
+        shutil.copy2(custom_loader_src, custom_loader_dst)
+        print(f"📋 已复制自定义数据加载器到: {custom_loader_dst}")
+    
+    # 阶段1: DINOv2对齐训练（使用自定义数据配置）
+    if not run_stage("stage1_custom_data.yaml", "DINOv2对齐训练"):
+        print("❌ DINOv2对齐训练失败，停止后续训练")
+        return
+    
+    # 定义剩余2个阶段
     stages = [
-        ("DINOv2对齐训练", "configs/stage1_alignment.yaml", 1),
-        ("重建优化训练", "configs/stage2_reconstruction.yaml", 2),
-        ("Margin优化训练", "configs/stage3_margin.yaml", 3)
+        ("stage2_reconstruction.yaml", "重建优化训练"),
+        ("stage3_margin.yaml", "Margin优化训练")
     ]
     
-    # 依次执行3个阶段
-    for stage_name, config_path, stage_num in stages:
-        success = run_training_stage(stage_name, config_path, stage_num)
+    # 依次执行剩余2个阶段
+    for config_file, stage_name in stages:
+        success = run_stage(config_file, stage_name)
         
         if not success:
             print(f"❌ {stage_name}失败，停止后续训练")
-            return False
+            return
         
-        # 在阶段1和2之后，提示用户更新配置文件
-        if stage_num < 3:
-            print(f"\n⚠️ 请检查并更新阶段{stage_num+1}配置文件中的weight_init路径")
+        # 在阶段2之后，提示用户更新配置文件
+        if config_file == "stage2_reconstruction.yaml":
+            print(f"\n⚠️ 请检查并更新阶段3配置文件中的weight_init路径")
             print("💡 路径通常在: LightningDiT/vavae/logs/*/checkpoints/last.ckpt")
             
             # 可选：等待用户确认
