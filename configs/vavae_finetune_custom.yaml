@@ -43,8 +43,8 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 8
-    num_workers: 4
+    batch_size: 4           # 减小batch_size以节省内存
+    num_workers: 2          # 减少worker数量
     wrap: true              # 官方设置为true（不是false）
     train:
       target: custom_data_loader.CustomImageTrain
@@ -75,8 +75,8 @@ lightning:
     strategy: ddp_find_unused_parameters_true
     accelerator: gpu
     max_epochs: 50          # 官方微调轮数
-    precision: 32
+    precision: 16           # 使用混合精度节省内存
     benchmark: true
     val_check_interval: 5000
     num_sanity_val_steps: 0
-    accumulate_grad_batches: 1
+    accumulate_grad_batches: 2  # 增加梯度累积以补偿小batch_size
