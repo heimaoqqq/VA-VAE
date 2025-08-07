@@ -86,10 +86,10 @@ lightning:
     val_check_interval: 2500    # 更频繁验证（每2500步）
     num_sanity_val_steps: 0     # 跳过sanity check避免问题
     accumulate_grad_batches: 2  # 增加梯度累积以补偿小batch_size
-    log_every_n_steps: 200      # 每100步记录一次（减少输出）
+    log_every_n_steps: 50       # 每50步记录一次
     enable_progress_bar: false  # 禁用进度条减少输出
     enable_model_summary: false # 禁用模型概要避免问题
     enable_checkpointing: true  # 启用检查点保存
-    # 进一步减少输出
-    logger: false               # 禁用默认logger减少输出
+    # 启用logger显示训练结果
+    logger: true                # 启用logger显示训练和验证结果
     profiler: null              # 禁用profiler
