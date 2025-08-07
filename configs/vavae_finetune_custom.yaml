@@ -43,7 +43,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 4           # 减小batch_size以节省内存
+    batch_size: 6           # 减小batch_size以节省内存
     num_workers: 2          # 减少worker数量
     wrap: true              # 官方设置为true（不是false）
     train:
