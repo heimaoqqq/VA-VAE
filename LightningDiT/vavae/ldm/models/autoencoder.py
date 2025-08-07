@@ -288,9 +288,9 @@ class AutoencoderKL(pl.LightningModule):
                 self.dino_model.eval()
                 self.dino_ch = 768
                 if not self.reverse_proj:
-                    self.proj = torch.nn.Linear(self.dino_ch, embed_dim)
-                else:
                     self.proj = torch.nn.Linear(embed_dim, self.dino_ch)
+                else:
+                    self.proj = torch.nn.Linear(self.dino_ch, embed_dim)
             else:
                 raise NotImplementedError
         self.automatic_optimization = False
@@ -333,7 +333,7 @@ class AutoencoderKL(pl.LightningModule):
                     aux_feature = aux_feature.mean(1)
             else:
                 raise NotImplementedError
-            aux_feature = F.linear(aux_feature, self.proj.weight.t(), self.proj.bias)
+            aux_feature = self.proj(aux_feature)
 
         dec = self.decode(z)
         return dec, posterior, z, aux_feature
