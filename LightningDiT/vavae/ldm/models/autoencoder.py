@@ -386,8 +386,8 @@ class AutoencoderKL(pl.LightningModule):
         aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="train", z=z, aux_feature=aux_feature, 
                                         enc_last_layer=enc_last_layer)
-        # 移除旧的日志代码，将log_dict暂存，供自定义回调使用
-        self.log_dict_ae = {k: v.item() for k, v in log_dict_ae.items()}
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
 
         ae_opt.zero_grad()
         self.manual_backward(aeloss)
@@ -396,15 +396,12 @@ class AutoencoderKL(pl.LightningModule):
         # train the discriminator
         discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="train", enc_last_layer=enc_last_layer)
-
-        # 将discriminator loss也暂存起来
-        self.last_discloss = discloss.item()
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
 
         disc_opt.zero_grad()
         self.manual_backward(discloss)
         disc_opt.step()
-
-        return {"loss": aeloss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0, data_type=None):
         inputs = self.get_input(batch, self.image_key)
