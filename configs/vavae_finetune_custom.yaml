@@ -75,10 +75,7 @@ lightning:
         batch_frequency: 2500       # 更频繁生成样本图像
         max_images: 8               # 增加样本图像数量
         clamp: true
-    progress_bar:
-      target: main.CustomProgressBar
-      params:
-        refresh_rate: 50
+
   trainer:
     devices: 2              # Kaggle双GPU
     num_nodes: 1            # 单节点（Kaggle环境）
@@ -91,7 +88,7 @@ lightning:
     num_sanity_val_steps: 0     # 跳过sanity check避免问题
     accumulate_grad_batches: 2  # 增加梯度累积以补偿小batch_size
     log_every_n_steps: 50       # 每50步记录一次
-    enable_progress_bar: false  # 禁用默认进度条，使用自定义回调
+    enable_progress_bar: true   # 重新启用默认进度条以确保稳定性
     enable_model_summary: false # 禁用模型概要避免问题
     enable_checkpointing: true  # 启用检查点保存
     # 启用logger显示训练结果
