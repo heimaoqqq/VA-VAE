@@ -61,14 +61,19 @@ lightning:
   find_unused_parameters: false
   modelcheckpoint:
     params:
-      every_n_train_steps: 5000
-      verbose: false        # 减少检查点保存时的输出
+      every_n_train_steps: 2500    # 更频繁保存（约每20个epoch）
+      save_top_k: 1                 # 只保留最好的1个模型
+      monitor: val/rec_loss         # 基于验证损失选择最佳模型
+      mode: min                     # 损失越小越好
+      save_last: false              # 不保存最新模型，只保存最佳
+      verbose: true                 # 显示保存信息
+      filename: 'vavae-best-{epoch:02d}-{val_rec_loss:.4f}'
   callbacks:
     image_logger:
       target: main.ImageLogger
       params:
-        batch_frequency: 5000
-        max_images: 4
+        batch_frequency: 2500       # 更频繁生成样本图像
+        max_images: 8               # 增加样本图像数量
         clamp: true
   trainer:
     devices: 2              # Kaggle双GPU
@@ -78,10 +83,13 @@ lightning:
     max_epochs: 50          # 官方微调轮数
     precision: 16           # 使用混合精度节省内存
     benchmark: true
-    val_check_interval: 5000
-    num_sanity_val_steps: 0
+    val_check_interval: 2500    # 更频繁验证（每2500步）
+    num_sanity_val_steps: 2     # 训练前验证2个batch确保正常
     accumulate_grad_batches: 2  # 增加梯度累积以补偿小batch_size
-    log_every_n_steps: 100      # 每100步记录一次（大幅减少输出）
+    log_every_n_steps: 50       # 更频繁记录（每50步）
     enable_progress_bar: true   # 启用进度条
-    enable_model_summary: false # 禁用详细模型概要
+    enable_model_summary: true  # 启用模型概要（首次运行有用）
     enable_checkpointing: true  # 启用检查点保存
+    # 详细日志配置
+    logger: true                # 启用详细日志记录
+    profiler: simple            # 启用简单性能分析
