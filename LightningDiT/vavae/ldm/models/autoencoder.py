@@ -419,8 +419,8 @@ class AutoencoderKL(pl.LightningModule):
                                             last_layer=self.get_last_layer(), split="val", enc_last_layer=enc_last_layer)
 
         self.log("val/rec_loss", log_dict_ae["val/rec_loss"], on_step=False, on_epoch=True, sync_dist=True)
-        self.log_dict(log_dict_ae, on_step=False, on_epoch=True, sync_dist=True)
-        self.log_dict(log_dict_disc, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val/aeloss", aeloss, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val/discloss", discloss, on_step=False, on_epoch=True, sync_dist=True)
 
     def configure_optimizers(self):
         lr = self.learning_rate
