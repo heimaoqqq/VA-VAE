@@ -686,24 +686,9 @@ if __name__ == "__main__":
         #     trainer_kwargs["resume_from_checkpoint"] = opt.resume_from_checkpoint
         #     print(f"Resuming from checkpoint: {opt.resume_from_checkpoint}")
 
-        # 自定义进度条回调来控制输出频率
-        class CustomProgressBar(ProgressBar):
-            def __init__(self):
-                super().__init__()
-                self._update_count = 0
-                self._update_interval = 50  # 每50步更新一次
-            
-            def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-                self._update_count += 1
-                if self._update_count % self._update_interval == 0:
-                    super().on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)
-        
-        # 启用进度条但使用自定义回调控制频率
+        # 使用简单可靠的进度条配置
         trainer_kwargs['enable_progress_bar'] = True
         trainer_kwargs['enable_model_summary'] = False
-        
-        # 添加自定义进度条到回调列表
-        trainer_kwargs['callbacks'].append(CustomProgressBar())
         
         trainer = Trainer(**{k: v for k, v in vars(trainer_opt).items() if v is not None}, **trainer_kwargs)
         trainer.logdir = logdir  ###
