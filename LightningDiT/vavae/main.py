@@ -684,6 +684,10 @@ if __name__ == "__main__":
         #     trainer_kwargs["resume_from_checkpoint"] = opt.resume_from_checkpoint
         #     print(f"Resuming from checkpoint: {opt.resume_from_checkpoint}")
 
+        # 强制禁用进度条以减少输出
+        trainer_kwargs['enable_progress_bar'] = False
+        trainer_kwargs['enable_model_summary'] = False
+        
         trainer = Trainer(**{k: v for k, v in vars(trainer_opt).items() if v is not None}, **trainer_kwargs)
         trainer.logdir = logdir  ###
 
