@@ -47,12 +47,12 @@ data:
     num_workers: 4
     wrap: true              # 官方设置为true（不是false）
     train:
-      target: custom_data_loader.CustomDataset
+      target: custom_data_loader.CustomImageTrain
       params:
         data_root: /kaggle/input/dataset
         size: 256
     validation:
-      target: custom_data_loader.CustomDataset
+      target: custom_data_loader.CustomImageValidation
       params:
         data_root: /kaggle/input/dataset
         size: 256
