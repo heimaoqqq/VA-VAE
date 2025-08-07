@@ -689,6 +689,11 @@ if __name__ == "__main__":
         # 使用简单可靠的进度条配置
         trainer_kwargs['enable_progress_bar'] = True
         trainer_kwargs['enable_model_summary'] = False
+
+        # 强制使用配置文件中的val_check_interval，避免被命令行默认值覆盖
+        if 'val_check_interval' in trainer_config:
+            if hasattr(trainer_opt, 'check_val_every_n_epoch'):
+                delattr(trainer_opt, 'check_val_every_n_epoch')
         
         trainer = Trainer(**{k: v for k, v in vars(trainer_opt).items() if v is not None}, **trainer_kwargs)
         trainer.logdir = logdir  ###
