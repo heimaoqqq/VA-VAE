@@ -386,9 +386,9 @@ class AutoencoderKL(pl.LightningModule):
         aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="train", z=z, aux_feature=aux_feature, 
                                         enc_last_layer=enc_last_layer)
-        # 减少日志输出频率 - 只在epoch结束时记录
-        self.log("aeloss", aeloss, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=False, on_epoch=False)
+        # 使用原始配置但禁用进度条显示
+        self.log("aeloss", aeloss, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
         # return aeloss
 
         ae_opt.zero_grad()
@@ -400,9 +400,9 @@ class AutoencoderKL(pl.LightningModule):
         discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="train", enc_last_layer=enc_last_layer)
 
-        # 减少日志输出频率 - 只在epoch结束时记录
-        self.log("discloss", discloss, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=False, on_epoch=False)
+        # 使用原始配置但禁用进度条显示
+        self.log("discloss", discloss, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
         # return discloss
 
         disc_opt.zero_grad()
