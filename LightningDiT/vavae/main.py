@@ -32,40 +32,7 @@ from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ProgressBar
 from pytorch_lightning.callbacks.progress.tqdm_progress import Tqdm
-from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor, TQDMProgressBar
-
-
-class CustomProgressBar(TQDMProgressBar):
-    """自定义进度条，解决Kaggle环境下的日志滚屏和信息冗余问题。"""
-    def __init__(self, refresh_rate=50):
-        super().__init__(refresh_rate=refresh_rate)
-        self.last_train_loss = {}
-
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
-        super().on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)
-        # 从outputs中提取损失值，这是Lightning 2.x的推荐做法
-        if 'loss' in outputs:
-            loss = outputs['loss'].item()
-            self.last_train_loss['loss'] = f"{loss:.4f}"
-        
-        # 从log_dict中获取更详细的指标
-        if hasattr(pl_module, 'log_dict_ae') and pl_module.log_dict_ae:
-            rec_loss = pl_module.log_dict_ae.get('train/rec_loss', 0.0)
-            vf_loss = pl_module.log_dict_ae.get('train/vf_loss', 0.0)
-            self.last_train_loss['rec'] = f"{rec_loss:.4f}"
-            self.last_train_loss['vf'] = f"{vf_loss:.4f}"
-        
-        if hasattr(pl_module, 'last_discloss') and pl_module.last_discloss is not None:
-            self.last_train_loss['disc'] = f"{pl_module.last_discloss:.4f}"
-
-        if self.is_enabled and self.train_batch_idx % self.refresh_rate == 0:
-            self.main_progress_bar.set_postfix(self.last_train_loss, refresh=True)
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        super().on_train_epoch_end(trainer, pl_module)
-        # Epoch结束时，清理一下后缀
-        self.main_progress_bar.set_postfix({}, refresh=True)
-
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from pytorch_lightning.utilities import rank_zero_only
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
