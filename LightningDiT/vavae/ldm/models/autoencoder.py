@@ -293,6 +293,7 @@ class AutoencoderKL(pl.LightningModule):
                     self.proj = torch.nn.Linear(embed_dim, self.dino_ch)
             else:
                 raise NotImplementedError
+        self.automatic_optimization = False
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
