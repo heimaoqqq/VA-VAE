@@ -333,8 +333,7 @@ class AutoencoderKL(pl.LightningModule):
                     aux_feature = aux_feature.mean(1)
             else:
                 raise NotImplementedError
-            self.proj.weight = torch.nn.Parameter(self.proj.weight.contiguous())
-            aux_feature = self.proj(aux_feature)
+            aux_feature = F.linear(aux_feature, self.proj.weight.t(), self.proj.bias)
 
         dec = self.decode(z)
         return dec, posterior, z, aux_feature
