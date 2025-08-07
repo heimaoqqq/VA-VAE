@@ -386,8 +386,8 @@ class AutoencoderKL(pl.LightningModule):
         aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="train", z=z, aux_feature=aux_feature, 
                                         enc_last_layer=enc_last_layer)
-        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=False, on_epoch=True)
         # return aeloss
 
         ae_opt.zero_grad()
@@ -399,8 +399,8 @@ class AutoencoderKL(pl.LightningModule):
         discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="train", enc_last_layer=enc_last_layer)
 
-        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=False, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=False, on_epoch=True)
         # return discloss
 
         disc_opt.zero_grad()
@@ -418,9 +418,9 @@ class AutoencoderKL(pl.LightningModule):
         discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="val", enc_last_layer=enc_last_layer)
 
-        self.log("val/rec_loss", log_dict_ae["val/rec_loss"])
-        self.log_dict(log_dict_ae)
-        self.log_dict(log_dict_disc)
+        self.log("val/rec_loss", log_dict_ae["val/rec_loss"], on_step=False, on_epoch=True, sync_dist=True)
+        self.log_dict(log_dict_ae, on_step=False, on_epoch=True, sync_dist=True)
+        self.log_dict(log_dict_disc, on_step=False, on_epoch=True, sync_dist=True)
         return self.log_dict
 
     def configure_optimizers(self):
