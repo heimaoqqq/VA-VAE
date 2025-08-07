@@ -698,13 +698,11 @@ if __name__ == "__main__":
                 if self._update_count % self._update_interval == 0:
                     super().on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)
         
-        # 禁用默认进度条，使用自定义进度条
-        trainer_kwargs['enable_progress_bar'] = False
+        # 启用进度条但使用自定义回调控制频率
+        trainer_kwargs['enable_progress_bar'] = True
         trainer_kwargs['enable_model_summary'] = False
         
         # 添加自定义进度条到回调列表
-        if 'callbacks' not in trainer_kwargs:
-            trainer_kwargs['callbacks'] = []
         trainer_kwargs['callbacks'].append(CustomProgressBar())
         
         trainer = Trainer(**{k: v for k, v in vars(trainer_opt).items() if v is not None}, **trainer_kwargs)
@@ -779,7 +777,7 @@ if __name__ == "__main__":
         # if not opt.no_test and not trainer.interrupted:
         #     trainer.test(model, data)
     except Exception:
-        if opt.debug and trainer.global_rank == 0:
+        if opt.debug and 'trainer' in locals() and trainer.global_rank == 0:
             try:
                 import pudb as debugger
             except ImportError:
@@ -788,10 +786,10 @@ if __name__ == "__main__":
         raise
     finally:
         # move newly created debug project to debug_runs
-        if opt.debug and not opt.resume and trainer.global_rank == 0:
+        if opt.debug and not opt.resume and 'trainer' in locals() and trainer.global_rank == 0:
             dst, name = os.path.split(logdir)
             dst = os.path.join(dst, "debug_runs", name)
             os.makedirs(os.path.split(dst)[0], exist_ok=True)
             os.rename(logdir, dst)
-        if trainer.global_rank == 0:
+        if 'trainer' in locals() and trainer.global_rank == 0:
             print(trainer.profiler.summary())
