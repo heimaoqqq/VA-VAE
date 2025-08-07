@@ -190,20 +190,23 @@ class VQModel(pl.LightningModule):
                    prog_bar=True, logger=True, on_step=False, on_epoch=True, sync_dist=True)
         if version.parse(pl.__version__) >= version.parse('1.4.0'):
             del log_dict_ae[f"val{suffix}/rec_loss"]
-        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=False, on_epoch=True, sync_dist=True)
-        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=False, on_epoch=True, sync_dist=True)
+        self.log_dict(log_dict_ae)
+        self.log_dict(log_dict_disc)
         return self.log_dict
 
     def configure_optimizers(self):
-        lr = self.learning_rate
+        lr_d = self.learning_rate
+        lr_g = self.lr_g_factor*self.learning_rate
+        print("lr_d", lr_d)
+        print("lr_g", lr_g)
         opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
                                   list(self.decoder.parameters())+
                                   list(self.quantize.parameters())+
                                   list(self.quant_conv.parameters())+
                                   list(self.post_quant_conv.parameters()),
-                                  lr=lr, betas=(0.5, 0.9))
+                                  lr=lr_g, betas=(0.5, 0.9))
         opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
-                                    lr=lr, betas=(0.5, 0.9))
+                                    lr=lr_d, betas=(0.5, 0.9))
 
         if self.scheduler_config is not None:
             scheduler = instantiate_from_config(self.scheduler_config)
@@ -227,10 +230,13 @@ class VQModel(pl.LightningModule):
     def get_last_layer(self):
         return self.decoder.conv_out.weight
 
-    def log_images(self, batch, **kwargs):
+    def log_images(self, batch, only_inputs=False, plot_ema=False, **kwargs):
         log = dict()
         x = self.get_input(batch, self.image_key)
         x = x.to(self.device)
+        if only_inputs:
+            log["inputs"] = x
+            return log
         xrec, _ = self(x)
         if x.shape[1] > 3:
             # colorize with random projection
@@ -239,6 +245,11 @@ class VQModel(pl.LightningModule):
             xrec = self.to_rgb(xrec)
         log["inputs"] = x
         log["reconstructions"] = xrec
+        if plot_ema:
+            with self.ema_scope():
+                xrec_ema, _ = self(x)
+                if x.shape[1] > 3: xrec_ema = self.to_rgb(xrec_ema)
+                log["reconstructions_ema"] = xrec_ema
         return log
 
     def to_rgb(self, x):
@@ -246,8 +257,29 @@ class VQModel(pl.LightningModule):
         if not hasattr(self, "colorize"):
             self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
         x = F.conv2d(x, weight=self.colorize)
-        x = (x - x.min()) / (x.max() - x.min() + 1e-6)  # given channels are not normalized
+        x = 2.*(x-x.min())/(x.max()-x.min()) - 1.
         return x
+
+
+class VQModelInterface(VQModel):
+    def __init__(self, embed_dim, *args, **kwargs):
+        super().__init__(embed_dim=embed_dim, *args, **kwargs)
+        self.embed_dim = embed_dim
+
+    def encode(self, x):
+        h = self.encoder(x)
+        h = self.quant_conv(h)
+        return h
+
+    def decode(self, h, force_not_quantize=False):
+        # also go through quantization layer
+        if not force_not_quantize:
+            quant, emb_loss, info = self.quantize(h)
+        else:
+            quant = h
+        quant = self.post_quant_conv(quant)
+        dec = self.decoder(quant)
+        return dec
 
 
 class AutoencoderKL(pl.LightningModule):
@@ -268,32 +300,33 @@ class AutoencoderKL(pl.LightningModule):
         self.image_key = image_key
         self.encoder = Encoder(**ddconfig)
         self.decoder = Decoder(**ddconfig)
+
         self.loss = instantiate_from_config(lossconfig)
         assert ddconfig["double_z"]
         self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1)
         self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
         self.embed_dim = embed_dim
+        if colorize_nlabels is not None:
+            assert type(colorize_nlabels)==int
+            self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
         if monitor is not None:
             self.monitor = monitor
-
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
-
-        self.use_vf = use_vf
-        self.reverse_proj = reverse_proj
-        self.proj_fix = proj_fix
         if use_vf is not None:
-            if use_vf == 'dinov2':
-                self.dino_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14_reg')
-                self.dino_model.eval()
-                self.dino_ch = 768
-                if not self.reverse_proj:
-                    self.proj = torch.nn.Linear(embed_dim, self.dino_ch)
-                else:
-                    self.proj = torch.nn.Linear(self.dino_ch, embed_dim)
-            else:
-                raise NotImplementedError
+            self.use_vf = use_vf
+            from ldm.models.foundation_models import aux_foundation_model
+            print(f"Using {use_vf} as auxiliary feature.")
+            self.foundation_model = aux_foundation_model(use_vf)
+            vf_feature_dim = self.foundation_model.feature_dim
+            self.linear_proj = torch.nn.Conv2d(vf_feature_dim, embed_dim, kernel_size=1, bias=True)
+            if reverse_proj:
+                self.linear_proj = torch.nn.Conv2d(embed_dim, vf_feature_dim, kernel_size=1, bias=False)
+        else:
+            self.use_vf = None
+        self.reverse_proj = reverse_proj
         self.automatic_optimization = False
+        self.proj_fix = proj_fix
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -311,7 +344,7 @@ class AutoencoderKL(pl.LightningModule):
         moments = self.quant_conv(h)
         posterior = DiagonalGaussianDistribution(moments)
         return posterior
-
+    
     def decode(self, z):
         z = self.post_quant_conv(z)
         dec = self.decoder(z)
@@ -323,20 +356,17 @@ class AutoencoderKL(pl.LightningModule):
             z = posterior.sample()
         else:
             z = posterior.mode()
-        
-        aux_feature = None
-        if self.use_vf is not None:
-            input_dino = F.interpolate(input, (224, 224), mode='bilinear')
-            if self.use_vf == 'dinov2':
-                with torch.no_grad():
-                    aux_feature = self.dino_model.forward_features(input_dino)['x_norm_patchtokens']
-                    aux_feature = aux_feature.mean(1)
-            else:
-                raise NotImplementedError
-            aux_feature = self.proj(aux_feature)
-
         dec = self.decode(z)
-        return dec, posterior, z, aux_feature
+
+        if self.use_vf is not None:
+            aux_feature = self.foundation_model(input)
+            if not self.reverse_proj:
+                aux_feature = self.linear_proj(aux_feature)
+            else:
+                z = self.linear_proj(z)
+            return dec, posterior, z, aux_feature
+
+        return dec, posterior, None, None
 
     def get_input(self, batch, k):
         x = batch[k]
@@ -350,23 +380,28 @@ class AutoencoderKL(pl.LightningModule):
         reconstructions, posterior, z, aux_feature = self(inputs)
         ae_opt, disc_opt = self.optimizers()
 
+        # if optimizer_idx == 0:
         # train encoder+decoder+logvar
         enc_last_layer = self.encoder.conv_out.weight
         aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="train", z=z, aux_feature=aux_feature, 
                                         enc_last_layer=enc_last_layer)
         self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        # return aeloss
 
         ae_opt.zero_grad()
         self.manual_backward(aeloss)
         ae_opt.step()
 
+        # if optimizer_idx == 1:
         # train the discriminator
         discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="train", enc_last_layer=enc_last_layer)
+
         self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        # return discloss
 
         disc_opt.zero_grad()
         self.manual_backward(discloss)
@@ -375,62 +410,63 @@ class AutoencoderKL(pl.LightningModule):
     def validation_step(self, batch, batch_idx, dataloader_idx=0, data_type=None):
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior, z, aux_feature = self(inputs)
+        enc_last_layer = self.encoder.conv_out.weight
         aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
-                                        last_layer=self.get_last_layer(), split="val", z=z, aux_feature=aux_feature)
+                                        last_layer=self.get_last_layer(), split="val", z=z, aux_feature=aux_feature, 
+                                        enc_last_layer=enc_last_layer)
+
         discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="val", enc_last_layer=enc_last_layer)
 
-        self.log("val/rec_loss", log_dict_ae["val/rec_loss"], prog_bar=True, logger=True, on_step=False, on_epoch=True, sync_dist=True)
-        self.log_dict(log_dict_ae, logger=True, on_step=False, on_epoch=True, sync_dist=True)
-        self.log_dict(log_dict_disc, logger=True, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val/rec_loss", log_dict_ae["val/rec_loss"])
+        self.log_dict(log_dict_ae)
+        self.log_dict(log_dict_disc)
         return self.log_dict
-
-    def on_train_epoch_end(self):
-        # 在每个训练轮次结束后，打印一个清晰的总结
-        if self.trainer.is_global_zero:
-            # 使用aeloss_epoch和discloss_epoch来获取epoch的平均损失
-            train_aeloss = self.trainer.callback_metrics.get('aeloss_epoch', 'N/A')
-            train_discloss = self.trainer.callback_metrics.get('discloss_epoch', 'N/A')
-            if isinstance(train_aeloss, torch.Tensor):
-                train_aeloss = train_aeloss.item()
-            if isinstance(train_discloss, torch.Tensor):
-                train_discloss = train_discloss.item()
-            
-            print(f"\nEpoch {self.current_epoch} Summary: Train AE Loss: {train_aeloss:.4f}, Train Disc Loss: {train_discloss:.4f}")
 
     def configure_optimizers(self):
         lr = self.learning_rate
-        params = list(self.encoder.parameters()) + \
-                 list(self.decoder.parameters()) + \
-                 list(self.quant_conv.parameters()) + \
-                 list(self.post_quant_conv.parameters())
+        params = (list(self.encoder.parameters()) +
+                 list(self.decoder.parameters()) +
+                 list(self.quant_conv.parameters()) +
+                 list(self.post_quant_conv.parameters()))
         
         if self.use_vf is not None and not self.proj_fix:
-            params.extend(list(self.proj.parameters()))
-
+            params += list(self.linear_proj.parameters())
+            
         opt_ae = torch.optim.Adam(params, lr=lr, betas=(0.5, 0.9))
+
         opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
                                     lr=lr, betas=(0.5, 0.9))
         return [opt_ae, opt_disc], []
 
     def get_last_layer(self):
         return self.decoder.conv_out.weight
-
-    def log_images(self, batch, **kwargs):
+    
+    @torch.no_grad()
+    def log_images(self, batch, only_inputs=False, **kwargs):
         log = dict()
         x = self.get_input(batch, self.image_key)
         x = x.to(self.device)
-        # also log reconstructions of latent space samples
-        with torch.no_grad():
-            z = torch.randn(x.shape[0], self.embed_dim, x.shape[2]//8, x.shape[3]//8).to(self.device)
-            log["samples"] = self.decode(z)
-        reconstructions, posterior, z, aux_feature = self(x)
-        log["reconstructions"] = reconstructions
+        if not only_inputs:
+            xrec, posterior, z, aux_features = self(x)
+            if x.shape[1] > 3:
+                # colorize with random projection
+                assert xrec.shape[1] > 3
+                x = self.to_rgb(x)
+                xrec = self.to_rgb(xrec)
+            log["samples"] = self.decode(torch.randn_like(posterior.sample()))
+            log["reconstructions"] = xrec
         log["inputs"] = x
         return log
 
     def to_rgb(self, x):
-        x = x.clamp(0., 1.)
+        assert self.image_key == "segmentation"
+        if not hasattr(self, "colorize"):
+            self.register_buffer("colorize", torch.randn(3, x.shape[1], 1, 1).to(x))
+        x = F.conv2d(x, weight=self.colorize)
+        x = 2.*(x-x.min())/(x.max()-x.min()) - 1.
+        return x
+
 
 class IdentityFirstStage(torch.nn.Module):
     def __init__(self, *args, vq_interface=False, **kwargs):
