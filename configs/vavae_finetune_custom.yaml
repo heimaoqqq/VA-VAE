@@ -81,10 +81,10 @@ lightning:
     num_nodes: 1            # 单节点（Kaggle环境）
     strategy: ddp_find_unused_parameters_true   # 启用未使用参数检查（VA-VAE必需）
     accelerator: gpu
-    max_epochs: 10          # 官方微调轮数
+    max_epochs: 49          # 根据12小时限制和验证频率优化
     precision: 16           # 使用混合精度节省内存
     benchmark: true
-    val_check_interval: 2500    # 更频繁验证（每2500步）
+    val_check_interval: 3190    # 每5个epoch验证一次 (5 * 638 steps)
     num_sanity_val_steps: 0     # 跳过sanity check避免问题
     accumulate_grad_batches: 2  # 增加梯度累积以补偿小batch_size
     log_every_n_steps: 50       # 每50步记录一次
