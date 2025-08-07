@@ -386,39 +386,25 @@ class AutoencoderKL(pl.LightningModule):
         aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="train", z=z, aux_feature=aux_feature, 
                                         enc_last_layer=enc_last_layer)
-        # 只记录epoch级别的日志，防止刷屏
-        self.log("aeloss", aeloss, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-        # return aeloss
+        # 移除旧的日志代码，将log_dict暂存，供自定义回调使用
+        self.log_dict_ae = {k: v.item() for k, v in log_dict_ae.items()}
 
         ae_opt.zero_grad()
         self.manual_backward(aeloss)
         ae_opt.step()
 
-        # if optimizer_idx == 1:
         # train the discriminator
         discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
                                             last_layer=self.get_last_layer(), split="train", enc_last_layer=enc_last_layer)
 
-        # 只记录epoch级别的日志，防止刷屏
-        self.log("discloss", discloss, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=False, on_epoch=True)
-
-        # 手动更新进度条，只显示核心指标
-        if hasattr(self.trainer.progress_bar_callback, 'main_progress_bar'):
-            self.trainer.progress_bar_callback.main_progress_bar.set_postfix(
-                {
-                    "rec_loss": log_dict_ae.get("train/rec_loss", 0.0).item(),
-                    "vf_loss": log_dict_ae.get("train/vf_loss", 0.0).item(),
-                    "disc_loss": discloss.item(),
-                },
-                refresh=True,
-            )
-        # return discloss
+        # 将discriminator loss也暂存起来
+        self.last_discloss = discloss.item()
 
         disc_opt.zero_grad()
         self.manual_backward(discloss)
         disc_opt.step()
+
+        return {"loss": aeloss}
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0, data_type=None):
         inputs = self.get_input(batch, self.image_key)
