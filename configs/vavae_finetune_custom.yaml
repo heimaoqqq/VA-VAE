@@ -5,7 +5,7 @@
 weight_init: models/vavae-imagenet256-f16d32-dinov2.pt
 
 model:
-  base_learning_rate: 1.0e-04
+  base_learning_rate: 2.0e-05  # 降低学习率提高稳定性
   target: ldm.models.autoencoder.AutoencoderKL
   params:
     monitor: val/rec_loss
@@ -18,15 +18,15 @@ model:
       target: ldm.modules.losses.LPIPSWithDiscriminator
       params:
         disc_start: 5001
-        kl_weight: 1.0e-06
+        kl_weight: 1.0e-05     # 增大KL权重改善潜空间正则化
         disc_weight: 0.5
-        # 官方微调参数 - 关键设置
-        vf_weight: 0.1          # 官方微调权重（不是0.5）
+        # Stage 1微调参数 - 对齐阶段（修复NaN问题）
+        vf_weight: 0.5          # Stage 1: 0.5（不是0.1）
         adaptive_vf: true
         distmat_weight: 1.0
         cos_weight: 1.0
-        distmat_margin: 0.25    # 官方有margin（不是0）
-        cos_margin: 0.5         # 官方有margin（不是0）
+        distmat_margin: 0.0     # Stage 1: 无margin
+        cos_margin: 0.0         # Stage 1: 无margin
         
     ddconfig:
       double_z: true
@@ -82,7 +82,7 @@ lightning:
     strategy: ddp_find_unused_parameters_true   # 启用未使用参数检查（VA-VAE必需）
     accelerator: gpu
     max_epochs: 40          # 保守轮数（假设每轮都验证）
-    precision: 16           # 使用混合精度节省内存
+    precision: 32           # 使用FP32确保数值稳定（VAE对精度敏感）
     benchmark: true
     val_check_interval: 3190    # 每5个epoch验证一次 (5 * 638 steps)
     num_sanity_val_steps: 0     # 跳过sanity check避免问题
