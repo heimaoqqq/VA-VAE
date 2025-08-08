@@ -5,7 +5,7 @@ model:
   target: ConditionalDiT
   params:
     model: "DiT-XL/1"
-    num_users: 10              # 需要根据实际用户数量调整
+    num_users: 31              # 31个用户 (ID_1 到 ID_31)
     condition_dim: 768
     frozen_backbone: true      # 冻结主干网络防止过拟合
     dropout: 0.15              # 高dropout防过拟合
@@ -14,7 +14,7 @@ model:
 data:
   target: MicroDopplerDataModule
   params:
-    data_dir: "/kaggle/input/microdoppler-data"  # 需要修改为实际数据路径
+    data_dir: "/kaggle/input/dataset"  # 您的数据集路径
     batch_size: 2              # 小batch适应显存限制
     num_workers: 2
     image_size: 256
