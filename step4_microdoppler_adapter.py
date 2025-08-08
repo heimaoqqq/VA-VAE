@@ -41,7 +41,7 @@ class MicroDopplerDataset(Dataset):
         """加载样本数据"""
         samples = []
         
-        for image_path in self.data_dir.rglob("*.png"):  # 假设图像是PNG格式
+        for image_path in self.data_dir.rglob("*.jpg"):  # JPG格式的micro-Doppler图像
             # 从文件名或目录结构提取用户ID
             # 这里需要根据您的数据组织方式调整
             user_id = self._extract_user_id(image_path)
@@ -57,14 +57,9 @@ class MicroDopplerDataset(Dataset):
     
     def _extract_user_id(self, image_path: Path) -> str:
         """从文件路径提取用户ID"""
-        # 示例实现，需要根据您的数据结构调整
-        # 假设文件名格式为: user001_sample123.png
-        filename = image_path.stem
-        if '_' in filename:
-            return filename.split('_')[0]
-        else:
-            # 假设按目录组织: data_dir/user001/sample123.png
-            return image_path.parent.name
+        # 根据您的数据结构: /kaggle/input/dataset/ID_x/image.jpg
+        # 直接从父目录名获取用户ID
+        return image_path.parent.name  # 返回 "ID_1", "ID_2", etc.
     
     def __len__(self):
         return len(self.samples)
@@ -172,20 +167,22 @@ class MicroDopplerDataModule:
     
     def _discover_users(self) -> Dict[str, int]:
         """自动发现数据中的用户"""
-        user_ids = set()
         data_path = Path(self.data_dir)
+        user_ids = set()
         
-        # 从文件名或目录结构提取用户ID
-        for image_path in data_path.rglob("*.png"):
-            # 这里需要根据您的数据结构调整
-            if '_' in image_path.stem:
-                user_id = image_path.stem.split('_')[0]
-            else:
-                user_id = image_path.parent.name
-            user_ids.add(user_id)
+        # 扫描所有子目录，寻找ID_x格式的用户文件夹
+        for subdir in data_path.iterdir():
+            if subdir.is_dir() and subdir.name.startswith('ID_'):
+                user_ids.add(subdir.name)
+        
+        # 按ID数字排序 (ID_1, ID_2, ..., ID_31)
+        def sort_key(user_id):
+            return int(user_id.split('_')[1])
+        
+        sorted_user_ids = sorted(user_ids, key=sort_key)
         
         # 分配类别索引
-        user_labels = {user_id: idx for idx, user_id in enumerate(sorted(user_ids))}
+        user_labels = {user_id: idx for idx, user_id in enumerate(sorted_user_ids)}
         return user_labels
     
     def setup(self):
@@ -245,6 +242,10 @@ def test_data_loading(data_dir: str):
         # 设置数据
         data_module.setup()
         
+        print(f"📊 发现的用户映射:")
+        for user_id, class_idx in data_module.user_labels.items():
+            print(f"   - {user_id} → 类别{class_idx}")
+        
         # 测试训练数据加载器
         train_loader = data_module.train_dataloader()
         batch = next(iter(train_loader))
@@ -254,6 +255,10 @@ def test_data_loading(data_dir: str):
         print(f"   - 用户类别: {batch['user_class']}")
         print(f"   - 用户ID: {batch['user_id']}")
         
+        # 验证用户标签范围
+        user_classes = batch['user_class'].cpu().numpy()
+        print(f"   - 类别范围: [{user_classes.min()}, {user_classes.max()}]")
+        
         # 测试条件编码器
         condition_encoder = UserConditionEncoder(
             num_users=data_module.num_users,
@@ -262,6 +267,12 @@ def test_data_loading(data_dir: str):
         
         user_features = condition_encoder(batch['user_class'])
         print(f"✅ 用户条件编码成功: {user_features.shape}")
+        
+        # 统计数据集大小
+        print(f"📈 数据集统计:")
+        print(f"   - 总用户数: {data_module.num_users}")
+        print(f"   - 训练样本: {len(data_module.train_dataset)}")
+        print(f"   - 验证样本: {len(data_module.val_dataset)}")
         
         return True
         
