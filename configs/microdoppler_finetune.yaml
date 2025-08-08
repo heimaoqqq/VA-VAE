@@ -1,0 +1,70 @@
+# micro-Doppler条件扩散生成微调配置
+# 基于LightningDiT-XL-64ep预训练模型进行用户条件微调
+
+model:
+  target: ConditionalDiT
+  params:
+    model: "DiT-XL/1"
+    num_users: 10              # 需要根据实际用户数量调整
+    condition_dim: 768
+    frozen_backbone: true      # 冻结主干网络防止过拟合
+    dropout: 0.15              # 高dropout防过拟合
+    pretrained_path: "models/lightningdit-xl-imagenet256-64ep.pt"
+
+data:
+  target: MicroDopplerDataModule
+  params:
+    data_dir: "/kaggle/input/microdoppler-data"  # 需要修改为实际数据路径
+    batch_size: 2              # 小batch适应显存限制
+    num_workers: 2
+    image_size: 256
+    val_split: 0.2
+
+trainer:
+  precision: "bf16-mixed"      # 官方推荐的混合精度
+  max_epochs: 50
+  check_val_every_n_epoch: 3   # 每3个epoch验证一次
+  gradient_clip_val: 0.5       # 梯度裁剪防止爆炸
+  accumulate_grad_batches: 8   # 梯度累积模拟大batch
+  log_every_n_steps: 25
+  enable_progress_bar: true
+  enable_model_summary: false
+
+optimizer:
+  target: torch.optim.AdamW
+  params:
+    lr: 5.0e-6                 # 极小学习率防过拟合
+    weight_decay: 1.0e-3       # 强权重衰减
+    betas: [0.9, 0.95]
+
+scheduler:
+  target: torch.optim.lr_scheduler.CosineAnnealingLR
+  params:
+    T_max: 50
+    eta_min: 1.0e-7
+
+# 风险控制策略
+risk_control:
+  early_stopping:
+    patience: 5                # 5个epoch无改善则停止
+    min_delta: 0.001
+  
+  regularization:
+    techniques: ["dropout", "weight_decay", "gradient_clipping", "frozen_backbone"]
+    monitoring: ["train_loss", "val_loss", "gradient_norm"]
+  
+  memory_optimization:
+    gradient_checkpointing: true
+    mixed_precision: true
+    small_batch_size: true
+
+# 实验记录
+experiment:
+  name: "microdoppler_conditional_dit"
+  description: "micro-Doppler时频图像用户条件扩散生成"
+  tags: ["microdoppler", "conditional", "dit", "few-shot"]
+  
+logging:
+  log_level: "INFO"
+  save_samples: true
+  sample_every_n_epochs: 5
