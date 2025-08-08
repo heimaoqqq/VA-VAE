@@ -5,7 +5,7 @@
 weight_init: models/vavae-imagenet256-f16d32-dinov2.pt
 
 model:
-  base_learning_rate: 2.0e-05  # 降低学习率提高稳定性
+  base_learning_rate: 1.0e-05  # 进一步降低学习率防止FP16数值问题
   target: ldm.models.autoencoder.AutoencoderKL
   params:
     monitor: val/rec_loss
@@ -81,12 +81,12 @@ lightning:
     num_nodes: 1            # 单节点（Kaggle环境）
     strategy: ddp_find_unused_parameters_true   # 启用未使用参数检查（VA-VAE必需）
     accelerator: gpu
-    max_epochs: 5          # 保守轮数（假设每轮都验证）
-    precision: 32           # 使用FP32确保数值稳定（VAE对精度敏感）
+    max_epochs: 39          # 保守轮数（假设每轮都验证）
+    precision: 16           # 回到FP16提高效率，配合其他稳定化措施
     benchmark: true
     val_check_interval: 3190    # 每5个epoch验证一次 (5 * 638 steps)
     num_sanity_val_steps: 0     # 跳过sanity check避免问题
-    accumulate_grad_batches: 2  # 增加梯度累积以补偿小batch_size
+    accumulate_grad_batches: 4  # 增加梯度累积提高稳定性
     log_every_n_steps: 50       # 每50步记录一次
     enable_progress_bar: true   # 重新启用默认进度条以确保稳定性
     enable_model_summary: false # 禁用模型概要避免问题
