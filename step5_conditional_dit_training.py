@@ -602,6 +602,10 @@ def main():
     print("="*60)
     print(f"📝 配置文件: {args.config}")
     
+    # 🔍 调试信息：检查配置加载
+    print(f"🔍 调试 - 加载的数据路径: {config['data']['params']['data_dir']}")
+    print(f"🔍 调试 - 完整数据配置: {config['data']['params']}")
+    
     # 创建训练器并开始训练
     trainer = ConditionalDiTTrainer(config)
     trainer.train()
