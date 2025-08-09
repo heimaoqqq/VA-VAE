@@ -346,8 +346,8 @@ def main():
         yaml.dump(config, f, default_flow_style=False, indent=2)
     print(f"✅ 配置模板已创建: {config_path}")
     
-    # 测试数据加载（需要提供实际数据目录）
-    data_dir = "/path/to/microdoppler/data"  # 需要修改为实际路径
+    # 测试数据加载（使用配置中的实际数据目录）
+    data_dir = "/kaggle/input/dataset"  # 您的数据集路径
     if Path(data_dir).exists():
         if test_data_loading(data_dir):
             print("✅ 数据加载测试通过")
@@ -355,11 +355,13 @@ def main():
             print("❌ 数据加载测试失败")
     else:
         print(f"ℹ️ 数据目录不存在: {data_dir}")
-        print("ℹ️ 请修改配置文件中的data_dir路径")
+        print("ℹ️ 请确保您的数据在 /kaggle/input/dataset 目录下")
     
     print("\n" + "="*60)
     print("✅ micro-Doppler适配器创建完成")
-    print("📝 下一步: 修改配置文件中的数据路径，然后运行条件微调")
+    print(f"📝 配置文件已设置数据路径: {data_dir}")
+    print("🚀 下一步: 直接运行条件微调训练")
+    print("   python step5_conditional_dit_training.py --config configs/microdoppler_finetune.yaml")
 
 if __name__ == "__main__":
     main()
