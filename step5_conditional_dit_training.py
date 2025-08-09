@@ -21,8 +21,8 @@ from datetime import datetime
 # 添加LightningDiT到路径
 sys.path.append(str(Path("LightningDiT").absolute()))
 
-from dit.models import DiT_models
-from tokenizer.vavae import AutoencoderKL
+from models.lightningdit import LightningDiT_models
+from tokenizer.vavae import VA_VAE
 from step4_microdoppler_adapter import MicroDopplerDataModule, UserConditionEncoder
 
 class ConditionalDiT(nn.Module):
@@ -42,8 +42,16 @@ class ConditionalDiT(nn.Module):
         self.condition_dim = condition_dim
         self.frozen_backbone = frozen_backbone
         
-        # 加载预训练DiT
-        self.dit = DiT_models[model](input_size=16)  # 16 = 256/16
+        # 加载预训练DiT - 严格按照官方配置参数
+        self.dit = LightningDiT_models[model](
+            input_size=16,           # 16 = 256/16 (VA-VAE下采样率)
+            in_channels=32,          # VA-VAE潜向量通道数
+            use_qknorm=False,        # 官方配置
+            use_swiglu=True,         # 官方配置
+            use_rope=True,           # 官方配置
+            use_rmsnorm=True,        # 官方配置
+            wo_shift=False           # 官方配置
+        )
         
         if pretrained_path:
             self._load_pretrained_weights(pretrained_path)
