@@ -87,12 +87,12 @@ class ConditionalDiT(nn.Module):
         print(f"📥 加载预训练权重: {pretrained_path}")
         checkpoint = torch.load(pretrained_path, map_location='cpu')
         
-        # 处理不同的checkpoint格式
+        # 处理不同的checkpoint格式 - 修复权重加载
         if isinstance(checkpoint, dict):
-            if 'ema' in checkpoint:
-                state_dict = checkpoint['ema']
-            elif 'model' in checkpoint:
+            if 'model' in checkpoint:
                 state_dict = checkpoint['model']
+            elif 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
             else:
                 state_dict = checkpoint
         else:
