@@ -168,7 +168,7 @@ def test_basic_inference():
         dit.load_state_dict(state_dict, strict=False)
         
         # 设置评估模式
-        vae.eval()
+        vae.model.eval()  # VA_VAE是包装器，真正的模型在.model属性中
         dit.eval()
         
         print("🎯 执行端到端推理...")
