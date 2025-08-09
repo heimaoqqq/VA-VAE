@@ -186,8 +186,8 @@ class MicroDopplerDataModule:
         return user_labels
     
     def setup(self):
-        """设置数据集"""
-        # 创建完整数据集
+        """设置数据集 - 使用分层用户划分策略"""
+        # 创建完整数据集以获取所有样本信息
         full_dataset = MicroDopplerDataset(
             data_dir=self.data_dir,
             user_labels=self.user_labels,
@@ -195,17 +195,89 @@ class MicroDopplerDataModule:
             split="full"
         )
         
-        # 分割训练/验证集
-        total_size = len(full_dataset)
-        val_size = int(total_size * self.val_split)
-        train_size = total_size - val_size
+        # ✅ 按用户分层划分训练/验证集
+        train_indices, val_indices = self._stratified_user_split(full_dataset.samples)
         
-        self.train_dataset, self.val_dataset = torch.utils.data.random_split(
-            full_dataset, [train_size, val_size],
-            generator=torch.Generator().manual_seed(42)
-        )
+        # 创建训练和验证数据集
+        self.train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
+        self.val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
         
-        print(f"📊 数据分割: 训练{train_size}张，验证{val_size}张")
+        print(f"📊 分层用户数据分割:")
+        print(f"   - 训练集: {len(train_indices)}张图像")
+        print(f"   - 验证集: {len(val_indices)}张图像")
+        
+        # 验证每个用户都有训练和验证样本
+        self._validate_user_distribution(train_indices, val_indices, full_dataset.samples)
+    
+    def _stratified_user_split(self, samples: List[Dict]) -> Tuple[List[int], List[int]]:
+        """
+        按用户分层划分数据集，确保每个用户都有训练和验证样本
+        
+        Args:
+            samples: 完整样本列表
+            
+        Returns:
+            train_indices, val_indices: 训练和验证样本的索引
+        """
+        import random
+        random.seed(42)  # 确保可复现
+        
+        # 按用户组织样本索引
+        user_sample_indices = {}
+        for idx, sample in enumerate(samples):
+            user_id = sample['user_id']
+            if user_id not in user_sample_indices:
+                user_sample_indices[user_id] = []
+            user_sample_indices[user_id].append(idx)
+        
+        train_indices = []
+        val_indices = []
+        
+        print(f"📋 每用户样本分布:")
+        for user_id, indices in user_sample_indices.items():
+            user_total = len(indices)
+            user_val_size = max(1, int(user_total * self.val_split))  # 至少1个验证样本
+            user_train_size = user_total - user_val_size
+            
+            # 随机打乱该用户的样本
+            random.shuffle(indices)
+            
+            # 分配训练和验证样本
+            user_train_indices = indices[:user_train_size]
+            user_val_indices = indices[user_train_size:]
+            
+            train_indices.extend(user_train_indices)
+            val_indices.extend(user_val_indices)
+            
+            print(f"   - {user_id}: 总计{user_total}张 → 训练{user_train_size}张, 验证{user_val_size}张")
+        
+        return train_indices, val_indices
+    
+    def _validate_user_distribution(self, train_indices: List[int], val_indices: List[int], samples: List[Dict]):
+        """验证每个用户在训练和验证集中都有样本"""
+        # 统计训练集中的用户
+        train_users = set()
+        for idx in train_indices:
+            train_users.add(samples[idx]['user_id'])
+        
+        # 统计验证集中的用户
+        val_users = set()
+        for idx in val_indices:
+            val_users.add(samples[idx]['user_id'])
+        
+        # 检查是否所有用户都在两个集合中
+        all_users = set(self.user_labels.keys())
+        
+        missing_train = all_users - train_users
+        missing_val = all_users - val_users
+        
+        if missing_train:
+            print(f"⚠️ 警告: 以下用户在训练集中缺失: {missing_train}")
+        if missing_val:
+            print(f"⚠️ 警告: 以下用户在验证集中缺失: {missing_val}")
+        
+        if not missing_train and not missing_val:
+            print(f"✅ 数据分布验证通过: 所有{len(all_users)}个用户在训练和验证集中都有样本")
     
     def train_dataloader(self):
         return DataLoader(
