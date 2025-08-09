@@ -226,8 +226,15 @@ def main():
                     'num_workers': 0
                 }
             },
+            'optimizer': {
+                'params': {
+                    'type': 'Adam',
+                    'learning_rate': 1e-5,
+                    'weight_decay': 1e-4,
+                    'betas': [0.9, 0.999]
+                }
+            },
             'training': {
-                'learning_rate': 1e-5,
                 'max_epochs': 1,
                 'contrastive_weight': 0.1,
                 'regularization_weight': 0.01,
