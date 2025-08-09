@@ -157,18 +157,19 @@ class ConditionalDiT(nn.Module):
         x = self.dit.x_embedder(x) + self.dit.pos_embed  # 空间嵌入
         t = self.dit.t_embedder(t)                        # 时间嵌入
         
-        # ✅ 关键：使用我们的丰富用户条件而不是原始y_embedder
-        # 确保user_condition的维度与DiT期望的隐藏层维度一致
-        if user_condition.size(-1) != self.dit.hidden_size:
-            # 如果维度不匹配，使用一个线性层调整
-            if not hasattr(self, '_condition_projector'):
-                self._condition_projector = nn.Linear(
-                    user_condition.size(-1), 
-                    self.dit.hidden_size
-                ).to(user_condition.device)
-            y = self._condition_projector(user_condition)
-        else:
-            y = user_condition
+        # ✅ 关键：使用我们的丰富用户条件，确保维度匹配DiT hidden_size
+        # DiT-XL/1 hidden_size = 1152，我们的condition_dim = 768
+        
+        # 创建条件维度投影器（如果还没有）
+        if not hasattr(self, '_condition_projector'):
+            self._condition_projector = nn.Linear(
+                user_condition.size(-1),  # 768 (condition_dim)
+                self.dit.hidden_size      # 1152 (DiT-XL hidden_size)
+            ).to(user_condition.device)
+            print(f"🔧 创建条件投影器: {user_condition.size(-1)} -> {self.dit.hidden_size}")
+        
+        # 投影用户条件到DiT隐藏层维度
+        y = self._condition_projector(user_condition)  # [batch_size, 768] -> [batch_size, 1152]
         
         c = t + y  # 组合时间和用户条件
         
