@@ -23,11 +23,13 @@ from tqdm import tqdm
 import wandb
 from datetime import datetime
 
-# 清除torch._dynamo缓存，解决768维问题
+# 🚀 完全禁用torch._dynamo，解决DataParallel冲突
 import torch._dynamo
 torch._dynamo.reset()
-torch._dynamo.config.suppress_errors = True  # 临时禁用dynamo编译
-print("🧹 已清除torch._dynamo缓存，禁用动态编译以避免768维缓存问题")
+torch._dynamo.config.suppress_errors = True
+torch._dynamo.config.disable = True  # 完全禁用dynamo编译
+torch.backends.cudnn.allow_tf32 = True  # 优化性能
+print("🧹 已完全禁用torch._dynamo，避免与DataParallel冲突")
 
 # 添加LightningDiT到路径
 sys.path.append(str(Path("LightningDiT").absolute()))
@@ -82,6 +84,9 @@ class ConditionalDiT(nn.Module):
         
         # 条件注入层 - 修改DiT的adaLN层
         self._inject_condition_layers()
+        
+        # 🚀 初始化用户条件缓存（避免属性错误）
+        self._last_user_condition = None
         
         print(f"✅ 条件DiT初始化完成")
         print(f"   - 主干冻结: {frozen_backbone}")
