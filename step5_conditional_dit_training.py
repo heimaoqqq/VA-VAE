@@ -261,6 +261,13 @@ class ConditionalDiTTrainer:
         # 初始化日志
         self._setup_logging()
     
+    def _get_model_attr(self, attr_name: str):
+        """🚀 统一的模型属性访问：支持DataParallel和普通模型"""
+        if self.use_multi_gpu and hasattr(self.model, 'module'):
+            return getattr(self.model.module, attr_name)
+        else:
+            return getattr(self.model, attr_name)
+    
     def _setup_model(self):
         """设置模型"""
         model_config = self.config['model']['params']
@@ -287,8 +294,8 @@ class ConditionalDiTTrainer:
         
         # 更新模型的用户数量
         actual_num_users = self.data_module.num_users
-        if actual_num_users != self.model.num_users:
-            print(f"⚠️ 更新用户数量: {self.model.num_users} -> {actual_num_users}")
+        if actual_num_users != self._get_model_attr('num_users'):
+            print(f"⚠️ 更新用户数量: {self._get_model_attr('num_users')} -> {actual_num_users}")
             # 这里可能需要重新初始化条件编码器
     
     def _setup_optimizer(self):
