@@ -5,20 +5,20 @@ model:
   target: ConditionalDiT
   params:
     model: "DiT-XL/1"
-    num_users: 31              # 31个用户 (ID_1 到 ID_31)
+    num_users: 31              # 31个用户 (ID_1 到 ID_31) - 可根据实际数据调整
     condition_dim: 768
     frozen_backbone: true      # 冻结主干网络防止过拟合
     dropout: 0.15              # 高dropout防过拟合
-    pretrained_path: "models/lightningdit-xl-imagenet256-64ep.pt"
+    pretrained_path: "models/lightningdit-xl-imagenet256-64ep.pt"  # 确保此路径存在
 
 data:
   target: MicroDopplerDataModule
   params:
-    data_dir: "/kaggle/input/dataset"  # 您的数据集路径
-    batch_size: 2              # 小batch适应显存限制
+    data_dir: "/kaggle/input/dataset"  # 修改为您的实际数据路径
+    batch_size: 2              # 小batch适应显存限制，可根据GPU内存调整 (1-4)
     num_workers: 2
     image_size: 256
-    val_split: 0.2
+    val_split: 0.2             # 验证集比例，可调整为0.15-0.25
 
 trainer:
   precision: "bf16-mixed"      # 官方推荐的混合精度
