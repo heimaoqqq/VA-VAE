@@ -234,20 +234,29 @@ class ConditionalDiT(nn.Module):
 class ConditionalDiTTrainer:
     """条件DiT训练器"""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict):
         self.config = config
         
-        # 🚀 Kaggle双GPU支持：使用DataParallel
+        # Kaggle双GPU支持：使用DataParallel
         self.gpu_count = torch.cuda.device_count()
         self.use_multi_gpu = self.gpu_count > 1
         
         if self.use_multi_gpu:
             # Kaggle双GPU环境：使用DataParallel
             self.device = torch.device('cuda:0')  # 主设备
-            print(f"🚀 Kaggle环境检测到{self.gpu_count}个GPU，启用DataParallel")
+            print(f"Kaggle环境检测到{self.gpu_count}个GPU，启用DataParallel")
         else:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            print(f"💻 使用单GPU/CPU: {self.device}")
+            print(f"使用单GPU/CPU: {self.device}")
+        
+        # GPU性能优化设置（T4 GPU兼容）
+        if torch.cuda.is_available():
+            # 启用cudnn benchmark自动优化（T4支持且有效）
+            torch.backends.cudnn.benchmark = True
+            print("GPU优化已启用: cudnn.benchmark=True (T4兼容)")
+        else:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            print(f"使用单GPU/CPU: {self.device}")
         
         # 初始化模型
         self._setup_model()
