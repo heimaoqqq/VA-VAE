@@ -214,8 +214,8 @@ def main():
             'data': {
                 'params': {
                     'data_dir': "/kaggle/input/dataset",
-                    'batch_size': 4,
-                    'num_workers': 0
+                    'batch_size': 16,  # 🚀 增加到16，提高用户重复概率
+                    'num_workers': 4   # 双GPU环境增加workers
                 }
             },
             'optimizer': {
