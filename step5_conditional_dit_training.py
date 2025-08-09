@@ -188,12 +188,29 @@ class ConditionalDiT(nn.Module):
         print(f"🔒 冻结参数: {frozen_count}")
     
     def _inject_condition_layers(self):
-        """注入条件处理层 - 修复版本"""
-        # 🔧 修复：不需要条件注入，使用DiT原生的y_embedder机制即可
-        # 删除错误的条件注入逻辖，让DiT使用标准的类别条件机制
+        """恢复高级条件注入层 - 针对数据稀缺和微妙差异优化"""
+        print("🚀 恢复高级用户条件注入机制...")
         
-        print("🔧 使用DiT原生条件机制，无需额外注入条件层")
-        pass  # 空实现，使用DiT的标准y_embedder
+        # 为每个DiT block添加用户条件融合层
+        for i, block in enumerate(self.dit.blocks):
+            # 获取adaLN层的输出维度
+            adaln_out_features = block.adaLN_modulation[1].out_features  # 应该是hidden_size * 6
+            
+            # 创建用户条件融合网络
+            user_condition_fusion = nn.Sequential(
+                nn.Linear(self.condition_dim, self.condition_dim),
+                nn.SiLU(),
+                nn.Dropout(0.1),
+                nn.Linear(self.condition_dim, adaln_out_features),  # 映射到adaLN输出维度
+                nn.Tanh()  # 限制输出范围，避免梯度爆炸
+            ).to(self.device)
+            
+            # 将融合层添加到block上
+            setattr(block, f'user_condition_fusion', user_condition_fusion)
+            
+            print(f"  ✅ Block {i}: 添加用户条件融合层 ({self.condition_dim} -> {adaln_out_features})")
+        
+        print(f"✅ 完成高级条件注入：{len(self.dit.blocks)}个blocks，总共{len(self.dit.blocks)}个融合层")
     
     def forward(self, x: torch.Tensor, t: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
         """
@@ -215,18 +232,43 @@ class ConditionalDiT(nn.Module):
         return predicted_noise
     
     def _conditional_forward_with_injection(self, x, t, user_classes, user_condition):
-        """最简化的条件注入方案 - 避免所有维度问题"""
-        # ✅ 最简单的方案：让DiT正常运行，但在最后加上用户条件增强
+        """高级条件注入前向传播 - 针对数据稀缺和微妙差异优化"""
+        # 💡 策略：在每个DiT block中融合用户条件，增强判别能力
         
-        # 1. 使用DiT的标准前向传播
-        # 注意：这里我们故意让DiT使用它原来的y_embedder机制
-        predicted_noise = self.dit(x, t, user_classes)
+        # 1. 获取DiT的基础embedding
+        x = self.dit.x_embedder(x) + self.dit.pos_embed  # 位置编码
+        t = self.dit.t_embedder(t)                        # 时间编码
+        y = self.dit.y_embedder(user_classes)            # 基础用户类别编码
+        c = t + y                                         # 标准条件
         
-        # 2. 为对比学习保存用户条件（在compute_loss中使用）
-        # 这样我们既保持了DiT的稳定性，又有丰富的用户条件用于对比学习
+        # 2. 为每个block应用高级用户条件融合
+        for block in self.dit.blocks:
+            # 标准DiT block处理
+            x = block(x, c)
+            
+            # 🚀 关键：用户条件融合增强
+            if hasattr(block, 'user_condition_fusion'):
+                # 计算用户条件增强项
+                user_enhancement = block.user_condition_fusion(user_condition)
+                
+                # 融合到adaLN调制中（残差连接方式）
+                # 这样既保持了DiT的稳定性，又增强了用户判别能力
+                if hasattr(block, '_last_adaln_output'):
+                    # 如果能获取到adaLN输出，直接增强
+                    enhanced_modulation = block._last_adaln_output + 0.1 * user_enhancement
+                    # 将增强应用到下一层（通过调制c）
+                    c = c + torch.mean(enhanced_modulation.view(enhanced_modulation.size(0), -1), dim=1, keepdim=True)
+                else:
+                    # 备用方案：直接影响条件向量
+                    c = c + 0.1 * torch.mean(user_enhancement.view(user_enhancement.size(0), -1), dim=1, keepdim=True)
+        
+        # 3. 最终输出层
+        x = self.dit.final_layer(x, c)
+        
+        # 4. 保存用户条件用于对比学习
         self._last_user_condition = user_condition
         
-        return predicted_noise
+        return x
 
 class ConditionalDiTTrainer:
     """条件DiT训练器"""
