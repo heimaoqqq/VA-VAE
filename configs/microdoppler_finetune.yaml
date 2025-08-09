@@ -22,7 +22,7 @@ data:
 
 trainer:
   precision: "16-mixed"        # T4 GPU兼容的FP16混合精度 (bf16不支持!)
-  max_epochs: 35             # 小batch需要更多epoch补偿训练效率
+  max_epochs: 25             # 基于实际25分钟/epoch调整为12小时安全范围
   check_val_every_n_epoch: 5   # 减少验证频率节约时间
   gradient_clip_val: 1.0       # T4上FP16需要更强的梯度裁剪
   accumulate_grad_batches: 3   # 模拟effective_batch=36，平衡效率与多样性
