@@ -241,7 +241,7 @@ class ConditionalDiT(nn.Module):
         # 1. 获取DiT的基础embedding
         x = self.dit.x_embedder(x) + self.dit.pos_embed  # 位置编码
         t = self.dit.t_embedder(t)                        # 时间编码
-        y = self.dit.y_embedder(user_classes)            # 基础用户类别编码
+        y = self.dit.y_embedder(user_classes, self.training)  # 基础用户类别编码（需要train参数）
         c = t + y                                         # 标准条件
         
         # 2. 为每个block应用高级用户条件融合
