@@ -360,7 +360,7 @@ def create_config_template():
         'model': {
             'target': 'ConditionalDiT',
             'params': {
-                'model': 'DiT-XL/1',
+                'model': 'LightningDiT-XL/1',
                 'num_users': 31,  # 用户数量 (ID_1 到 ID_31)
                 'condition_dim': 768,
                 'frozen_backbone': True,
