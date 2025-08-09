@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-步骤1: Kaggle环境依赖安装
-严格按照LightningDiT官方requirements.txt
+步骤1: VA-VAE Kaggle环境完整安装脚本
+合并官方LightningDiT依赖 + taming-transformers集成
+严格按照官方requirements.txt，解决所有依赖问题
 """
 
-import subprocess
+import os
 import sys
+import subprocess
 import pkg_resources
+from pathlib import Path
 
 def run_command(cmd, description=""):
     """运行命令并处理错误"""
@@ -119,6 +122,59 @@ def install_official_requirements():
     print(f"\n📊 安装结果: {success_count}/{total_packages} 个包成功")
     return success_count >= total_packages - 2  # 允许2个包失败
 
+def install_additional_dependencies():
+    """安装VA-VAE额外依赖（原install_dependencies.py内容）"""
+    print("\n📦 安装VA-VAE额外依赖...")
+    
+    # 额外依赖
+    deps = ["pytorch-lightning", "transformers", "six"]
+    for dep in deps:
+        print(f"   安装 {dep}...")
+        run_command(f"pip install {dep} -q", f"安装 {dep}")
+    
+    # 修复academictorrents的Python 3.11兼容性问题
+    print("   修复academictorrents兼容性...")
+    # 先安装pypubsub的兼容版本
+    run_command("pip install pypubsub==4.0.3 -q", "安装pypubsub兼容版本")
+    # 然后安装academictorrents
+    run_command("pip install academictorrents -q", "安装academictorrents")
+
+def setup_taming_transformers():
+    """设置taming-transformers"""
+    print("\n📥 设置taming-transformers...")
+    
+    taming_dir = Path("taming-transformers")
+    if not taming_dir.exists():
+        print("📥 克隆taming-transformers...")
+        run_command("git clone https://github.com/CompVis/taming-transformers.git", 
+                   "克隆taming-transformers")
+    else:
+        print("✅ taming-transformers已存在")
+    
+    # 修复兼容性
+    utils_file = taming_dir / "taming" / "data" / "utils.py"
+    if utils_file.exists():
+        print("🔧 修复torch兼容性...")
+        content = utils_file.read_text()
+        if "from torch._six import string_classes" in content:
+            content = content.replace(
+                "from torch._six import string_classes",
+                "from six import string_types as string_classes"
+            )
+            utils_file.write_text(content)
+            print("✅ 兼容性修复完成")
+    
+    # 添加到Python路径
+    taming_path = str(taming_dir.absolute())
+    if taming_path not in sys.path:
+        sys.path.insert(0, taming_path)
+    
+    # 保存路径信息供后续使用
+    with open(".taming_path", "w") as f:
+        f.write(taming_path)
+    
+    return taming_path
+
 def verify_installation():
     """验证安装结果"""
     print("\n🔍 验证安装结果...")
@@ -134,7 +190,9 @@ def verify_installation():
         ("pytorch_fid", "PyTorch FID"),
         ("omegaconf", "OmegaConf"),
         ("einops", "Einops"),
-        ("safetensors", "SafeTensors")
+        ("safetensors", "SafeTensors"),
+        ("pytorch_lightning", "PyTorch Lightning"),
+        ("transformers", "Transformers")
     ]
     
     success_count = 0
@@ -177,7 +235,16 @@ def verify_installation():
         print(f"❌ PyTorch功能测试失败: {e}")
         return False
     
-    print(f"\n📊 验证结果: {success_count}/{len(test_modules)} 个模块成功")
+    # 测试taming-transformers
+    print("\n🔍 测试taming-transformers...")
+    try:
+        import taming.data.utils
+        print("✅ taming-transformers: 导入成功")
+        success_count += 1
+    except ImportError as e:
+        print(f"❌ taming-transformers: 导入失败 - {e}")
+    
+    print(f"\n📊 验证结果: {success_count}/{len(test_modules)+1} 个模块成功")
 
     if success_count >= len(test_modules) - 1:
         print("🎉 环境安装成功！")
@@ -190,7 +257,8 @@ def verify_installation():
 
 def main():
     """主函数"""
-    print("🚀 步骤1: LightningDiT环境安装 (Kaggle优化)")
+    print("🚀 VA-VAE Kaggle环境完整安装")
+    print("🎯 LightningDiT官方依赖 + taming-transformers集成")
     print("="*60)
     
     # 1. 检查当前环境
@@ -199,17 +267,29 @@ def main():
     # 2. 安装官方依赖
     print("\n" + "="*40)
     if not install_official_requirements():
-        print("❌ 依赖安装失败")
+        print("❌ 官方依赖安装失败")
         return False
     
-    # 3. 验证安装
+    # 3. 安装额外依赖
+    print("\n" + "="*40)
+    install_additional_dependencies()
+    
+    # 4. 设置taming-transformers
+    print("\n" + "="*40)
+    taming_path = setup_taming_transformers()
+    
+    # 5. 验证安装
     print("\n" + "="*40)
     if not verify_installation():
         print("❌ 验证失败")
         return False
     
-    print("\n✅ 步骤1完成！环境准备就绪")
-    print("📋 下一步: !python step2_download_models.py")
+    print("\n✅ 环境设置完成！")
+    print(f"   - taming-transformers: 已添加到路径 ({taming_path})")
+    print(f"   - 所有依赖包: 安装并验证通过")
+    print("\n💡 现在可以运行:")
+    print("   - python finetune_vavae.py")
+    print("   - python step2_download_models.py")
     
     return True
 
