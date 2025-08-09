@@ -36,7 +36,17 @@ def test_no_pretrained():
         print("🔍 检查条件层维度...")
         print(f"UserConditionEncoder输出维度: {model.condition_encoder.embed_dim}")
         print(f"DiT hidden_size: {model.dit.hidden_size}")
-        print(f"DiT y_embedder权重: {model.dit.y_embedder.weight.shape}")
+        # 检查LabelEmbedder的内部结构
+        if hasattr(model.dit.y_embedder, 'embedding_table'):
+            print(f"DiT y_embedder权重: {model.dit.y_embedder.embedding_table.weight.shape}")
+        elif hasattr(model.dit.y_embedder, 'weight'):
+            print(f"DiT y_embedder权重: {model.dit.y_embedder.weight.shape}")
+        else:
+            print(f"DiT y_embedder类型: {type(model.dit.y_embedder)}")
+            for attr in dir(model.dit.y_embedder):
+                if not attr.startswith('_') and hasattr(getattr(model.dit.y_embedder, attr), 'shape'):
+                    shape = getattr(model.dit.y_embedder, attr).shape
+                    print(f"  {attr}: {shape}")
         
         # 3. 检查所有adaLN层
         print("🔍 检查adaLN层...")
