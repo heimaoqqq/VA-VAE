@@ -18,6 +18,12 @@ from tqdm import tqdm
 import wandb
 from datetime import datetime
 
+# 清除torch._dynamo缓存，解决768维问题
+import torch._dynamo
+torch._dynamo.reset()
+torch._dynamo.config.suppress_errors = True  # 临时禁用dynamo编译
+print("🧹 已清除torch._dynamo缓存，禁用动态编译以避免768维缓存问题")
+
 # 添加LightningDiT到路径
 sys.path.append(str(Path("LightningDiT").absolute()))
 
@@ -335,7 +341,7 @@ class ConditionalDiTTrainer:
         z_noisy = torch.sqrt(alpha_bar_t) * z + torch.sqrt(1 - alpha_bar_t) * noise
         
         # 获取用户条件嵌入（用于对比学习）
-        user_embeddings = self.model.condition_encoder(user_classes)  # (B, 768)
+        user_embeddings = self.model.condition_encoder(user_classes)  # (B, 1152) ✅ 修复注释
         
         # 模型预测
         predicted_noise = self.model(z_noisy, timesteps, user_classes)
