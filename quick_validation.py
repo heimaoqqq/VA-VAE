@@ -228,10 +228,10 @@ def main():
             },
             'optimizer': {
                 'params': {
-                    'type': 'Adam',
                     'learning_rate': 1e-5,
                     'weight_decay': 1e-4,
                     'betas': [0.9, 0.999]
+                    # 不包含type，因为ConditionalDiTTrainer已hardcode使用AdamW
                 }
             },
             'training': {
