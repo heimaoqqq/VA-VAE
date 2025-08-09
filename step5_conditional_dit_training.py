@@ -136,23 +136,40 @@ class ConditionalDiT(nn.Module):
         Args:
             x: (B, C, H, W) 潜向量
             t: (B,) 时间步
-            user_classes: (B,) 用户类别
+            user_classes: (B,) 用户类别 (0-30 对应 ID_1 到 ID_31)
         Returns:
             predicted_noise: (B, C, H, W) 预测的噪声
         """
-        # 编码用户条件
-        user_condition = self.condition_encoder(user_classes)  # (B, condition_dim)
+        # 编码丰富的用户条件特征
+        user_condition = self.condition_encoder(user_classes)  # (B, condition_dim=768)
         
-        # DiT前向传播（需要修改以支持条件）
-        predicted_noise = self._conditional_dit_forward(x, t, user_condition)
+        # 将丰富的用户条件注入到DiT中
+        # 方法：替换DiT的y_embedder输出为我们的丰富条件
+        predicted_noise = self._conditional_forward_with_injection(x, t, user_classes, user_condition)
         
         return predicted_noise
     
-    def _conditional_dit_forward(self, x: torch.Tensor, t: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        """带条件的DiT前向传播"""
-        # 这里需要修改DiT的前向传播逻辑以支持条件输入
-        # 简化实现：直接调用原有DiT，条件通过修改后的adaLN层注入
-        return self.dit(x, t)
+    def _conditional_forward_with_injection(self, x, t, user_classes, user_condition):
+        """带条件注入的DiT前向传播"""
+        # 保存原始的y_embedder
+        original_y_embedder = self.dit.y_embedder
+        
+        # 创建临时的条件注入函数
+        def injected_y_embedder(y, training=False):
+            # 忽略原始的y，直接使用我们丰富的user_condition
+            return user_condition  # (B, condition_dim) -> 直接用作条件
+        
+        # 临时替换y_embedder
+        self.dit.y_embedder = injected_y_embedder
+        
+        try:
+            # 使用注入了丰富条件的DiT进行前向传播
+            predicted_noise = self.dit(x, t, user_classes)  # y_embedder会被我们的函数替换
+        finally:
+            # 恢复原始y_embedder
+            self.dit.y_embedder = original_y_embedder
+            
+        return predicted_noise
 
 class ConditionalDiTTrainer:
     """条件DiT训练器"""
@@ -177,10 +194,9 @@ class ConditionalDiTTrainer:
         """设置模型"""
         model_config = self.config['model']['params']
         
-        # VAE
-        self.vae = AutoencoderKL.from_config("LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
-        self.vae.to(self.device)
-        self.vae.eval()
+        # VAE - 使用正确的VA_VAE类和API
+        self.vae = VA_VAE("LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
+        # VA_VAE已经在初始化时自动移动到GPU和设置eval模式
         
         # 条件DiT
         self.model = ConditionalDiT(
@@ -236,16 +252,15 @@ class ConditionalDiTTrainer:
         print(f"✅ 实验目录: {self.exp_dir}")
     
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """计算损失"""
+        """计算损失 - 增强版：包含对比学习用于用户区分"""
         images = batch['image'].to(self.device)
         user_classes = batch['user_class'].to(self.device)
         
         batch_size = images.shape[0]
         
-        # VAE编码
+        # VAE编码 - 使用正确的VA_VAE API
         with torch.no_grad():
-            posterior = self.vae.encode(images)
-            z = posterior.sample()  # (B, C, H, W)
+            z = self.vae.encode_images(images)  # VA_VAE直接返回潜向量张量
         
         # 添加噪声（DDPM训练）
         noise = torch.randn_like(z)
@@ -258,13 +273,201 @@ class ConditionalDiTTrainer:
         
         z_noisy = torch.sqrt(alpha_bar_t) * z + torch.sqrt(1 - alpha_bar_t) * noise
         
+        # 获取用户条件嵌入（用于对比学习）
+        user_embeddings = self.model.condition_encoder(user_classes)  # (B, 768)
+        
         # 模型预测
         predicted_noise = self.model(z_noisy, timesteps, user_classes)
         
-        # MSE损失
-        loss = F.mse_loss(predicted_noise, noise)
+        # 1. 主损失：扩散重构损失
+        diffusion_loss = F.mse_loss(predicted_noise, noise)
         
-        return loss
+        # 2. 对比损失：强化用户间区分
+        contrastive_loss = self._compute_contrastive_loss(user_embeddings, user_classes)
+        
+        # 3. 正则化损失：防止条件崩溃
+        regularization_loss = self._compute_regularization_loss(user_embeddings, user_classes)
+        
+        # 总损失
+        total_loss = diffusion_loss + 0.1 * contrastive_loss + 0.05 * regularization_loss
+        
+        # 记录分量损失
+        if hasattr(self, 'current_losses'):
+            self.current_losses = {
+                'diffusion': diffusion_loss.item(),
+                'contrastive': contrastive_loss.item(), 
+                'regularization': regularization_loss.item()
+            }
+        
+        return total_loss
+    
+    def _compute_contrastive_loss(self, user_embeddings: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
+        """简化的对比学习损失：遵循SimCLR原则，避免memory bank复杂性"""
+        batch_size = user_embeddings.shape[0]
+        
+        if batch_size < 2:
+            return torch.tensor(0.0, device=user_embeddings.device)
+        
+        # === 采用SimCLR风格的简化对比学习 ===
+        # 核心思想：在batch内进行充分的对比，配合gradient accumulation模拟大batch
+        contrastive_loss = self._compute_simclr_style_contrastive_loss(user_embeddings, user_classes)
+        
+        return contrastive_loss
+    
+    def _compute_simclr_style_contrastive_loss(self, user_embeddings: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
+        """SimCLR风格的简化对比学习 - 避免memory bank的复杂性和陈旧性问题"""
+        batch_size = user_embeddings.shape[0]
+        
+        if batch_size < 2:
+            return torch.tensor(0.0, device=user_embeddings.device)
+        
+        # L2标准化嵌入（SimCLR的关键实践）
+        user_embeddings = F.normalize(user_embeddings, p=2, dim=1)
+        
+        # 计算余弦相似度矩阵
+        similarities = torch.mm(user_embeddings, user_embeddings.t())  # (B, B)
+        
+        # 温度参数（SimCLR建议0.07-0.1）
+        temperature = 0.07
+        similarities = similarities / temperature
+        
+        # 创建正样本mask：相同用户为正样本
+        labels = user_classes.unsqueeze(1) == user_classes.unsqueeze(0)  # (B, B)
+        # 排除自己与自己的对（对角线）
+        mask = torch.eye(batch_size, device=labels.device).bool()
+        labels = labels & ~mask
+        
+        # 计算每个样本的InfoNCE损失
+        losses = []
+        for i in range(batch_size):
+            # 当前样本的正样本（相同用户的其他样本）
+            positive_mask = labels[i]
+            
+            if positive_mask.sum() == 0:
+                # 如果batch中没有相同用户的其他样本，跳过
+                continue
+                
+            # 正样本分数
+            pos_scores = similarities[i][positive_mask]  # (num_positives,)
+            
+            # 负样本分数（所有其他样本，除了自己）
+            neg_mask = ~positive_mask & ~mask[i]  # 排除正样本和自己
+            neg_scores = similarities[i][neg_mask]  # (num_negatives,)
+            
+            # InfoNCE损失计算
+            pos_exp = torch.exp(pos_scores)
+            neg_exp = torch.exp(neg_scores)
+            
+            # 对每个正样本计算损失
+            for pos_exp_single in pos_exp:
+                denominator = pos_exp_single + neg_exp.sum()
+                loss_single = -torch.log(pos_exp_single / denominator + 1e-8)
+                losses.append(loss_single)
+        
+        if len(losses) == 0:
+            return torch.tensor(0.0, device=user_embeddings.device)
+        
+        return torch.stack(losses).mean()
+    
+    def _compute_cross_user_contrastive_loss(self, user_embeddings: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
+        """全用户负采样对比学习 - 你提出的增强方法"""
+        if not hasattr(self, '_negative_user_bank'):
+            return torch.tensor(0.0, device=user_embeddings.device)
+        
+        batch_size = user_embeddings.shape[0]
+        total_loss = 0.0
+        
+        # 对batch中每个样本进行全用户对比
+        for i in range(batch_size):
+            current_user = user_classes[i].item()
+            current_embedding = user_embeddings[i]  # (768,)
+            
+            # === 正样本：从negative bank中取该用户的其他样本 ===
+            if current_user in self._negative_user_bank:
+                positive_embeddings = self._negative_user_bank[current_user]  # (N_pos, 768)
+                if positive_embeddings.shape[0] > 0:
+                    pos_similarities = torch.mm(current_embedding.unsqueeze(0), positive_embeddings.t())  # (1, N_pos)
+                    pos_similarities = pos_similarities / 0.1  # temperature
+                    positive_score = torch.exp(pos_similarities).sum()
+                else:
+                    positive_score = torch.tensor(1e-8, device=user_embeddings.device)
+            else:
+                positive_score = torch.tensor(1e-8, device=user_embeddings.device)
+            
+            # === 负样本：从negative bank中取其他所有用户的样本 ===
+            negative_score = torch.tensor(0.0, device=user_embeddings.device)
+            for other_user, other_embeddings in self._negative_user_bank.items():
+                if other_user != current_user and other_embeddings.shape[0] > 0:
+                    # 随机采样一些负样本，避免计算量过大
+                    n_neg_samples = min(5, other_embeddings.shape[0])  # 每个用户采样5个负样本
+                    indices = torch.randperm(other_embeddings.shape[0])[:n_neg_samples]
+                    sampled_negatives = other_embeddings[indices]  # (n_neg_samples, 768)
+                    
+                    neg_similarities = torch.mm(current_embedding.unsqueeze(0), sampled_negatives.t())  # (1, n_neg_samples)
+                    neg_similarities = neg_similarities / 0.1  # temperature
+                    negative_score += torch.exp(neg_similarities).sum()
+            
+            # InfoNCE损失：log(正样本得分 / (正样本得分 + 负样本得分))
+            if negative_score > 0:
+                sample_loss = -torch.log(positive_score / (positive_score + negative_score + 1e-8))
+                total_loss += sample_loss
+        
+        return total_loss / batch_size if batch_size > 0 else torch.tensor(0.0, device=user_embeddings.device)
+    
+    def _update_negative_user_bank(self, user_embeddings: torch.Tensor, user_classes: torch.Tensor):
+        """维护用户嵌入银行，用于跨batch的全用户对比学习"""
+        if not hasattr(self, '_negative_user_bank'):
+            self._negative_user_bank = {}
+        
+        # 将当前batch的嵌入添加到对应用户的银行中
+        for i, user_class in enumerate(user_classes):
+            user_id = user_class.item()
+            embedding = user_embeddings[i].detach().clone()  # 避免梯度传播
+            
+            if user_id not in self._negative_user_bank:
+                self._negative_user_bank[user_id] = []
+            
+            # 维护每个用户最多50个嵌入样本（内存控制）
+            if len(self._negative_user_bank[user_id]) >= 50:
+                # 随机替换一个老样本
+                replace_idx = torch.randint(0, len(self._negative_user_bank[user_id]), (1,)).item()
+                self._negative_user_bank[user_id][replace_idx] = embedding
+            else:
+                self._negative_user_bank[user_id].append(embedding)
+        
+        # 转换为tensor格式便于计算
+        for user_id in self._negative_user_bank:
+            if isinstance(self._negative_user_bank[user_id], list):
+                self._negative_user_bank[user_id] = torch.stack(self._negative_user_bank[user_id])
+    
+    def _compute_regularization_loss(self, user_embeddings: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
+        """正则化损失：确保不同用户的嵌入在空间中分布均匀"""
+        unique_users = torch.unique(user_classes)
+        
+        if len(unique_users) < 2:
+            return torch.tensor(0.0, device=user_embeddings.device)
+        
+        # 计算每个用户的平均嵌入
+        user_centers = []
+        for user in unique_users:
+            mask = user_classes == user
+            user_center = user_embeddings[mask].mean(dim=0)
+            user_centers.append(user_center)
+        
+        user_centers = torch.stack(user_centers)  # (num_users, embed_dim)
+        
+        # 计算用户中心间的最小距离
+        distances = torch.cdist(user_centers, user_centers, p=2)  # (num_users, num_users)
+        
+        # 排除对角线（自己与自己的距离）
+        mask = ~torch.eye(len(unique_users), dtype=torch.bool, device=distances.device)
+        min_distance = distances[mask].min()
+        
+        # 正则化：鼓励用户中心间保持最小距离
+        target_distance = 1.0  # 目标最小距离
+        regularization_loss = F.relu(target_distance - min_distance)
+        
+        return regularization_loss
     
     def train_epoch(self, epoch: int):
         """训练一个epoch"""
