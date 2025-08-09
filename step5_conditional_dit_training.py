@@ -502,7 +502,9 @@ class ConditionalDiTTrainer:
         
         # 损失：最小化用户间相似度（鼓励差异化）
         avg_similarity = torch.stack(inter_user_similarities).mean()
-        return torch.relu(avg_similarity)  # 只在相似度>0时惩罚
+        # 🔧 修复：将相似度映射到[0,1]再计算损失，避免负值被ReLU截断
+        similarity_01 = (avg_similarity + 1.0) / 2.0  # 从[-1,1]映射到[0,1]
+        return similarity_01  # 相似度越高，损失越大
     
     def compute_user_regularization_loss(self, user_condition):
         """🔧 修复：用户正则化损失（防止数值爆炸）"""
