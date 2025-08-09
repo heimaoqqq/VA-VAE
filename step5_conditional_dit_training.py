@@ -113,14 +113,59 @@ class ConditionalDiT(nn.Module):
         print(f"✅ 成功加载 {len(filtered_state_dict)} 个兼容权重")
         if incompatible_keys:
             print(f"⚠️ 跳过 {len(incompatible_keys)} 个不兼容权重:")
-            for key in incompatible_keys[:3]:  # 只显示前3个
+            for key in incompatible_keys:  # 显示所有不兼容的权重
                 print(f"   {key}")
-            if len(incompatible_keys) > 3:
-                print(f"   ... 还有 {len(incompatible_keys)-3} 个")
         if missing:
             print(f"⚠️ 缺失键: {len(missing)}")
         if unexpected:
             print(f"⚠️ 额外键: {len(unexpected)}")
+            
+        # 🔧 彻底重新初始化所有条件相关层，确保维度一致
+        self._reinitialize_conditional_layers()
+        
+        # 🔍 调试：检查adaLN相关权重的维度
+        print("\n🔍 调试：检查关键层的维度")
+        for name, param in self.dit.named_parameters():
+            if 'adaLN_modulation' in name and 'weight' in name:
+                print(f"   {name}: {param.shape}")
+            elif 'y_embedder' in name:
+                print(f"   {name}: {param.shape}")
+                
+    def _reinitialize_conditional_layers(self):
+        """重新初始化所有条件相关层，确保维度一致性"""
+        print("🔧 重新初始化条件相关层...")
+        
+        # 1. 重新初始化y_embedder (已经正确设置为num_users)
+        # 这个应该已经是正确的，但确保初始化
+        if hasattr(self.dit, 'y_embedder'):
+            nn.init.normal_(self.dit.y_embedder.embedding_table.weight, std=0.02)
+            print(f"   重新初始化 y_embedder: {self.dit.y_embedder.embedding_table.weight.shape}")
+        
+        # 2. 重新初始化所有adaLN_modulation层
+        adaLN_count = 0
+        for name, module in self.dit.named_modules():
+            if 'adaLN_modulation' in name and isinstance(module, nn.Linear):
+                # 确保这些层接受正确的输入维度 (hidden_size=1152)
+                expected_in_features = self.dit.hidden_size  # 1152
+                if module.in_features != expected_in_features:
+                    print(f"   ⚠️ 发现维度不匹配的adaLN层: {name}")
+                    print(f"      当前: {module.in_features} -> 期望: {expected_in_features}")
+                    # 重新创建这个层
+                    new_layer = nn.Linear(expected_in_features, module.out_features, bias=module.bias is not None)
+                    # 用新层替换旧层
+                    parent_module = self.dit
+                    for attr in name.split('.')[:-1]:
+                        parent_module = getattr(parent_module, attr)
+                    setattr(parent_module, name.split('.')[-1], new_layer)
+                    adaLN_count += 1
+                else:
+                    # 维度正确，只需重新初始化权重
+                    nn.init.constant_(module.weight, 0)
+                    if module.bias is not None:
+                        nn.init.constant_(module.bias, 0)
+                    adaLN_count += 1
+        
+        print(f"   ✅ 处理了 {adaLN_count} 个adaLN层")
     
     def _freeze_backbone(self):
         """冻结主干网络"""
