@@ -207,22 +207,31 @@ def main():
         # 创建模型
         print("🤖 创建ConditionalDiT模型...")
         
-        # 配置字典
+        # 嵌套配置字典结构
         config = {
-            'data_dir': "/kaggle/input/dataset",
-            'model_name': "LightningDiT-XL/1", 
-            'num_users': 31,
-            'batch_size': 4,
-            'learning_rate': 1e-5,
-            'max_epochs': 1,
-            'condition_dim': 1152,
-            'frozen_backbone': False,
-            'dropout': 0.15,
-            'pretrained_path': None,  # 禁用预训练权重加载
-            'contrastive_weight': 0.1,
-            'regularization_weight': 0.01,
-            'warmup_steps': 100,
-            'gradient_clip_val': 1.0
+            'model': {
+                'params': {
+                    'model': "LightningDiT-XL/1",
+                    'num_users': 31,
+                    'condition_dim': 1152,
+                    'frozen_backbone': False,
+                    'dropout': 0.15,
+                    'pretrained_path': None  # 禁用预训练权重加载
+                }
+            },
+            'data': {
+                'data_dir': "/kaggle/input/dataset",
+                'batch_size': 4,
+                'num_workers': 0
+            },
+            'training': {
+                'learning_rate': 1e-5,
+                'max_epochs': 1,
+                'contrastive_weight': 0.1,
+                'regularization_weight': 0.01,
+                'warmup_steps': 100,
+                'gradient_clip_val': 1.0
+            }
         }
         
         trainer = ConditionalDiTTrainer(config)
