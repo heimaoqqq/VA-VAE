@@ -30,8 +30,8 @@ class ConditionalDiT(nn.Module):
     
     def __init__(
         self,
-        model: str = "DiT-XL/1",
-        num_users: int = 10,
+        model: str = "LightningDiT-XL/1",
+        num_users: int = 31,
         condition_dim: int = 768,
         frozen_backbone: bool = True,
         dropout: float = 0.15,
