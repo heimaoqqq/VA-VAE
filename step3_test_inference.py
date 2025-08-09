@@ -200,11 +200,16 @@ def test_basic_inference():
             output_dir = Path("test_outputs")
             output_dir.mkdir(exist_ok=True)
             
-            # 转换为图像格式
-            image = decoded_image[0].cpu()
+            # 转换为图像格式  
+            # VA_VAE.decode_to_images返回numpy数组，不是tensor
+            if isinstance(decoded_image, np.ndarray):
+                image = decoded_image[0]  # numpy数组，无需.cpu()
+            else:
+                image = decoded_image[0].cpu().numpy()  # 如果是tensor，转为numpy
+            
             image = (image + 1) / 2  # 从[-1,1]转换到[0,1]
-            image = image.clamp(0, 1)
-            image = (image * 255).byte()
+            image = np.clip(image, 0, 1)  # numpy的clip替代tensor的clamp
+            image = (image * 255).astype(np.uint8)  # numpy的astype替代tensor的byte
             
             # 转换为PIL图像
             if image.shape[0] == 3:  # RGB
