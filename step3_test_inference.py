@@ -181,9 +181,13 @@ def test_basic_inference():
             # 2. 创建时间步
             t = torch.randint(0, 1000, (batch_size,))
             
-            # 3. DiT预测噪声
-            predicted_noise = dit(noise, t)
+            # 3. 创建随机类标签 (ImageNet有1000个类)
+            y = torch.randint(0, 1000, (batch_size,))
+            
+            # 4. DiT预测噪声 (需要传入x, t, y三个参数)
+            predicted_noise = dit(noise, t, y)
             print(f"✅ DiT推理成功，输出形状: {predicted_noise.shape}")
+            print(f"✅ 使用类标签: {y.item()}, 时间步: {t.item()}")
             
             # 4. 简单去噪（这里只是演示，实际需要完整的DDPM采样）
             denoised = noise - predicted_noise * 0.1
