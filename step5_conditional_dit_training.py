@@ -841,8 +841,8 @@ class ConditionalDiTTrainer:
                 val_loss = self.validate()
                 print(f"📊 验证损失: {val_loss:.4f}")
                 
-                # 🖼️ 生成可视化样本（每5个epoch）
-                if (epoch + 1) % 5 == 0:
+                # 🖼️ 生成可视化样本（每10个epoch）
+                if (epoch + 1) % 10 == 0:
                     self.generate_validation_samples(epoch + 1)
                 
                 # 保存最佳模型
