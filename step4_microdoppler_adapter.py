@@ -361,7 +361,7 @@ def create_config_template():
             'target': 'ConditionalDiT',
             'params': {
                 'model': 'DiT-XL/1',
-                'num_classes': 10,  # 用户数量，需要根据实际调整
+                'num_users': 31,  # 用户数量 (ID_1 到 ID_31)
                 'condition_dim': 768,
                 'frozen_backbone': True,
                 'dropout': 0.15
