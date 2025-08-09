@@ -215,8 +215,8 @@ def main():
                     'num_users': 31,
                     'condition_dim': 1152,
                     'frozen_backbone': False,
-                    'dropout': 0.15,
-                    'pretrained_path': None  # 禁用预训练权重加载
+                    'dropout': 0.15
+                    # 不包含pretrained_path，避免与_setup_model中的硬编码冲突
                 }
             },
             'data': {
