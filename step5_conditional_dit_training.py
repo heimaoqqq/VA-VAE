@@ -9,8 +9,11 @@ import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from pathlib import Path
-import numpy as np
+from torch.utils.data import DataLoader
+from torch.nn.parallel import DataParallel as DP
+from datetime import datetime
+import os
+import json
 from typing import Dict, List, Optional, Tuple, Any
 import yaml
 import argparse
@@ -226,10 +229,26 @@ class ConditionalDiTTrainer:
     
     def __init__(self, config: Dict[str, Any]):
         self.config = config
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # 🚀 Kaggle双GPU支持：使用DataParallel
+        self.gpu_count = torch.cuda.device_count()
+        self.use_multi_gpu = self.gpu_count > 1
+        
+        if self.use_multi_gpu:
+            # Kaggle双GPU环境：使用DataParallel
+            self.device = torch.device('cuda:0')  # 主设备
+            print(f"🚀 Kaggle环境检测到{self.gpu_count}个GPU，启用DataParallel")
+        else:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            print(f"💻 使用单GPU/CPU: {self.device}")
         
         # 初始化模型
         self._setup_model()
+        
+        # 🚀 Kaggle双GPU：包装模型为DataParallel
+        if self.use_multi_gpu:
+            self.model = DP(self.model)  # DataParallel自动使用所有可用GPU
+            print(f"✅ 模型已包装为DataParallel，使用GPU: {list(range(self.gpu_count))}")
         
         # 初始化数据
         self._setup_data()
@@ -356,14 +375,24 @@ class ConditionalDiTTrainer:
             0.02 * user_regularization                    # 正则化
         )
         
+        # 🚀 Kaggle双GPU损失处理：DataParallel自动平均
+        # DataParallel会自动处理损失聚合，无需手动同步
+        diffusion_loss_val = diffusion_loss.item()
+        contrastive_loss_val = contrastive_loss.item()
+        inter_user_loss_val = inter_user_loss.item() 
+        user_regularization_val = user_regularization.item()
+        total_loss_val = total_loss.item()
+        
         # 记录各项损失用于监控
         self.log_losses = {
-            'diffusion_loss': diffusion_loss.item(),
-            'contrastive_loss': contrastive_loss.item(),
-            'inter_user_loss': inter_user_loss.item(),
-            'user_regularization': user_regularization.item(),
+            'diffusion_loss': diffusion_loss_val,
+            'contrastive_loss': contrastive_loss_val,
+            'inter_user_loss': inter_user_loss_val,
+            'user_regularization': user_regularization_val,
             'contrastive_weight': contrastive_weight,
-            'total_loss': total_loss.item()
+            'total_loss': total_loss_val,
+            'gpu_count': self.gpu_count,
+            'multi_gpu': self.use_multi_gpu
         }
         
         return total_loss
