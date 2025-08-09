@@ -191,6 +191,9 @@ class ConditionalDiT(nn.Module):
         """恢复高级条件注入层 - 针对数据稀缺和微妙差异优化"""
         print("🚀 恢复高级用户条件注入机制...")
         
+        # 获取DiT模型的设备
+        dit_device = next(self.dit.parameters()).device
+        
         # 为每个DiT block添加用户条件融合层
         for i, block in enumerate(self.dit.blocks):
             # 获取adaLN层的输出维度
@@ -203,7 +206,7 @@ class ConditionalDiT(nn.Module):
                 nn.Dropout(0.1),
                 nn.Linear(self.condition_dim, adaln_out_features),  # 映射到adaLN输出维度
                 nn.Tanh()  # 限制输出范围，避免梯度爆炸
-            ).to(self.device)
+            ).to(dit_device)  # 使用DiT的设备
             
             # 将融合层添加到block上
             setattr(block, f'user_condition_fusion', user_condition_fusion)
