@@ -61,7 +61,7 @@ class ConditionalDiT(nn.Module):
         )
         
         print(f"   DiT hidden_size: {self.dit.hidden_size}")
-        print(f"   DiT num_classes: {self.dit.num_classes}")
+        print(f"   DiT y_embedder.num_classes: {self.dit.y_embedder.num_classes}")
         
         # 创建用户条件编码器
         self.condition_encoder = UserConditionEncoder(
