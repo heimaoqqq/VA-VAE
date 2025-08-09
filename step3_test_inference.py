@@ -71,10 +71,10 @@ def test_model_loading():
             print(f"✅ 解码成功，输出形状: {decoded_images.shape}")
         
         print("📥 加载DiT模型...")
-        from dit.models import DiT_models
+        from models.lightningdit import LightningDiT_models
         
         # 加载DiT模型架构
-        dit = DiT_models["DiT-XL/1"](input_size=16)  # 16 = 256/16 (VA-VAE下采样率)
+        dit = LightningDiT_models["LightningDiT-XL/2"](input_size=16)  # 16 = 256/16 (VA-VAE下采样率)
         print(f"✅ DiT架构创建成功，参数量: {sum(p.numel() for p in dit.parameters()):,}")
         
         # 加载预训练权重
