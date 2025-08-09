@@ -44,7 +44,7 @@ def test_model_loading():
         sys.path.append(str(Path("LightningDiT").absolute()))
         
         print("📥 加载VA-VAE...")
-        from tokenizer.vavae import AutoencoderKL
+        from tokenizer.vavae import VA_VAE
         
         # 检查配置文件
         vavae_config = "LightningDiT/tokenizer/configs/vavae_f16d32.yaml"
@@ -53,7 +53,7 @@ def test_model_loading():
             return False
             
         # 加载VA-VAE
-        vae = AutoencoderKL.from_config(vavae_config)
+        vae = VA_VAE(vavae_config)
         print("✅ VA-VAE加载成功")
         
         # 测试VA-VAE推理
@@ -63,13 +63,12 @@ def test_model_loading():
             test_img = torch.randn(1, 3, 256, 256)
             
             # 编码
-            posterior = vae.encode(test_img)
-            z = posterior.sample()
+            z = vae.encode_images(test_img)
             print(f"✅ 编码成功，潜向量形状: {z.shape}")
             
             # 解码
-            decoded = vae.decode(z)
-            print(f"✅ 解码成功，输出形状: {decoded.shape}")
+            decoded_images = vae.decode_to_images(z)
+            print(f"✅ 解码成功，输出形状: {decoded_images.shape}")
         
         print("📥 加载DiT模型...")
         from dit.models import DiT_models
