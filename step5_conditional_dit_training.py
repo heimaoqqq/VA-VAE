@@ -92,8 +92,31 @@ class ConditionalDiT(nn.Module):
         else:
             state_dict = checkpoint
         
-        # 加载权重，忽略不匹配的键
-        missing, unexpected = self.dit.load_state_dict(state_dict, strict=False)
+        # 智能权重加载：过滤不兼容的权重
+        model_state = self.dit.state_dict()
+        filtered_state_dict = {}
+        incompatible_keys = []
+        
+        for key, value in state_dict.items():
+            if key in model_state:
+                if model_state[key].shape == value.shape:
+                    filtered_state_dict[key] = value
+                else:
+                    incompatible_keys.append(f"{key}: {value.shape} -> {model_state[key].shape}")
+            else:
+                # 键不存在于当前模型中
+                pass
+        
+        # 加载兼容的权重
+        missing, unexpected = self.dit.load_state_dict(filtered_state_dict, strict=False)
+        
+        print(f"✅ 成功加载 {len(filtered_state_dict)} 个兼容权重")
+        if incompatible_keys:
+            print(f"⚠️ 跳过 {len(incompatible_keys)} 个不兼容权重:")
+            for key in incompatible_keys[:3]:  # 只显示前3个
+                print(f"   {key}")
+            if len(incompatible_keys) > 3:
+                print(f"   ... 还有 {len(incompatible_keys)-3} 个")
         if missing:
             print(f"⚠️ 缺失键: {len(missing)}")
         if unexpected:
