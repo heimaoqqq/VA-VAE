@@ -48,14 +48,10 @@ class ConditionalDiT(nn.Module):
         # 创建DiT模型
         self.dit = LightningDiT_models[model_name](
             input_size=16,
-            patch_size=1,
             in_channels=32,
             num_classes=num_users,  # ✅ 设置为用户数量
-            # 其他LightningDiT-XL参数
-            hidden_size=1152,
-            depth=28,
-            num_heads=16,
-            mlp_ratio=4.0,
+            # LightningDiT-XL已经设置的参数不需要重复传递:
+            # patch_size=1, hidden_size=1152, depth=28, num_heads=16
             class_dropout_prob=0.1,
             use_qknorm=True,
             use_swiglu=True,
