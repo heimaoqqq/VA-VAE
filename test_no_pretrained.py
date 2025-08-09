@@ -25,7 +25,7 @@ def test_no_pretrained():
         # 1. 创建模型（不加载预训练权重）
         print("📦 创建ConditionalDiT模型（无预训练权重）...")
         model = ConditionalDiT(
-            model_name="LightningDiT-XL/1",
+            model="LightningDiT-XL/1",  # 🔧 修正：参数名是model，不是model_name
             num_users=31,
             pretrained_path=None,  # 🔧 关键：不加载预训练权重
             frozen_backbone=False,
