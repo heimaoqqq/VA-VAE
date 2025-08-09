@@ -60,11 +60,9 @@ class ConditionalDiT(nn.Module):
             wo_shift=False           # 官方配置
         )
         
-        # 🔧 临时禁用预训练权重加载来测试768维问题
-        if pretrained_path and False:  # 强制禁用
-            self._load_pretrained_weights(pretrained_path)
-        else:
-            print("🚫 已禁用预训练权重加载（用于测试768维问题）")
+        # 重新启用预训练权重加载
+        print("✅ 重新启用预训练权重加载")
+        self._load_pretrained_weights(pretrained_path)
         
         # 冻结主干网络
         if frozen_backbone:
@@ -454,22 +452,23 @@ class ConditionalDiTTrainer:
         return torch.relu(avg_similarity)  # 只在相似度>0时惩罚
     
     def compute_user_regularization_loss(self, user_condition):
-        """🚀 用户正则化：防止过拟合到特定用户特征"""
+        """🔧 修复：用户正则化损失（防止数值爆炸）"""
         if user_condition is None:
             return torch.tensor(0.0, device=self.device)
         
-        # L2正则化：防止嵌入过大
-        l2_reg = torch.mean(torch.norm(user_condition, p=2, dim=1))
+        # L2正则化：防止嵌入过大（使用平方而不是范数，避免爆炸）
+        l2_reg = torch.mean(user_condition.pow(2))
         
-        # 多样性正则化：鼓励不同用户嵌入分散
+        # 多样性正则化：鼓励不同用户嵌入分散（限制数值范围）
         if user_condition.shape[0] > 1:
             # 计算嵌入的标准差，鼓励多样性
             user_std = torch.std(user_condition, dim=0).mean()
-            diversity_reg = torch.exp(-user_std)  # 标准差小时惩罚大
+            # 🔧 修复：避免exp爆炸，使用线性惩罚
+            diversity_reg = torch.clamp(1.0 / (user_std + 1e-6), 0.0, 10.0)
         else:
             diversity_reg = torch.tensor(0.0, device=user_condition.device)
         
-        return l2_reg + 0.1 * diversity_reg
+        return l2_reg + 0.01 * diversity_reg  # 🔧 降低多样性权重
     
     def _compute_contrastive_loss(self, user_embeddings: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
         """简化的对比学习损失：遵循SimCLR原则，避免memory bank复杂性"""
