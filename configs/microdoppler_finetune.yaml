@@ -29,10 +29,6 @@ trainer:
   log_every_n_steps: 50        # 减少日志频率
   enable_progress_bar: true
   enable_model_summary: false
-  # 🚀 高级GPU优化
-  sync_batchnorm: false        # 禁用同步BN加速多GPU
-  deterministic: false         # 禁用确定性算法换取速度
-  benchmark: true              # 启用cudnn benchmark优化
 
 optimizer:
   target: torch.optim.AdamW
