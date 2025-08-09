@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from pathlib import Path
 import yaml
+from typing import Optional
 
 # 清除torch._dynamo缓存，解决768维问题
 import torch._dynamo
