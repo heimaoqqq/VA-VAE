@@ -268,6 +268,13 @@ class ConditionalDiTTrainer:
         else:
             return getattr(self.model, attr_name)
     
+    def _get_actual_model(self):
+        """🚀 获取实际模型：支持DataParallel和普通模型"""
+        if self.use_multi_gpu and hasattr(self.model, 'module'):
+            return self.model.module
+        else:
+            return self.model
+    
     def _setup_model(self):
         """设置模型"""
         model_config = self.config['model']['params']
@@ -351,8 +358,11 @@ class ConditionalDiTTrainer:
         
         z_noisy = noise * (timesteps.view(-1, 1, 1, 1) / 1000.0) + z * (1 - timesteps.view(-1, 1, 1, 1) / 1000.0)
         
+        # 🚀 获取实际模型（DataParallel兼容）
+        actual_model = self._get_actual_model()
+        
         # 获取用户条件嵌入（用于对比学习）
-        user_embeddings = self.model.condition_encoder(user_classes)  # (B, 1152) ✅ 修复注释
+        user_embeddings = actual_model.condition_encoder(user_classes)  # (B, 1152) ✅ DataParallel修复
         
         # 模型预测
         predicted_noise = self.model(z_noisy, timesteps, user_classes)
@@ -361,7 +371,7 @@ class ConditionalDiTTrainer:
         diffusion_loss = F.mse_loss(predicted_noise, noise)
         
         # 2. 🚀 强化训练策略：针对数据稀缺+微妙差异优化
-        user_condition = self.model._last_user_condition
+        user_condition = actual_model._last_user_condition  # ✅ DataParallel修复
         
         # 2.1 强化用户判别：对比学习损失
         contrastive_loss = self.compute_enhanced_contrastive_loss(user_condition, user_classes)
