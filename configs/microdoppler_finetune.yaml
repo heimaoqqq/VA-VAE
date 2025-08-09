@@ -21,10 +21,10 @@ data:
     val_split: 0.2             # 验证集比例，可调整为0.15-0.25
 
 trainer:
-  precision: "bf16-mixed"      # 官方推荐的混合精度
+  precision: "16-mixed"        # T4 GPU兼容的FP16混合精度 (bf16不支持!)
   max_epochs: 50
   check_val_every_n_epoch: 3   # 每3个epoch验证一次
-  gradient_clip_val: 0.5       # 梯度裁剪防止爆炸
+  gradient_clip_val: 1.0       # T4上FP16需要更强的梯度裁剪
   accumulate_grad_batches: 8   # 梯度累积模拟大batch
   log_every_n_steps: 25
   enable_progress_bar: true
