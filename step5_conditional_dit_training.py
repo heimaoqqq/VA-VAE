@@ -751,6 +751,55 @@ class ConditionalDiTTrainer:
         avg_loss = total_loss / num_batches
         return avg_loss
     
+    def generate_validation_samples(self, epoch: int, num_samples: int = 8):
+        """🖼️ 生成验证样本进行可视化"""
+        if not hasattr(self, 'vae'):
+            return
+            
+        self.model.eval()
+        
+        try:
+            # 选择不同的用户进行生成测试
+            test_users = torch.tensor([1, 5, 10, 15, 20, 25, 30, 31], device=self.device)[:num_samples]
+            
+            with torch.no_grad():
+                # 生成随机噪声
+                z_shape = (len(test_users), 32, 16, 16)  # VA-VAE潜向量形状
+                z = torch.randn(z_shape, device=self.device)
+                t = torch.randint(0, 1000, (len(test_users),), device=self.device)
+                
+                # 用户条件生成
+                generated_z = self.model(z, t, test_users)
+                
+                # 解码为图像
+                generated_images = self.vae.decode_to_images(generated_z)
+                
+                # 保存可视化结果
+                import matplotlib.pyplot as plt
+                fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+                fig.suptitle(f'Epoch {epoch} - User-Conditional Generation')
+                
+                for i, (user_id, img) in enumerate(zip(test_users, generated_images)):
+                    row, col = i // 4, i % 4
+                    if isinstance(img, torch.Tensor):
+                        img = img.detach().cpu().numpy()
+                    if img.ndim == 3:
+                        img = img.transpose(1, 2, 0)
+                    axes[row, col].imshow(img, cmap='viridis')
+                    axes[row, col].set_title(f'User {user_id.item()}')
+                    axes[row, col].axis('off')
+                
+                # 保存图片
+                save_path = self.exp_dir / f"validation_samples_epoch_{epoch:03d}.png"
+                plt.savefig(save_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                print(f"📸 已保存验证样本: {save_path}")
+                
+        except Exception as e:
+            print(f"⚠️ 生成验证样本失败: {e}")
+        finally:
+            self.model.train()
+    
     def save_checkpoint(self, epoch: int, is_best: bool = False):
         """保存检查点"""
         checkpoint = {
@@ -791,6 +840,10 @@ class ConditionalDiTTrainer:
             if (epoch + 1) % val_every_n_epochs == 0:
                 val_loss = self.validate()
                 print(f"📊 验证损失: {val_loss:.4f}")
+                
+                # 🖼️ 生成可视化样本（每5个epoch）
+                if (epoch + 1) % 5 == 0:
+                    self.generate_validation_samples(epoch + 1)
                 
                 # 保存最佳模型
                 is_best = val_loss < best_val_loss
