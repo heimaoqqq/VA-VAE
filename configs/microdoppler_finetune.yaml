@@ -15,20 +15,24 @@ data:
   target: MicroDopplerDataModule
   params:
     data_dir: "/kaggle/input/dataset"  # 修改为您的实际数据路径
-    batch_size: 16             # 增大batch_size提升contrastive学习效果
-    num_workers: 2
+    batch_size: 12             # 小数据集优化：平衡速度与泛化能力
+    num_workers: 4             # 增加DataLoader并行度
     image_size: 256
     val_split: 0.2             # 验证集比例，可调整为0.15-0.25
 
 trainer:
   precision: "16-mixed"        # T4 GPU兼容的FP16混合精度 (bf16不支持!)
-  max_epochs: 50
-  check_val_every_n_epoch: 2   # 每2个epoch验证一次（与训练脚本一致）
+  max_epochs: 35             # 小batch需要更多epoch补偿训练效率
+  check_val_every_n_epoch: 5   # 减少验证频率节约时间
   gradient_clip_val: 1.0       # T4上FP16需要更强的梯度裁剪
-  accumulate_grad_batches: 2   # batch_size=16时减少梯度累积
-  log_every_n_steps: 25
+  accumulate_grad_batches: 3   # 模拟effective_batch=36，平衡效率与多样性
+  log_every_n_steps: 50        # 减少日志频率
   enable_progress_bar: true
   enable_model_summary: false
+  # 🚀 高级GPU优化
+  sync_batchnorm: false        # 禁用同步BN加速多GPU
+  deterministic: false         # 禁用确定性算法换取速度
+  benchmark: true              # 启用cudnn benchmark优化
 
 optimizer:
   target: torch.optim.AdamW
@@ -67,4 +71,4 @@ experiment:
 logging:
   log_level: "INFO"
   save_samples: true
-  sample_every_n_epochs: 5
+  sample_every_n_epochs: 10    # 减少可视化频率节约时间
