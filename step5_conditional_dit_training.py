@@ -249,11 +249,9 @@ class ConditionalDiTTrainer:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             print(f"使用单GPU/CPU: {self.device}")
         
-        # GPU性能优化设置（T4 GPU兼容）
+        # 🛡️ 优先保证训练稳定性（移除潜在不稳定优化）
         if torch.cuda.is_available():
-            # 启用cudnn benchmark自动优化（T4支持且有效）
-            torch.backends.cudnn.benchmark = True
-            print("GPU优化已启用: cudnn.benchmark=True (T4兼容)")
+            print("🛡️ 优先稳定性：使用默认CUDNN设置，确保训练可靠性")
         else:
             self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             print(f"使用单GPU/CPU: {self.device}")
