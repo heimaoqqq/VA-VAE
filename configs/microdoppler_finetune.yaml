@@ -6,7 +6,7 @@ model:
   params:
     model: "LightningDiT-XL/1"
     num_users: 31              # 31个用户 (ID_1 到 ID_31) - 可根据实际数据调整
-    condition_dim: 768
+    condition_dim: 1152           # 匹配DiT hidden_size避免维度错误
     frozen_backbone: true      # 冻结主干网络防止过拟合
     dropout: 0.15              # 高dropout防过拟合
     pretrained_path: "models/lightningdit-xl-imagenet256-64ep.pt"  # 确保此路径存在
@@ -15,7 +15,7 @@ data:
   target: MicroDopplerDataModule
   params:
     data_dir: "/kaggle/input/dataset"  # 修改为您的实际数据路径
-    batch_size: 2              # 小batch适应显存限制，可根据GPU内存调整 (1-4)
+    batch_size: 16             # 增大batch_size提升contrastive学习效果
     num_workers: 2
     image_size: 256
     val_split: 0.2             # 验证集比例，可调整为0.15-0.25
@@ -23,9 +23,9 @@ data:
 trainer:
   precision: "16-mixed"        # T4 GPU兼容的FP16混合精度 (bf16不支持!)
   max_epochs: 50
-  check_val_every_n_epoch: 3   # 每3个epoch验证一次
+  check_val_every_n_epoch: 2   # 每2个epoch验证一次（与训练脚本一致）
   gradient_clip_val: 1.0       # T4上FP16需要更强的梯度裁剪
-  accumulate_grad_batches: 8   # 梯度累积模拟大batch
+  accumulate_grad_batches: 2   # batch_size=16时减少梯度累积
   log_every_n_steps: 25
   enable_progress_bar: true
   enable_model_summary: false
