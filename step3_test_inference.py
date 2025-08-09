@@ -211,12 +211,12 @@ def test_basic_inference():
             image = np.clip(image, 0, 1)  # numpy的clip替代tensor的clamp
             image = (image * 255).astype(np.uint8)  # numpy的astype替代tensor的byte
             
-            # 转换为PIL图像
-            if image.shape[0] == 3:  # RGB
-                image_np = image.permute(1, 2, 0).numpy()
+            # 转换为PIL图像 (image已经是numpy数组)
+            if image.shape[0] == 3:  # RGB: (C, H, W) -> (H, W, C)
+                image_np = np.transpose(image, (1, 2, 0))  # numpy的transpose替代tensor的permute
                 pil_image = Image.fromarray(image_np)
-            else:
-                image_np = image[0].numpy()
+            else:  # 灰度图
+                image_np = image[0]  # 直接取第一个通道，已经是numpy数组
                 pil_image = Image.fromarray(image_np, mode='L')
             
             output_path = output_dir / "test_generation.png"
