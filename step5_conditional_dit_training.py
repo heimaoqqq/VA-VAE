@@ -42,10 +42,11 @@ class ConditionalDiT(nn.Module):
         self.condition_dim = condition_dim
         self.frozen_backbone = frozen_backbone
         
-        # 加载预训练DiT - 严格按照官方配置参数
+        # 加载预训练DiT - 配置用户条件参数
         self.dit = LightningDiT_models[model](
             input_size=16,           # 16 = 256/16 (VA-VAE下采样率)
             in_channels=32,          # VA-VAE潜向量通道数
+            num_classes=num_users,   # ✅ 关键修复：设置为用户数量而不是ImageNet的1000
             use_qknorm=False,        # 官方配置
             use_swiglu=True,         # 官方配置
             use_rope=True,           # 官方配置
