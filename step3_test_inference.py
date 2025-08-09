@@ -73,8 +73,16 @@ def test_model_loading():
         print("📥 加载DiT模型...")
         from models.lightningdit import LightningDiT_models
         
-        # 加载DiT模型架构
-        dit = LightningDiT_models["LightningDiT-XL/2"](input_size=16)  # 16 = 256/16 (VA-VAE下采样率)
+        # 加载DiT模型架构 - 严格按照官方配置参数
+        dit = LightningDiT_models["LightningDiT-XL/1"](
+            input_size=16,           # 16 = 256/16 (VA-VAE下采样率)
+            in_channels=32,          # VA-VAE潜向量通道数
+            use_qknorm=False,        # 官方配置
+            use_swiglu=True,         # 官方配置
+            use_rope=True,           # 官方配置
+            use_rmsnorm=True,        # 官方配置
+            wo_shift=False           # 官方配置
+        )
         print(f"✅ DiT架构创建成功，参数量: {sum(p.numel() for p in dit.parameters()):,}")
         
         # 加载预训练权重
@@ -135,12 +143,20 @@ def test_basic_inference():
     try:
         sys.path.append(str(Path("LightningDiT").absolute()))
         
-        from tokenizer.vavae import AutoencoderKL
-        from dit.models import DiT_models
+        from tokenizer.vavae import VA_VAE
+        from models.lightningdit import LightningDiT_models
         
-        # 加载模型
-        vae = AutoencoderKL.from_config("LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
-        dit = DiT_models["DiT-XL/1"](input_size=16)
+        # 加载模型 - 使用正确的API和完整配置
+        vae = VA_VAE("LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
+        dit = LightningDiT_models["LightningDiT-XL/1"](
+            input_size=16,           
+            in_channels=32,          
+            use_qknorm=False,        
+            use_swiglu=True,         
+            use_rope=True,           
+            use_rmsnorm=True,        
+            wo_shift=False           
+        )
         
         # 加载权重
         checkpoint = torch.load("models/lightningdit-xl-imagenet256-64ep.pt", map_location='cpu')
@@ -173,7 +189,7 @@ def test_basic_inference():
             denoised = noise - predicted_noise * 0.1
             
             # 5. VA-VAE解码
-            decoded_image = vae.decode(denoised)
+            decoded_image = vae.decode_to_images(denoised)
             print(f"✅ 端到端推理成功，最终图像形状: {decoded_image.shape}")
             
             # 6. 保存测试图像
