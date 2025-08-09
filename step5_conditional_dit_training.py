@@ -406,10 +406,12 @@ class ConditionalDiTTrainer:
             # 分母：所有负样本相似度
             neg_sim = sim_matrix[i][~positive_mask]
             
-            # InfoNCE损失
+            # InfoNCE损失：正样本在前，负样本在后
             logits = torch.cat([pos_sim, neg_sim])
-            labels_nce = torch.zeros(len(logits), device=logits.device, dtype=torch.long)
-            loss = F.cross_entropy(logits.unsqueeze(0), labels_nce[:len(pos_sim)].unsqueeze(0))
+            # 标签：正样本的索引（0到len(pos_sim)-1都是正样本）
+            # 但cross_entropy需要单个标签，我们取第一个正样本作为目标
+            target_label = torch.tensor(0, device=logits.device, dtype=torch.long)  # 第一个正样本
+            loss = F.cross_entropy(logits.unsqueeze(0), target_label.unsqueeze(0))
             losses.append(loss)
         
         return torch.stack(losses).mean() if losses else torch.tensor(0.0, device=user_condition.device)
@@ -421,7 +423,7 @@ class ConditionalDiTTrainer:
             return torch.tensor(0.0, device=predicted_noise.device)
         
         # 将预测噪声展平为特征向量
-        noise_features = predicted_noise.view(batch_size, -1)  # (B, C*H*W)
+        noise_features = predicted_noise.reshape(batch_size, -1)  # (B, C*H*W) - 使用reshape避免stride问题
         
         # 计算用户间的噪声相似度
         unique_users = torch.unique(user_classes)
