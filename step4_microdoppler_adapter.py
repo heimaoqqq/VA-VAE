@@ -101,7 +101,7 @@ class UserConditionEncoder(nn.Module):
     def __init__(
         self,
         num_users: int,
-        embed_dim: int = 768,
+        embed_dim: int = 1152,  # ✅ 修复：匹配DiT的hidden_size
         hidden_dim: int = 512,
         dropout: float = 0.1
     ):
