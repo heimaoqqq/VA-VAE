@@ -161,26 +161,98 @@ def test_user_condition_encoder():
     """测试用户条件编码器"""
     print(f"\n📊 5. 用户条件编码器测试:")
     
-    # 这是我们在训练代码中使用的用户条件编码器
+    # 先查看UserConditionEncoder的实际参数
     sys.path.append('.')
     from step4_microdoppler_adapter import UserConditionEncoder
     
-    condition_encoder = UserConditionEncoder(
-        num_users=31,
-        condition_dim=768  # 这个维度！！！
-    )
+    # 检查UserConditionEncoder的__init__签名
+    import inspect
+    sig = inspect.signature(UserConditionEncoder.__init__)
+    print(f"   UserConditionEncoder.__init__参数: {list(sig.parameters.keys())}")
+    
+    # 用正确的参数创建
+    condition_encoder = UserConditionEncoder(num_users=31)
     
     user_ids = torch.tensor([0, 1, 2, 5])
     user_condition = condition_encoder(user_ids)
     print(f"   用户条件编码器输出: {user_condition.shape}")
-    print(f"   输出维度: {user_condition.shape[-1]} (这是768！)")
+    print(f"   输出维度: {user_condition.shape[-1]}")
     
-    print(f"\n💡 关键发现:")
-    print(f"   - DiT期望: hidden_size = 1152")
-    print(f"   - 我们的用户条件: condition_dim = 768") 
-    print(f"   - 这可能就是维度不匹配的根源!")
+    return user_condition
+
+def test_training_simulation():
+    """模拟训练代码的DiT调用过程"""
+    print(f"\n📊 6. 训练代码模拟测试:")
+    print("   模拟step5_conditional_dit_training.py中的实际调用...")
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # 1. 创建和训练代码中完全相同的DiT
+    print("   创建ConditionalDiT...")
+    from step5_conditional_dit_training import ConditionalDiT
+    
+    # 不加载预训练权重的版本
+    model = ConditionalDiT(
+        model="LightningDiT-XL/1",
+        num_users=31,
+        condition_dim=768,  # 注意这个参数！
+        frozen_backbone=True,
+        pretrained_path=None  # 不加载权重
+    ).to(device)
+    
+    print(f"   ConditionalDiT创建成功")
+    print(f"   DiT hidden_size: {model.dit.hidden_size}")
+    
+    # 2. 测试前向传播
+    batch_size = 2
+    x = torch.randn(batch_size, 32, 16, 16).to(device)
+    t = torch.randint(0, 1000, (batch_size,)).to(device)
+    user_classes = torch.randint(0, 31, (batch_size,)).to(device)
+    
+    # 创建用户条件（这里可能是问题！）
+    user_condition = test_user_condition_encoder()[:batch_size].to(device)
+    
+    print(f"   输入维度:")
+    print(f"     x: {x.shape}")
+    print(f"     t: {t.shape}")
+    print(f"     user_classes: {user_classes.shape}")
+    print(f"     user_condition: {user_condition.shape}")
+    
+    try:
+        with torch.no_grad():
+            output = model(x, t, user_classes, user_condition)
+            print(f"   ✅ ConditionalDiT输出: {output.shape}")
+    except Exception as e:
+        print(f"   ❌ ConditionalDiT错误: {e}")
+        print(f"   这可能就是768维问题的来源！")
+    
+    # 3. 测试权重加载后的情况
+    print(f"\n   测试加载预训练权重的版本...")
+    try:
+        model_with_weights = ConditionalDiT(
+            model="LightningDiT-XL/1", 
+            num_users=31,
+            condition_dim=768,
+            frozen_backbone=True,
+            pretrained_path="models/lightningdit-xl-imagenet256-64ep.pt"
+        ).to(device)
+        
+        with torch.no_grad():
+            output = model_with_weights(x, t, user_classes, user_condition)
+            print(f"   ✅ 权重加载版本输出: {output.shape}")
+            
+    except Exception as e:
+        print(f"   ❌ 权重加载版本错误: {e}")
+        print(f"   🎯 这很可能就是我们在训练中遇到的实际错误！")
+
+    print(f"\n💡 关键分析:")
+    print(f"   - DiT单独测试: ✅ 完全正常")  
+    print(f"   - ConditionalDiT包装: ❌ 可能有问题")
+    print(f"   - 用户条件编码: 维度 = {user_condition.shape[-1]}")
+    print(f"   - 问题可能在ConditionalDiT的condition_dim参数或用户条件注入逻辑")
 
 if __name__ == "__main__":
     print("🚀 开始LightningDiT维度诊断")
     test_official_dit_dimensions()
     test_user_condition_encoder()
+    test_training_simulation()
