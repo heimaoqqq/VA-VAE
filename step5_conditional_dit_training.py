@@ -60,8 +60,11 @@ class ConditionalDiT(nn.Module):
             wo_shift=False           # 官方配置
         )
         
-        if pretrained_path:
+        # 🔧 临时禁用预训练权重加载来测试768维问题
+        if pretrained_path and False:  # 强制禁用
             self._load_pretrained_weights(pretrained_path)
+        else:
+            print("🚫 已禁用预训练权重加载（用于测试768维问题）")
         
         # 冻结主干网络
         if frozen_backbone:
@@ -185,25 +188,12 @@ class ConditionalDiT(nn.Module):
         print(f"🔒 冻结参数: {frozen_count}")
     
     def _inject_condition_layers(self):
-        """注入条件处理层"""
-        # 在DiT的adaLN层中注入用户条件
-        # 这是一个简化实现，实际可能需要更复杂的架构修改
+        """注入条件处理层 - 修复版本"""
+        # 🔧 修复：不需要条件注入，使用DiT原生的y_embedder机制即可
+        # 删除错误的条件注入逻辖，让DiT使用标准的类别条件机制
         
-        # 为每个transformer block添加条件处理
-        for i, block in enumerate(self.dit.blocks):
-            # 创建条件融合层
-            condition_fusion = nn.Sequential(
-                nn.Linear(self.condition_dim, block.adaLN_modulation[1].out_features),
-                nn.SiLU(),
-                nn.Linear(block.adaLN_modulation[1].out_features, block.adaLN_modulation[1].out_features)
-            )
-            
-            # 替换原有的adaLN调制层
-            original_adaln = block.adaLN_modulation
-            block.adaLN_modulation = nn.Sequential(
-                original_adaln,
-                condition_fusion
-            )
+        print("🔧 使用DiT原生条件机制，无需额外注入条件层")
+        pass  # 空实现，使用DiT的标准y_embedder
     
     def forward(self, x: torch.Tensor, t: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
         """
