@@ -370,7 +370,7 @@ def create_config_template():
         'data': {
             'target': 'MicroDopplerDataModule',
             'params': {
-                'data_dir': '/path/to/microdoppler/data',  # 需要修改
+                'data_dir': '/kaggle/input/dataset',  # Kaggle环境数据路径
                 'batch_size': 2,
                 'num_workers': 2,
                 'image_size': 256,
