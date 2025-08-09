@@ -188,32 +188,11 @@ class ConditionalDiT(nn.Module):
         print(f"🔒 冻结参数: {frozen_count}")
     
     def _inject_condition_layers(self):
-        """恢复高级条件注入层 - 针对数据稀缺和微妙差异优化"""
-        print("🚀 恢复高级用户条件注入机制...")
-        
-        # 获取DiT模型的设备
-        dit_device = next(self.dit.parameters()).device
-        
-        # 为每个DiT block添加用户条件融合层
-        for i, block in enumerate(self.dit.blocks):
-            # 获取adaLN层的输出维度
-            adaln_out_features = block.adaLN_modulation[1].out_features  # 应该是hidden_size * 6
-            
-            # 创建用户条件融合网络
-            user_condition_fusion = nn.Sequential(
-                nn.Linear(self.condition_dim, self.condition_dim),
-                nn.SiLU(),
-                nn.Dropout(0.1),
-                nn.Linear(self.condition_dim, adaln_out_features),  # 映射到adaLN输出维度
-                nn.Tanh()  # 限制输出范围，避免梯度爆炸
-            ).to(dit_device)  # 使用DiT的设备
-            
-            # 将融合层添加到block上
-            setattr(block, f'user_condition_fusion', user_condition_fusion)
-            
-            print(f"  ✅ Block {i}: 添加用户条件融合层 ({self.condition_dim} -> {adaln_out_features})")
-        
-        print(f"✅ 完成高级条件注入：{len(self.dit.blocks)}个blocks，总共{len(self.dit.blocks)}个融合层")
+        """简化架构：不修改DiT内部结构"""
+        print("✅ 使用简化架构：保持LightningDiT标准接口")
+        print("🎯 用户条件判别将通过强化训练策略实现")
+        # 不添加任何条件注入层，保持DiT原始结构
+        pass
     
     def forward(self, x: torch.Tensor, t: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
         """
@@ -235,35 +214,14 @@ class ConditionalDiT(nn.Module):
         return predicted_noise
     
     def _conditional_forward_with_injection(self, x, t, user_classes, user_condition):
-        """高级条件注入前向传播 - 修复形状处理"""
-        # 🔧 策略改进：使用DiT标准前向流程 + 条件增强
+        """简化前向传播：使用标准LightningDiT接口"""
+        # ✅ 使用标准DiT接口，无架构修改
+        predicted_noise = self.dit(x, t, user_classes)
         
-        # 1. 先执行标准DiT前向传播
-        base_output = self.dit(x, t, user_classes, self.training)
-        
-        # 2. 计算用户条件增强
-        # 为了保持形状一致性，我们在特征层面进行增强而不是完全重写前向传播
-        user_enhancement_strength = 0.1  # 较小的增强系数，避免破坏预训练特征
-        
-        # 使用第一个block的融合层作为代表（如果存在）
-        if hasattr(self.dit.blocks[0], 'user_condition_fusion'):
-            # 计算用户条件特征
-            user_features = self.dit.blocks[0].user_condition_fusion(user_condition)
-            
-            # 将用户特征映射到输出空间维度并进行残差增强
-            # 注意：这里需要确保维度匹配 
-            batch_size = base_output.size(0)
-            user_influence = torch.mean(user_features.view(batch_size, -1), dim=1).unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-            
-            # 对输出进行轻微的用户条件调制
-            enhanced_output = base_output + user_enhancement_strength * user_influence * torch.randn_like(base_output) * 0.01
-        else:
-            enhanced_output = base_output
-        
-        # 3. 保存用户条件用于对比学习
+        # 保存用户条件用于强化训练策略
         self._last_user_condition = user_condition
         
-        return enhanced_output
+        return predicted_noise
 
 class ConditionalDiTTrainer:
     """条件DiT训练器"""
@@ -365,7 +323,7 @@ class ConditionalDiTTrainer:
         alpha_bar_t = 1 - timesteps.float() / 1000
         alpha_bar_t = alpha_bar_t.view(batch_size, 1, 1, 1)
         
-        z_noisy = torch.sqrt(alpha_bar_t) * z + torch.sqrt(1 - alpha_bar_t) * noise
+        z_noisy = noise * (timesteps.view(-1, 1, 1, 1) / 1000.0) + z * (1 - timesteps.view(-1, 1, 1, 1) / 1000.0)
         
         # 获取用户条件嵌入（用于对比学习）
         user_embeddings = self.model.condition_encoder(user_classes)  # (B, 1152) ✅ 修复注释
@@ -373,27 +331,143 @@ class ConditionalDiTTrainer:
         # 模型预测
         predicted_noise = self.model(z_noisy, timesteps, user_classes)
         
-        # 1. 主损失：扩散重构损失
+        # 1. 🎯 基础扩散重构损失
         diffusion_loss = F.mse_loss(predicted_noise, noise)
         
-        # 2. 对比损失：强化用户间区分
-        contrastive_loss = self._compute_contrastive_loss(user_embeddings, user_classes)
+        # 2. 🚀 强化训练策略：针对数据稀缺+微妙差异优化
+        user_condition = self.model._last_user_condition
         
-        # 3. 正则化损失：防止条件崩溃
-        regularization_loss = self._compute_regularization_loss(user_embeddings, user_classes)
+        # 2.1 强化用户判别：对比学习损失
+        contrastive_loss = self.compute_enhanced_contrastive_loss(user_condition, user_classes)
         
-        # 总损失
-        total_loss = diffusion_loss + 0.1 * contrastive_loss + 0.05 * regularization_loss
+        # 2.2 用户间判别损失：确保不同用户生成不同噪声
+        inter_user_loss = self.compute_inter_user_discriminative_loss(predicted_noise, user_classes)
         
-        # 记录分量损失
-        if hasattr(self, 'current_losses'):
-            self.current_losses = {
-                'diffusion': diffusion_loss.item(),
-                'contrastive': contrastive_loss.item(), 
-                'regularization': regularization_loss.item()
-            }
+        # 2.3 渐进式权重调整：随训练进程加强用户判别
+        epoch_ratio = min(getattr(self, 'current_epoch', 0) / 20, 1.0)
+        contrastive_weight = 0.05 + 0.15 * epoch_ratio  # 从0.05逐渐增加到0.2
+        
+        # 2.4 正则化：防止过拟合到特定用户
+        user_regularization = self.compute_user_regularization_loss(user_condition)
+        
+        # 3. 🎯 强化训练策略总损失
+        total_loss = (
+            diffusion_loss +                              # 基础重建
+            contrastive_weight * contrastive_loss +       # 用户判别（渐进加强）
+            0.1 * inter_user_loss +                       # 用户间差异
+            0.02 * user_regularization                    # 正则化
+        )
+        
+        # 记录各项损失用于监控
+        self.log_losses = {
+            'diffusion_loss': diffusion_loss.item(),
+            'contrastive_loss': contrastive_loss.item(),
+            'inter_user_loss': inter_user_loss.item(),
+            'user_regularization': user_regularization.item(),
+            'contrastive_weight': contrastive_weight,
+            'total_loss': total_loss.item()
+        }
         
         return total_loss
+    
+    def compute_enhanced_contrastive_loss(self, user_condition, user_classes):
+        """🚀 强化对比学习：针对数据稀缺+微妙差异优化"""
+        if user_condition is None:
+            return torch.tensor(0.0, device=self.device)
+            
+        batch_size = user_condition.shape[0]
+        if batch_size < 2:
+            return torch.tensor(0.0, device=user_condition.device)
+        
+        # L2标准化（提高判别稳定性）
+        user_condition_norm = F.normalize(user_condition, p=2, dim=1)
+        
+        # 计算相似度矩阵
+        sim_matrix = torch.mm(user_condition_norm, user_condition_norm.t())
+        
+        # 温度参数：针对微妙差异调低温度，增强敏感性
+        temperature = 0.05  # 比标准SimCLR更低，增强微妙差异敏感性
+        sim_matrix = sim_matrix / temperature
+        
+        # 正样本mask：相同用户
+        labels = user_classes.unsqueeze(1) == user_classes.unsqueeze(0)
+        mask = torch.eye(batch_size, device=labels.device).bool()
+        labels = labels & ~mask
+        
+        # InfoNCE损失计算
+        losses = []
+        for i in range(batch_size):
+            positive_mask = labels[i]
+            if positive_mask.sum() == 0:
+                continue
+                
+            # 分子：正样本相似度
+            pos_sim = sim_matrix[i][positive_mask]
+            # 分母：所有负样本相似度
+            neg_sim = sim_matrix[i][~positive_mask]
+            
+            # InfoNCE损失
+            logits = torch.cat([pos_sim, neg_sim])
+            labels_nce = torch.zeros(len(logits), device=logits.device, dtype=torch.long)
+            loss = F.cross_entropy(logits.unsqueeze(0), labels_nce[:len(pos_sim)].unsqueeze(0))
+            losses.append(loss)
+        
+        return torch.stack(losses).mean() if losses else torch.tensor(0.0, device=user_condition.device)
+    
+    def compute_inter_user_discriminative_loss(self, predicted_noise, user_classes):
+        """🚀 用户间判别损失：确保不同用户生成不同的噪声模式"""
+        batch_size = predicted_noise.shape[0]
+        if batch_size < 2:
+            return torch.tensor(0.0, device=predicted_noise.device)
+        
+        # 将预测噪声展平为特征向量
+        noise_features = predicted_noise.view(batch_size, -1)  # (B, C*H*W)
+        
+        # 计算用户间的噪声相似度
+        unique_users = torch.unique(user_classes)
+        if len(unique_users) < 2:
+            return torch.tensor(0.0, device=predicted_noise.device)
+        
+        inter_user_similarities = []
+        for i, user_a in enumerate(unique_users):
+            for user_b in unique_users[i+1:]:
+                mask_a = user_classes == user_a
+                mask_b = user_classes == user_b
+                
+                if mask_a.sum() == 0 or mask_b.sum() == 0:
+                    continue
+                
+                # 计算不同用户间的平均噪声相似度
+                noise_a = noise_features[mask_a].mean(dim=0)
+                noise_b = noise_features[mask_b].mean(dim=0)
+                
+                similarity = F.cosine_similarity(noise_a.unsqueeze(0), noise_b.unsqueeze(0))
+                inter_user_similarities.append(similarity)
+        
+        if not inter_user_similarities:
+            return torch.tensor(0.0, device=predicted_noise.device)
+        
+        # 损失：最小化用户间相似度（鼓励差异化）
+        avg_similarity = torch.stack(inter_user_similarities).mean()
+        return torch.relu(avg_similarity)  # 只在相似度>0时惩罚
+    
+    def compute_user_regularization_loss(self, user_condition):
+        """🚀 用户正则化：防止过拟合到特定用户特征"""
+        if user_condition is None:
+            return torch.tensor(0.0, device=self.device)
+        
+        # L2正则化：防止嵌入过大
+        l2_reg = torch.mean(torch.norm(user_condition, p=2, dim=1))
+        
+        # 多样性正则化：鼓励不同用户嵌入分散
+        if user_condition.shape[0] > 1:
+            # 计算嵌入的标准差，鼓励多样性
+            user_std = torch.std(user_condition, dim=0).mean()
+            diversity_reg = torch.exp(-user_std)  # 标准差小时惩罚大
+        else:
+            diversity_reg = torch.tensor(0.0, device=user_condition.device)
+        
+        return l2_reg + 0.1 * diversity_reg
     
     def _compute_contrastive_loss(self, user_embeddings: torch.Tensor, user_classes: torch.Tensor) -> torch.Tensor:
         """简化的对比学习损失：遵循SimCLR原则，避免memory bank复杂性"""
