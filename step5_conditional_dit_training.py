@@ -150,26 +150,43 @@ class ConditionalDiT(nn.Module):
         return predicted_noise
     
     def _conditional_forward_with_injection(self, x, t, user_classes, user_condition):
-        """带条件注入的DiT前向传播"""
-        # 保存原始的y_embedder
-        original_y_embedder = self.dit.y_embedder
+        """使用条件注入的前向传播"""
+        # ✅ 解决方案：直接修改DiT的前向传播过程，绕过y_embedder限制
         
-        # 创建临时的条件注入函数
-        def injected_y_embedder(y, training=False):
-            # 忽略原始的y，直接使用我们丰富的user_condition
-            return user_condition  # (B, condition_dim) -> 直接用作条件
+        # 直接调用DiT的前向传播组件，但用我们的user_condition替换y嵌入
+        x = self.dit.x_embedder(x) + self.dit.pos_embed  # 空间嵌入
+        t = self.dit.t_embedder(t)                        # 时间嵌入
         
-        # 临时替换y_embedder
-        self.dit.y_embedder = injected_y_embedder
+        # ✅ 关键：使用我们的丰富用户条件而不是原始y_embedder
+        # 确保user_condition的维度与DiT期望的隐藏层维度一致
+        if user_condition.size(-1) != self.dit.hidden_size:
+            # 如果维度不匹配，使用一个线性层调整
+            if not hasattr(self, '_condition_projector'):
+                self._condition_projector = nn.Linear(
+                    user_condition.size(-1), 
+                    self.dit.hidden_size
+                ).to(user_condition.device)
+            y = self._condition_projector(user_condition)
+        else:
+            y = user_condition
         
-        try:
-            # 使用注入了丰富条件的DiT进行前向传播
-            predicted_noise = self.dit(x, t, user_classes)  # y_embedder会被我们的函数替换
-        finally:
-            # 恢复原始y_embedder
-            self.dit.y_embedder = original_y_embedder
+        c = t + y  # 组合时间和用户条件
+        
+        # 通过transformer块
+        for block in self.dit.blocks:
+            if self.dit.use_checkpoint:
+                x = torch.utils.checkpoint.checkpoint(block, x, c, self.dit.feat_rope, use_reentrant=True)
+            else:
+                x = block(x, c, self.dit.feat_rope)
+        
+        # 最终输出层
+        x = self.dit.final_layer(x, c)
+        x = self.dit.unpatchify(x)
+        
+        if self.dit.learn_sigma:
+            x, _ = x.chunk(2, dim=1)
             
-        return predicted_noise
+        return x
 
 class ConditionalDiTTrainer:
     """条件DiT训练器"""
