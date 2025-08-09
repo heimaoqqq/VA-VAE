@@ -4,7 +4,7 @@
 model:
   target: ConditionalDiT
   params:
-    model: "DiT-XL/1"
+    model: "LightningDiT-XL/1"
     num_users: 31              # 31个用户 (ID_1 到 ID_31) - 可根据实际数据调整
     condition_dim: 768
     frozen_backbone: true      # 冻结主干网络防止过拟合
