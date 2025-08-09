@@ -220,9 +220,11 @@ def main():
                 }
             },
             'data': {
-                'data_dir': "/kaggle/input/dataset",
-                'batch_size': 4,
-                'num_workers': 0
+                'params': {
+                    'data_dir': "/kaggle/input/dataset",
+                    'batch_size': 4,
+                    'num_workers': 0
+                }
             },
             'training': {
                 'learning_rate': 1e-5,
