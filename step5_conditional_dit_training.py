@@ -32,7 +32,7 @@ class ConditionalDiT(nn.Module):
         self,
         model: str = "LightningDiT-XL/1",
         num_users: int = 31,
-        condition_dim: int = 768,
+        condition_dim: int = 1152,  # ✅ 修复：匹配DiT的hidden_size
         frozen_backbone: bool = True,
         dropout: float = 0.15,
         pretrained_path: str = None
@@ -213,7 +213,7 @@ class ConditionalDiT(nn.Module):
         user_condition = self.condition_encoder(user_classes)  # (B, condition_dim=768)
         
         # 将丰富的用户条件注入到DiT中
-        # 方法：替换DiT的y_embedder输出为我们的丰富条件
+        # 方法：最简化 - 让DiT使用原生机制，保存user_condition供对比学习使用
         predicted_noise = self._conditional_forward_with_injection(x, t, user_classes, user_condition)
         
         return predicted_noise
