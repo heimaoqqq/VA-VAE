@@ -20,26 +20,20 @@ torch._dynamo.config.suppress_errors = True
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-def quick_smoke_test(model, train_loader, device):
+def quick_smoke_test(trainer, train_loader, device):
     """烟雾测试：验证基本前向/反向传播"""
     print("🔥 开始烟雾测试...")
-    model.train()
-    model = model.to(device)
+    trainer.model.train()
     
     try:
         for batch_idx, batch in enumerate(train_loader):
             if batch_idx >= 5: break
             
-            # 移动数据到设备
-            for key in batch:
-                if isinstance(batch[key], torch.Tensor):
-                    batch[key] = batch[key].to(device)
-            
-            # 前向传播
-            loss = model.training_step(batch, batch_idx)
+            # 使用trainer的compute_loss方法
+            loss = trainer.compute_loss(batch)
             
             # 反向传播
-            model.zero_grad()
+            trainer.optimizer.zero_grad()
             loss.backward()
             
             print(f"  Batch {batch_idx}: Loss = {loss:.4f}")
@@ -49,12 +43,14 @@ def quick_smoke_test(model, train_loader, device):
         
     except Exception as e:
         print(f"❌ 烟雾测试失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
-def loss_trend_test(model, train_loader, device, num_steps=50):
+def loss_trend_test(trainer, train_loader, device, num_steps=50):
     """损失趋势测试：观察损失是否有改善趋势"""
     print(f"📊 开始损失趋势测试 ({num_steps}步)...")
-    model.train()
+    trainer.model.train()
     
     losses = []
     start_time = time.time()
@@ -63,23 +59,13 @@ def loss_trend_test(model, train_loader, device, num_steps=50):
         for batch_idx, batch in enumerate(train_loader):
             if batch_idx >= num_steps: break
             
-            # 移动数据到设备
-            for key in batch:
-                if isinstance(batch[key], torch.Tensor):
-                    batch[key] = batch[key].to(device)
-            
-            # 训练步骤
-            loss = model.training_step(batch, batch_idx)
+            # 使用trainer的compute_loss方法
+            loss = trainer.compute_loss(batch)
             
             # 优化步骤
-            model.zero_grad()
+            trainer.optimizer.zero_grad()
             loss.backward()
-            
-            # 简单的优化器步骤（这里只是模拟）
-            with torch.no_grad():
-                for param in model.parameters():
-                    if param.grad is not None:
-                        param -= 0.001 * param.grad  # 简单SGD
+            trainer.optimizer.step()  # 使用真实的优化器步骤
             
             losses.append(loss.item())
             
@@ -109,24 +95,21 @@ def loss_trend_test(model, train_loader, device, num_steps=50):
             
     except Exception as e:
         print(f"❌ 损失趋势测试失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
-def gradient_health_check(model, train_loader, device):
+def gradient_health_check(trainer, train_loader, device):
     """梯度健康检查"""
     print("🔬 开始梯度健康检查...")
-    model.train()
+    trainer.model.train()
     
     try:
         batch = next(iter(train_loader))
         
-        # 移动数据到设备
-        for key in batch:
-            if isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device)
-        
-        # 前向+反向传播
-        loss = model.training_step(batch, 0)
-        model.zero_grad()
+        # 使用trainer的compute_loss方法
+        loss = trainer.compute_loss(batch)
+        trainer.optimizer.zero_grad()
         loss.backward()
         
         # 梯度统计
@@ -135,7 +118,7 @@ def gradient_health_check(model, train_loader, device):
         params_with_grad = 0
         grad_norms = []
         
-        for name, param in model.named_parameters():
+        for name, param in trainer.model.named_parameters():
             total_params += 1
             
             if param.grad is not None:
@@ -244,19 +227,17 @@ def main():
         
         trainer = ConditionalDiTTrainer(config)
         
-        model = trainer.model
-        
-        # 验证测试
+        # 验证测试 - 使用trainer而不是model
         results = {}
         
         # 1. 烟雾测试
-        results['smoke_test'] = quick_smoke_test(model, train_loader, device)
+        results['smoke_test'] = quick_smoke_test(trainer, train_loader, device)
         
         # 2. 损失趋势测试  
-        results['loss_trend'] = loss_trend_test(model, train_loader, device, num_steps=30)
+        results['loss_trend'] = loss_trend_test(trainer, train_loader, device, num_steps=30)
         
         # 3. 梯度健康检查
-        results['gradient_health'] = gradient_health_check(model, train_loader, device)
+        results['gradient_health'] = gradient_health_check(trainer, train_loader, device)
         
         # 最终评估
         print("\n" + "=" * 60)
