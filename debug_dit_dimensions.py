@@ -195,7 +195,7 @@ def test_training_simulation():
     model = ConditionalDiT(
         model="LightningDiT-XL/1",
         num_users=31,
-        condition_dim=768,  # 注意这个参数！
+        condition_dim=1152,  # ✅ 使用修复后的参数
         frozen_backbone=True,
         pretrained_path=None  # 不加载权重
     ).to(device)
@@ -232,7 +232,7 @@ def test_training_simulation():
         model_with_weights = ConditionalDiT(
             model="LightningDiT-XL/1", 
             num_users=31,
-            condition_dim=768,
+            condition_dim=1152,  # ✅ 使用修复后的参数
             frozen_backbone=True,
             pretrained_path="models/lightningdit-xl-imagenet256-64ep.pt"
         ).to(device)
@@ -243,16 +243,129 @@ def test_training_simulation():
             
     except Exception as e:
         print(f"   ❌ 权重加载版本错误: {e}")
-        print(f"   🎯 这很可能就是我们在训练中遇到的实际错误！")
+        print(f"   🎯 这很可能就是我们在训练中遇到的实际错误!")
 
-    print(f"\n💡 关键分析:")
-    print(f"   - DiT单独测试: ✅ 完全正常")  
-    print(f"   - ConditionalDiT包装: ❌ 可能有问题")
-    print(f"   - 用户条件编码: 维度 = {user_condition.shape[-1]}")
-    print(f"   - 问题可能在ConditionalDiT的condition_dim参数或用户条件注入逻辑")
+def test_deep_768_trace():
+    """深度追踪768维的来源"""
+    print(f"\n📊 7. 深度追踪768维来源:")
+    print("   逐步检查每个可能的768维来源...")
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # 1. 检查UserConditionEncoder的实际输出维度
+    print(f"\n   🔍 检查UserConditionEncoder:")
+    from step4_microdoppler_adapter import UserConditionEncoder
+    
+    condition_encoder = UserConditionEncoder(num_users=31)
+    user_ids = torch.tensor([0, 1])
+    user_condition = condition_encoder(user_ids)
+    print(f"   UserConditionEncoder输出: {user_condition.shape}")
+    print(f"   这是768维吗？ {'✅ 是' if user_condition.shape[-1] == 768 else '❌ 不是'}")
+    
+    # 2. 检查预训练权重中是否有768维的残留
+    print(f"\n   🔍 检查预训练权重文件:")
+    try:
+        checkpoint = torch.load("models/lightningdit-xl-imagenet256-64ep.pt", map_location='cpu')
+        
+        # 检查checkpoint的结构
+        if isinstance(checkpoint, dict):
+            if 'ema' in checkpoint:
+                state_dict = checkpoint['ema']
+            elif 'model' in checkpoint:
+                state_dict = checkpoint['model']
+            else:
+                state_dict = checkpoint
+        else:
+            state_dict = checkpoint
+        
+        print(f"   预训练权重包含 {len(state_dict)} 个参数")
+        
+        # 查找所有包含768维度的权重
+        weights_with_768 = []
+        for key, value in state_dict.items():
+            if hasattr(value, 'shape'):
+                if 768 in value.shape:
+                    weights_with_768.append(f"{key}: {value.shape}")
+        
+        if weights_with_768:
+            print(f"   ⚠️ 发现包含768维的权重:")
+            for w in weights_with_768[:5]:  # 只显示前5个
+                print(f"     {w}")
+            if len(weights_with_768) > 5:
+                print(f"     ... 还有 {len(weights_with_768)-5} 个")
+        else:
+            print(f"   ✅ 预训练权重中没有768维")
+            
+    except Exception as e:
+        print(f"   ❌ 无法加载预训练权重: {e}")
+    
+    # 3. 测试step-by-step的权重加载过程
+    print(f"\n   🔍 逐步测试权重加载过程:")
+    
+    from step5_conditional_dit_training import ConditionalDiT
+    
+    # 创建模型（不加载权重）
+    model = ConditionalDiT(
+        model="LightningDiT-XL/1",
+        num_users=31, 
+        condition_dim=1152,
+        frozen_backbone=True,
+        pretrained_path=None
+    ).to(device)
+    
+    print(f"   空模型创建成功，condition_encoder维度:")
+    test_input = torch.tensor([0, 1]).to(device)
+    with torch.no_grad():
+        test_output = model.condition_encoder(test_input)
+        print(f"   condition_encoder输出: {test_output.shape}")
+        print(f"   这个维度对吗？ {'✅ 对' if test_output.shape[-1] == 1152 else '❌ 错'}")
+    
+    # 手动加载权重，看看会发生什么
+    print(f"\n   🔍 手动加载权重测试:")
+    try:
+        checkpoint = torch.load("models/lightningdit-xl-imagenet256-64ep.pt", map_location='cpu')
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint.get('ema', checkpoint.get('model', checkpoint))
+        else:
+            state_dict = checkpoint
+            
+        # 只加载DiT的权重，不加载条件编码器
+        dit_state_dict = {}
+        for key, value in state_dict.items():
+            if key.startswith('dit.') or not key.startswith('condition_encoder'):
+                dit_state_dict[key] = value
+        
+        print(f"   准备加载 {len(dit_state_dict)} 个DiT权重")
+        
+        # 检查权重兼容性
+        model_state = model.state_dict()
+        compatible_count = 0
+        incompatible_768 = []
+        
+        for key, value in dit_state_dict.items():
+            if key in model_state and model_state[key].shape == value.shape:
+                compatible_count += 1
+            elif key in model_state:
+                if 768 in value.shape or 768 in model_state[key].shape:
+                    incompatible_768.append(f"{key}: {value.shape} vs {model_state[key].shape}")
+        
+        print(f"   兼容权重: {compatible_count}")
+        if incompatible_768:
+            print(f"   ⚠️ 涉及768维的不兼容权重:")
+            for w in incompatible_768:
+                print(f"     {w}")
+                
+    except Exception as e:
+        print(f"   ❌ 手动权重加载测试失败: {e}")
+
+    print(f"\n💡 深度分析结论:")
+    print(f"   - UserConditionEncoder输出: {user_condition.shape[-1]}维")
+    print(f"   - 预训练权重检查: {'包含768维残留' if 'weights_with_768' in locals() and weights_with_768 else '无768维残留'}")
+    print(f"   - 需要进一步调查权重加载和条件编码器的交互")
 
 if __name__ == "__main__":
     print("🚀 开始LightningDiT维度诊断")
     test_official_dit_dimensions()
     test_user_condition_encoder()
     test_training_simulation()
+    test_deep_768_trace()
