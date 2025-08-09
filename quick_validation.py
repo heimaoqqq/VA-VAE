@@ -32,11 +32,20 @@ def quick_smoke_test(trainer, train_loader, device):
             # 使用trainer的compute_loss方法
             loss = trainer.compute_loss(batch)
             
+            # 🔍 显示损失组件分解
+            if hasattr(trainer, 'log_losses'):
+                logs = trainer.log_losses
+                print(f"  Batch {batch_idx}: Total = {loss:.4f}")
+                print(f"    - Diffusion: {logs['diffusion_loss']:.4f}")  
+                print(f"    - Contrastive: {logs['contrastive_loss']:.4f} (weight: {logs['contrastive_weight']:.3f})")
+                print(f"    - Inter-user: {logs['inter_user_loss']:.4f}")
+                print(f"    - Regularization: {logs['user_regularization']:.4f}")
+            else:
+                print(f"  Batch {batch_idx}: Loss = {loss:.4f}")
+            
             # 反向传播
             trainer.optimizer.zero_grad()
             loss.backward()
-            
-            print(f"  Batch {batch_idx}: Loss = {loss:.4f}")
             
         print("✅ 烟雾测试通过：基本训练流程工作正常")
         return True
