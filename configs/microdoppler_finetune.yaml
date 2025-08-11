@@ -1,0 +1,70 @@
+# micro-Doppler条件扩散生成微调配置
+# 基于LightningDiT-XL-64ep预训练模型进行用户条件微调
+
+model:
+  target: ConditionalDiT
+  params:
+    model: "LightningDiT-XL/1"
+    num_users: 31              # 31个用户 (ID_1 到 ID_31) - 可根据实际数据调整
+    condition_dim: 1152           # 匹配DiT hidden_size避免维度错误
+    frozen_backbone: true      # 冻结主干网络防止过拟合
+    dropout: 0.15              # 高dropout防过拟合
+    pretrained_path: "models/lightningdit-xl-imagenet256-64ep.pt"  # 确保此路径存在
+
+data:
+  target: MicroDopplerDataModule
+  params:
+    data_dir: "/kaggle/input/dataset"  # 修改为您的实际数据路径
+    batch_size: 16             # T4×2优化：提升显存利用率同时保持泛化
+    num_workers: 4             # 优化：避免CPU过载，保持高效并行
+    image_size: 256
+    val_split: 0.2             # 验证集比例，可调整为0.15-0.25
+
+trainer:
+  precision: "16-mixed"        # T4 GPU兼容的FP16混合精度 (bf16不支持!)
+  max_epochs: 25             # 基于实际25分钟/epoch调整为12小时安全范围
+  check_val_every_n_epoch: 3   # 25轮训练需要更频繁验证监控
+  gradient_clip_val: 1.0       # T4上FP16需要更强的梯度裁剪
+  accumulate_grad_batches: 2   # 模拟effective_batch=32，优化T4×2显存利用率
+  log_every_n_steps: 50        # 减少日志频率
+  enable_progress_bar: true
+  enable_model_summary: false
+
+optimizer:
+  target: torch.optim.AdamW
+  params:
+    lr: 7.0e-6                 # 为25轮训练优化的学习率
+    weight_decay: 1.0e-3       # 强权重衰减
+    betas: [0.9, 0.95]
+
+scheduler:
+  target: torch.optim.lr_scheduler.CosineAnnealingLR
+  params:
+    T_max: 25                 # 匹配实际训练轮数 (修复关键配置错误)
+    eta_min: 1.0e-7
+
+# 风险控制策略
+risk_control:
+  early_stopping:
+    patience: 4                # 25轮训练需要更紧的早停控制
+    min_delta: 0.001
+  
+  regularization:
+    techniques: ["dropout", "weight_decay", "gradient_clipping", "frozen_backbone"]
+    monitoring: ["train_loss", "val_loss", "gradient_norm"]
+  
+  memory_optimization:
+    gradient_checkpointing: true
+    mixed_precision: true
+    small_batch_size: true
+
+# 实验记录
+experiment:
+  name: "microdoppler_conditional_dit"
+  description: "micro-Doppler时频图像用户条件扩散生成"
+  tags: ["microdoppler", "conditional", "dit", "few-shot"]
+  
+logging:
+  log_level: "INFO"
+  save_samples: true
+  sample_every_n_epochs: 10    # 减少可视化频率节约时间

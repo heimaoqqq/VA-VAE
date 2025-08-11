@@ -59,12 +59,12 @@ def download_official_models():
         "VA-VAE Tokenizer": {
             "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/vavae-imagenet256-f16d32-dinov2.pt",
             "filename": "vavae-imagenet256-f16d32-dinov2.pt",
-            "description": "Vision Foundation Model Aligned VAE (约800MB)"
+            "description": "Vision Foundation Model Aligned VAE (约2049MB)"
         },
-        "LightningDiT-XL-800ep": {
-            "url": "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-800ep/resolve/main/lightningdit-xl-imagenet256-800ep.pt",
-            "filename": "lightningdit-xl-imagenet256-800ep.pt", 
-            "description": "LightningDiT扩散模型 800轮训练 FID=1.35 (约6GB)"
+        "LightningDiT-XL-64ep": {
+            "url": "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/resolve/main/lightningdit-xl-imagenet256-64ep.pt",
+            "filename": "lightningdit-xl-imagenet256-64ep.pt", 
+            "description": "LightningDiT扩散模型 64轮训练 (约10.3GB) - 适合微调"
         },
         "Latent Statistics": {
             "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/latents_stats.pt",
@@ -77,10 +77,11 @@ def download_official_models():
     total_size_estimate = 0
     for name, info in models.items():
         print(f"   - {name}: {info['description']}")
-        if "800MB" in info['description']:
-            total_size_estimate += 800
-        elif "6GB" in info['description']:
-            total_size_estimate += 6000
+        if "2049MB" in info['description']:
+            total_size_estimate += 2049
+        elif "10.3GB" in info['description']:
+            total_size_estimate += 10300
+
         elif "1KB" in info['description']:
             total_size_estimate += 0.001
     
@@ -123,7 +124,7 @@ def verify_models():
     models_dir = Path("models")
     expected_files = [
         "vavae-imagenet256-f16d32-dinov2.pt",
-        "lightningdit-xl-imagenet256-800ep.pt",
+        "lightningdit-xl-imagenet256-64ep.pt",
         "latents_stats.pt"
     ]
 
