@@ -19,6 +19,43 @@ sys.path.insert(0, str(project_root / 'LightningDiT' / 'vavae'))
 sys.path.insert(0, str(project_root / 'LightningDiT'))
 sys.path.insert(0, str(project_root))  # 添加根目录以导入自定义数据集
 
+# 关键：在导入ldm之前设置taming路径！
+def setup_taming_path():
+    """设置taming路径，必须在导入ldm之前调用"""
+    # 按优先级检查taming位置
+    taming_locations = [
+        Path('/kaggle/working/taming-transformers'),  # Kaggle标准位置
+        Path('/kaggle/working/.taming_path'),  # 路径文件
+        Path.cwd().parent / 'taming-transformers',  # 项目根目录
+        Path.cwd() / '.taming_path'  # 当前目录路径文件
+    ]
+    
+    for location in taming_locations:
+        if location.name == '.taming_path' and location.exists():
+            # 读取路径文件
+            try:
+                with open(location, 'r') as f:
+                    taming_path = f.read().strip()
+                if Path(taming_path).exists() and taming_path not in sys.path:
+                    sys.path.insert(0, taming_path)
+                    print(f"📂 已加载taming路径: {taming_path}")
+                    return True
+            except Exception as e:
+                continue
+        elif location.name == 'taming-transformers' and location.exists():
+            # 直接路径
+            taming_path = str(location.absolute())
+            if taming_path not in sys.path:
+                sys.path.insert(0, taming_path)
+                print(f"📂 发现并加载taming: {taming_path}")
+                return True
+    
+    # 静默失败，因为可能已经通过其他方式加载
+    return False
+
+# 在任何导入ldm之前设置taming路径
+setup_taming_path()
+
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -26,13 +63,13 @@ import numpy as np
 from PIL import Image
 import pytorch_lightning as pl
 from pytorch_lightning import seed_everything
-from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from pytorch_lightning.strategies import DDPStrategy
 
 from omegaconf import OmegaConf
 from ldm.util import instantiate_from_config
 from ldm.models.autoencoder import AutoencoderKL
-from main import DataModuleFromConfig  # 从原项目正确导入
+# from main import DataModuleFromConfig  # 使用自定义数据模块
 
 
 class MicroDopplerDataset(Dataset):
@@ -48,15 +85,16 @@ class MicroDopplerDataset(Dataset):
             split_data = json.load(f)
         
         self.samples = []
-        data_list = split_data['train'] if split == 'train' else split_data['val']
+        data_dict = split_data['train'] if split == 'train' else split_data['val']
         
-        for item in data_list:
-            img_path = self.data_root / item['path']
-            if img_path.exists():
-                self.samples.append({
-                    'path': img_path,
-                    'user_id': item['user_id']
-                })
+        # step3生成格式：{"ID_1": [img_paths], "ID_2": [img_paths], ...}
+        for user_id, img_paths in data_dict.items():
+            for img_path in img_paths:
+                if Path(img_path).exists():
+                    self.samples.append({
+                        'path': Path(img_path),
+                        'user_id': user_id
+                    })
         
         print(f"✅ {split}集: {len(self.samples)} 张图像")
     
@@ -70,73 +108,210 @@ class MicroDopplerDataset(Dataset):
         img = Image.open(sample['path']).convert('RGB')
         img = img.resize((self.image_size, self.image_size), Image.LANCZOS)
         
-        # 转换为tensor并归一化到[-1, 1] (原项目标准)
-        img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-        img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)
+        # 最终解决方案：模型get_input需要HWC格式！
+        # 验证：get_input会调用permute(0,3,1,2)将BHWC转为BCHW
         
-        # 返回原项目格式
-        return {'image': img_tensor}
+        # 方法1：使用numpy直接创建HWC格式
+        img_array = np.array(img).astype(np.float32)  # HWC格式 [256,256,3]
+        img_array = img_array / 127.5 - 1.0  # 归一化到[-1,1]
+        
+        # 转为tensor，保持HWC格式
+        img_tensor = torch.from_numpy(img_array)  # [256,256,3]
+        
+        return {
+            'image': img_tensor,  # HWC格式，正确匹配get_input期望
+            'user_id': int(sample['user_id'].split('_')[1])
+        }
 
 
-# 注意：原VA-VAE不包含用户对比损失
-# VF对齐机制（DINOv2）已经提供了足够的语义区分能力
-# 添加额外的用户对比损失可能会干扰原始训练目标
-
-
-def get_training_strategy(args):
-    """根据GPU配置选择训练策略"""
-    if not torch.cuda.is_available():
-        return 'auto'
+class TrainingMonitorCallback(Callback):
+    """训练监控回调"""
     
-    num_gpus = torch.cuda.device_count()
+    def __init__(self, stage):
+        super().__init__()
+        self.stage = stage
+        self.best_val_loss = float('inf')
+        self.loss_history = []
+        
+    def on_validation_epoch_end(self, trainer, pl_module):
+        metrics = trainer.callback_metrics
+        epoch = trainer.current_epoch
+        
+        # 调试：显示所有可用的训练指标
+        if epoch <= 2:  # 前3个epoch显示调试信息
+            train_keys = [k for k in metrics.keys() if k.startswith('train/')]
+            print(f"🔍 调试 - 可用的训练指标: {train_keys}")
+        
+        # 获取关键损失指标 - 检查损失函数实际返回的指标名称
+        val_rec_loss = metrics.get('val/rec_loss', 0)
+        val_kl_loss = metrics.get('val/kl_loss', 0)
+        val_vf_loss = metrics.get('val/vf_loss', 0)  # 修正为实际名称
+        
+        # VA-VAE实际记录的训练损失指标
+        train_ae_loss = metrics.get('train/aeloss', 0)  # AutoEncoder总损失
+        train_disc_loss = metrics.get('train/discloss', 0)  # 判别器损失
+        
+        # 尝试获取详细损失分解 - 使用损失函数实际的指标名称
+        train_total_loss = metrics.get('train/total_loss', 0)  # 总损失
+        train_rec_loss = metrics.get('train/rec_loss', 0)      # 重建损失
+        train_kl_loss = metrics.get('train/kl_loss', 0)        # KL损失
+        train_vf_loss = metrics.get('train/vf_loss', 0)        # VF对齐损失
+        train_g_loss = metrics.get('train/g_loss', 0)          # 生成器损失
+        
+        # 获取学习率
+        current_lr = 0
+        if hasattr(pl_module, 'optimizers'):
+            opts = pl_module.optimizers()
+            if opts and len(opts) > 0:
+                current_lr = opts[0].param_groups[0]['lr']
+        
+        # 判断训练稳定性
+        is_stable = self._check_training_stability(val_rec_loss, train_ae_loss)
+        stability_icon = "✅" if is_stable else "⚠️"
+        
+        # 更新最佳损失
+        if val_rec_loss < self.best_val_loss:
+            self.best_val_loss = val_rec_loss
+            best_icon = "🏆"
+        else:
+            best_icon = ""
+        
+        print(f"\n{stability_icon} Stage {self.stage} - Epoch {epoch} {best_icon}")
+        print(f"📊 验证损失:")
+        print(f"   重建: {val_rec_loss:.4f} | KL: {val_kl_loss:.4f} | VF: {val_vf_loss:.4f}")
+        print(f"🎯 训练损失:")
+        print(f"   AutoEncoder: {train_ae_loss:.4f} | 判别器: {train_disc_loss:.4f}")
+        
+        # 显示详细损失分解 - 用于诊断
+        if train_total_loss > 0 or train_rec_loss > 0 or train_kl_loss > 0 or train_vf_loss > 0:
+            print(f"\n📊 训练损失详情 (高精度):")
+            print(f"   - Total Loss: {train_total_loss:.6f}")
+            print(f"   - Rec Loss: {train_rec_loss:.6f}")
+            
+            # 显示KL损失的精确值（显示12位小数以观察微小变化）
+            if train_kl_loss == 0:
+                print(f"   - KL Loss: 0.000000000000 (完全为零)")
+            else:
+                # 显示实际KL值和加权后的值
+                raw_kl = train_kl_loss / 1e-6 if train_kl_loss > 0 else 0
+                print(f"   - KL Loss: {train_kl_loss:.12f} (原始KL={raw_kl:.6f}, 权重=1e-6)")
+                
+            # 显示VF损失的精确值（显示12位小数）
+            if train_vf_loss == 0:
+                print(f"   - VF Loss: 0.000000000000 (完全为零)")
+            else:
+                vf_weight = metrics.get('train/vf_weight', 0.5)
+                raw_vf = train_vf_loss / vf_weight if vf_weight > 0 else train_vf_loss
+                print(f"   - VF Loss: {train_vf_loss:.12f} (原始VF={raw_vf:.6f}, 权重={vf_weight})")
+                
+            print(f"   - Disc Loss: {train_disc_loss:.6f}")
+        else:
+            print(f"   ⚠️  详细损失暂未记录 (可能是Epoch 0初始化)")
+        
+        print(f"⚙️  学习率: {current_lr:.2e}")
+        
+        # 阶段特定关注点
+        if self.stage == 1:
+            if train_vf_loss > 0:
+                print(f"🎨 Stage 1 重点: VF对齐效果 = {train_vf_loss:.4f}")
+            else:
+                print(f"🎨 Stage 1 重点: AE损失(含VF) = {train_ae_loss:.4f}")
+        elif self.stage == 2:
+            print(f"🏗️  Stage 2 重点: 判别器平衡 = {train_disc_loss:.4f}")
+        elif self.stage == 3:
+            print(f"🎯 Stage 3 重点: 用户区分优化")
+        
+        # 异常警告
+        self._check_anomalies(val_rec_loss, train_ae_loss, current_lr)
+        print("-" * 50)
+        
+    def _check_training_stability(self, val_loss, train_loss):
+        """检查训练稳定性"""
+        if torch.isnan(torch.tensor([val_loss, train_loss])).any():
+            return False
+        if val_loss > 10.0 or train_loss > 10.0:  # 损失过大
+            return False
+        return True
+        
+    def _check_anomalies(self, val_loss, train_loss, lr):
+        """检查训练异常"""
+        warnings = []
+        
+        if torch.isnan(torch.tensor([val_loss, train_loss])).any():
+            warnings.append("🚨 检测到NaN损失!")
+        if val_loss > 5.0:
+            warnings.append("⚠️  验证损失过高，可能过拟合")
+        if train_loss > 10.0:
+            warnings.append("⚠️  训练损失异常高")
+        if lr < 1e-7:
+            warnings.append("⚠️  学习率过低，训练可能停滞")
+        if len(self.loss_history) > 5:
+            recent_losses = self.loss_history[-5:]
+            if all(abs(recent_losses[i] - recent_losses[i-1]) < 1e-5 for i in range(1, 5)):
+                warnings.append("⚠️  损失收敛停滞")
+                
+        self.loss_history.append(val_loss)
+        if len(self.loss_history) > 10:
+            self.loss_history.pop(0)
+            
+        for warning in warnings:
+            print(warning)
+
+
+class MicroDopplerDataModule(pl.LightningDataModule):
+    """微多普勒数据模块"""
     
-    if num_gpus == 1:
-        return 'auto'
-    elif num_gpus == 2 and args.kaggle_t4:
-        # Kaggle T4×2特殊配置
-        print("🔧 使用Kaggle T4×2 DDP策略")
-        return DDPStrategy(
-            find_unused_parameters=True,
-            static_graph=False,  # T4可能需要动态图
-            gradient_as_bucket_view=True
+    def __init__(self, data_root, split_file, batch_size=8, num_workers=4, image_size=256):
+        super().__init__()
+        self.data_root = data_root
+        self.split_file = split_file
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.image_size = image_size
+    
+    def setup(self, stage=None):
+        if stage == 'fit' or stage is None:
+            self.train_dataset = MicroDopplerDataset(
+                data_root=self.data_root,
+                split_file=self.split_file,
+                split='train',
+                image_size=self.image_size
+            )
+            self.val_dataset = MicroDopplerDataset(
+                data_root=self.data_root,
+                split_file=self.split_file,
+                split='val',
+                image_size=self.image_size
+            )
+    
+    def train_dataloader(self):
+        return torch.utils.data.DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True
         )
-    else:
-        # 通用多GPU配置
-        return 'ddp_find_unused_parameters_true'
+    
+    def val_dataloader(self):
+        return torch.utils.data.DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True
+        )
 
 
 def create_stage_config(args, stage, checkpoint_path=None):
-    """创建阶段配置 - 完全兼容原项目"""
+    """创建阶段配置"""
     
-    # 基于原项目的三阶段参数
     stage_params = {
-        1: {  # 语义对齐阶段
-            'disc_start': 5001,  # 原项目默认值，延迟判别器启动
-            'disc_weight': 0.5,  # 原项目默认值
-            'vf_weight': 0.5,  # 高权重进行语义对齐
-            'distmat_margin': 0.0,
-            'cos_margin': 0.0,
-            'learning_rate': 1e-4,
-            'max_epochs': 30  # 适应小数据集
-        },
-        2: {  # 重建优化阶段
-            'disc_start': 1,  # 启用判别器
-            'disc_weight': 0.5,  # 原项目默认值
-            'vf_weight': 0.1,  # 降低VF权重
-            'distmat_margin': 0.0,
-            'cos_margin': 0.0,
-            'learning_rate': 5e-5,
-            'max_epochs': 15
-        },
-        3: {  # 边距优化阶段
-            'disc_start': 1,
-            'disc_weight': 0.5,  # 原项目默认值
-            'vf_weight': 0.1,
-            'distmat_margin': 0.25,  # 原项目默认值
-            'cos_margin': 0.5,  # 原项目默认值
-            'learning_rate': 2e-5,
-            'max_epochs': 10
-        }
+        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 50},
+        2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 15},
+        3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 15}
     }
     
     params = stage_params[stage]
@@ -149,96 +324,30 @@ def create_stage_config(args, stage, checkpoint_path=None):
                 'monitor': 'val/rec_loss',
                 'embed_dim': 32,
                 'ckpt_path': args.pretrained_path if stage == 1 else checkpoint_path,
-                
-                # Vision Foundation配置 - 原项目核心
                 'use_vf': 'dinov2',
-                'reverse_proj': True,  # 32D -> 1024D投影
-                
-                # 架构配置 - 与原项目一致
+                'reverse_proj': True,
                 'ddconfig': {
-                    'double_z': True,  # KL-VAE需要
-                    'z_channels': 32,
-                    'resolution': 256,
-                    'in_channels': 3,
-                    'out_ch': 3,
-                    'ch': 128,
-                    'ch_mult': [1, 1, 2, 2, 4],
-                    'num_res_blocks': 2,
-                    'attn_resolutions': [16],
-                    'dropout': 0.0
+                    'double_z': True, 'z_channels': 32, 'resolution': 256,
+                    'in_channels': 3, 'out_ch': 3, 'ch': 128,
+                    'ch_mult': [1, 1, 2, 2, 4], 'num_res_blocks': 2,
+                    'attn_resolutions': [16], 'dropout': 0.0
                 },
-                
-                # 损失配置 - 原项目核心
                 'lossconfig': {
                     'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
                     'params': {
-                        # 判别器参数 - 与原项目完全一致
-                        'disc_start': params['disc_start'],
-                        'disc_num_layers': 3,
-                        'disc_weight': params['disc_weight'],  # 使用阶段特定值
-                        'disc_factor': 1.0,
-                        'disc_in_channels': 3,
-                        'disc_conditional': False,
-                        'disc_loss': 'hinge',  # 原项目默认
-                        
-                        # 重建损失 - 与原项目一致
-                        'pixelloss_weight': 1.0,
-                        'perceptual_weight': 0.0,  # 原项目VA-VAE不用感知损失
-                        'kl_weight': 1e-6,  # 原项目值
-                        'logvar_init': 0.0,  # 原项目默认
-                        
-                        # VF对齐损失 - 原项目核心参数
-                        'vf_weight': params['vf_weight'],
-                        'adaptive_vf': True,  # 自适应权重平衡
-                        'distmat_weight': 1.0,  # 距离矩阵权重
-                        'cos_weight': 1.0,  # 余弦相似度权重
+                        'disc_start': params['disc_start'], 'disc_num_layers': 3,
+                        'disc_weight': params['disc_weight'], 'disc_factor': 1.0,
+                        'disc_in_channels': 3, 'disc_conditional': False, 'disc_loss': 'hinge',
+                        'pixelloss_weight': 1.0, 'perceptual_weight': 1.0,  # 重要：原项目使用感知损失！
+                        'kl_weight': 1e-6, 'logvar_init': 0.0,
+                        'use_actnorm': False,  # 判别器中不使用ActNorm
+                        'pp_style': False,  # 不使用pp_style的nll损失计算
+                        'vf_weight': params['vf_weight'], 'adaptive_vf': True,
+                        'distmat_weight': 1.0, 'cos_weight': 1.0,
                         'distmat_margin': params['distmat_margin'],
-                        'cos_margin': params['cos_margin'],
-                        'pp_style': False,  # 原项目默认
-                        'use_actnorm': False  # 原项目默认
+                        'cos_margin': params['cos_margin']
                     }
                 }
-            }
-        },
-        
-        'data': {
-            'target': 'main.DataModuleFromConfig',
-            'params': {
-                'batch_size': args.batch_size,
-                'num_workers': args.num_workers,
-                'wrap': False,  # 原项目参数
-                'train': {
-                    'target': 'microdoppler_finetune.step4_train_vavae.MicroDopplerDataset',
-                    'params': {
-                        'data_root': args.data_root,
-                        'split_file': args.split_file,
-                        'split': 'train'
-                    }
-                },
-                'validation': {
-                    'target': 'microdoppler_finetune.step4_train_vavae.MicroDopplerDataset',
-                    'params': {
-                        'data_root': args.data_root,
-                        'split_file': args.split_file,
-                        'split': 'val'
-                    }
-                }
-            }
-        },
-        
-        'lightning': {
-            'trainer': {
-                'devices': args.devices if args.devices else 'auto',
-                'accelerator': 'gpu' if torch.cuda.is_available() else 'cpu',
-                'max_epochs': params['max_epochs'],
-                'precision': 32,  # 原项目使用32位，避免FP16的NaN问题
-                'strategy': get_training_strategy(args),  # 根据GPU配置选择策略
-                'accumulate_grad_batches': args.gradient_accumulation,
-                'gradient_clip_val': 0.5,  # 更保守的梯度裁剪
-                'log_every_n_steps': 10,
-                'val_check_interval': 0.5,  # 减少验证频率以加速训练
-                'num_sanity_val_steps': 0,
-                'detect_anomaly': args.detect_anomaly  # 调试NaN问题
             }
         }
     })
@@ -247,64 +356,78 @@ def create_stage_config(args, stage, checkpoint_path=None):
 
 
 def train_stage(args, stage):
-    """训练单个阶段"""
+    """训练阶段"""
     
-    print(f"\n{'='*60}")
-    print(f"🚀 VA-VAE 第{stage}阶段训练")
-    print(f"{'='*60}")
-    
-    # 设置随机种子
     seed_everything(args.seed, workers=True)
     
-    # 获取上一阶段checkpoint
     checkpoint_path = None
     if stage > 1:
         prev_ckpt_dir = Path(f'checkpoints/stage{stage-1}')
         if prev_ckpt_dir.exists():
-            # 查找最新的checkpoint
             ckpt_files = list(prev_ckpt_dir.glob('*.ckpt'))
             if ckpt_files:
                 checkpoint_path = str(max(ckpt_files, key=lambda x: x.stat().st_mtime))
-                print(f"📦 加载第{stage-1}阶段checkpoint: {checkpoint_path}")
-    
-    # 创建配置
+                print(f"加载checkpoint: {checkpoint_path}")
+
     config = create_stage_config(args, stage, checkpoint_path)
-    
-    # 保存配置
-    config_dir = Path('checkpoints') / f'stage{stage}'
-    config_dir.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(config, config_dir / 'config.yaml')
-    
-    # 实例化模型
+    params = config.model.params.lossconfig.params
+
     model = instantiate_from_config(config.model)
+    model.learning_rate = config.model.base_learning_rate
+
+    # 全面验证VF模块和权重加载
+    if hasattr(model, 'use_vf'):
+        print(f"🔍 VF模块状态: use_vf={model.use_vf}")
+        if model.use_vf and hasattr(model, 'foundation_model'):
+            print(f"✅ DINOv2模型已加载")
+            # 检查关键权重是否存在
+            has_vf_weights = any('foundation_model' in k for k in model.state_dict().keys())
+            has_proj_weights = any('linear_proj' in k for k in model.state_dict().keys())
+            print(f"   - Foundation权重: {'✅ 已加载' if has_vf_weights else '❌ 缺失'}")
+            print(f"   - Projection权重: {'✅ 已加载' if has_proj_weights else '❌ 缺失'}")
+            
+            if not has_vf_weights:
+                print(f"⚠️  警告：DINOv2权重未从预训练模型加载！")
+                print(f"   这会导致VF损失为0，Stage 1训练无效")
+                print(f"   请确保预训练文件包含foundation_model权重")
+        else:
+            print(f"⚠️  DINOv2模型未正确初始化！")
+    else:
+        print(f"❌ 模型缺少use_vf属性！")
+    print(f"学习率: {model.learning_rate:.2e}")
+
+    data_module = MicroDopplerDataModule(
+        data_root=args.data_root,
+        split_file=args.split_file,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        image_size=256
+    )
     
-    # 实例化数据模块 - 使用原项目的DataModuleFromConfig
-    data_module = instantiate_from_config(config.data)
+    checkpoint_dir = Path(f'checkpoints/stage{stage}')
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
-    # 配置回调
     checkpoint_callback = ModelCheckpoint(
-        dirpath=f'checkpoints/stage{stage}',
+        dirpath=checkpoint_dir,
         filename=f'vavae-stage{stage}-{{epoch:02d}}-{{val_rec_loss:.4f}}',
         monitor='val/rec_loss',
         mode='min',
-        save_top_k=2,
-        save_last=True
+        save_top_k=1,
+        save_last=False,
+        verbose=True
     )
     
-    lr_monitor = LearningRateMonitor(logging_interval='epoch')
+    training_monitor = TrainingMonitorCallback(stage)
     
-    # 配置训练器
     trainer = pl.Trainer(
-        **config.lightning.trainer,
-        callbacks=[checkpoint_callback, lr_monitor]
+        devices='auto',
+        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
+        max_epochs=params.get('max_epochs', 50),
+        precision=32,
+        callbacks=[checkpoint_callback, training_monitor]
     )
     
-    # 开始训练
-    print(f"\n🎯 开始第{stage}阶段训练...")
-    print(f"   判别器启动: {config.model.params.lossconfig.params.disc_start}")
-    print(f"   VF权重: {config.model.params.lossconfig.params.vf_weight}")
-    print(f"   距离边距: {config.model.params.lossconfig.params.distmat_margin}")
-    print(f"   余弦边距: {config.model.params.lossconfig.params.cos_margin}")
+    print(f"\n第{stage}阶段训练 - LR: {config.model.base_learning_rate:.2e}")
     
     trainer.fit(model, data_module)
     
@@ -312,84 +435,42 @@ def train_stage(args, stage):
 
 
 def main():
-    """主函数"""
     parser = argparse.ArgumentParser()
-    
-    # 数据参数
-    parser.add_argument('--data_root', type=str, default='/kaggle/input/micro-doppler-data',
-                       help='微多普勒数据集根目录')
-    parser.add_argument('--split_file', type=str, default='dataset_split.json',
-                       help='数据划分文件')
-    
-    # 模型参数
-    parser.add_argument('--pretrained_path', type=str,
-                       default='/kaggle/input/vavae-pretrained/vavae-imagenet256-f16d32-dinov2.pt',
-                       help='预训练VA-VAE模型路径')
-    
-    # 训练参数
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--gradient_accumulation', type=int, default=2)
+    parser.add_argument('--data_root', type=str, default='/kaggle/input/micro-doppler-data')
+    parser.add_argument('--split_file', type=str, default='/kaggle/working/data_split/dataset_split.json')
+    parser.add_argument('--pretrained_path', type=str, default='/kaggle/input/vavae-pretrained/vavae-imagenet256-f16d32-dinov2.pt')
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--num_workers', type=int, default=2)
     parser.add_argument('--seed', type=int, default=42)
-    
-    # GPU配置
-    parser.add_argument('--devices', type=str, default=None,
-                       help='GPU设备，例如"0,1"或"1"')
-    parser.add_argument('--kaggle_t4', action='store_true',
-                       help='使用Kaggle T4×2配置')
-    parser.add_argument('--detect_anomaly', action='store_true',
-                       help='启用异常检测（调试NaN）')
-    
-    # 阶段选择
-    parser.add_argument('--stages', type=str, default='1,2,3',
-                       help='要训练的阶段，逗号分隔')
-    parser.add_argument('--kaggle', action='store_true',
-                       help='Kaggle环境标志')
+    parser.add_argument('--stages', type=str, default='1,2,3')
+    parser.add_argument('--gradient_accumulation', type=int, default=1)
+    parser.add_argument('--kaggle', action='store_true')
     
     args = parser.parse_args()
-    
-    # 验证环境
-    if torch.cuda.is_available():
-        print(f"🖥️ GPU可用: {torch.cuda.get_device_name(0)}")
-        print(f"   显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-        print(f"   GPU数量: {torch.cuda.device_count()}")
-    
-    if args.kaggle:
-        print("🌐 Kaggle环境检测")
-        kaggle_input = Path('/kaggle/input')
-        if kaggle_input.exists():
-            print("✅ 检测到Kaggle环境")
-            # 自动设置路径
-            if (kaggle_input / 'micro-doppler-data').exists():
-                args.data_root = '/kaggle/input/micro-doppler-data'
-            if (kaggle_input / 'vavae-pretrained').exists():
-                args.pretrained_path = '/kaggle/input/vavae-pretrained/vavae-imagenet256-f16d32-dinov2.pt'
-    
-    # 设置种子
-    seed_everything(args.seed)
-    
-    # 解析阶段
     stages_to_train = [int(s) for s in args.stages.split(',')]
     
-    print("="*60)
-    print("🚀 VA-VAE 微多普勒微调 - LightningDiT兼容版")
-    print("="*60)
-    print(f"📊 数据集: {args.data_root}")
-    print(f"📦 预训练模型: {args.pretrained_path}")
-    print(f"🎯 训练阶段: {stages_to_train}")
-    print(f"⚙️  设置:")
-    print(f"   - Batch Size: {args.batch_size}")
-    print(f"   - Gradient Accumulation: {args.gradient_accumulation}")
-    print(f"   - 有效Batch Size: {args.batch_size * args.gradient_accumulation}")
-    print("="*60)
+    print("开始VA-VAE微多普勒微调训练")
+    print(f"数据: {args.data_root}")
+    print(f"训练阶段: {stages_to_train}")
     
-    # 训练各阶段
+    data_module = MicroDopplerDataModule(
+        data_root=args.data_root,
+        split_file=args.split_file,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        image_size=256
+    )
+    data_module.setup()
+    
+    print(f"训练集: {len(data_module.train_dataset)} 张图像, 验证集: {len(data_module.val_dataset)} 张图像")
+    
     best_checkpoints = []
     for stage in stages_to_train:
         best_ckpt = train_stage(args, stage)
         best_checkpoints.append(best_ckpt)
-        print(f"\n✅ 第{stage}阶段完成")
-        print(f"📦 最佳checkpoint: {best_ckpt}")
+        print(f"第{stage}阶段完成")
+    
+    print(f"训练完成! 最佳checkpoints: {best_checkpoints}")
     
     # 保存最终模型
     if best_checkpoints:

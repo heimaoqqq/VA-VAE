@@ -93,9 +93,8 @@ def prepare_microdoppler_dataset():
         }
     }
     
-    # 选择验证用户（用于整体验证）
-    val_users = [1, 10, 20, 30]  # 4个用户完全用于验证
-    print(f"\n🎯 验证用户: ID_{val_users}")
+    # 每个用户内部划分（80%训练，20%验证）
+    print(f"\n🎯 每个用户内部划分 80/20")
     
     for user_id in range(1, 32):
         user_folder = data_root / f"ID_{user_id}"
@@ -104,21 +103,13 @@ def prepare_microdoppler_dataset():
         
         user_key = f"ID_{user_id}"
         
-        if user_id in val_users:
-            # 整个用户用于验证
-            val_images = sorted([str(img) for img in user_folder.glob("*.jpg")])
-            dataset_split["val"][user_key] = val_images
-            dataset_split["train"][user_key] = []
-            dataset_split["statistics"]["val_images"] += len(val_images)
-            print(f"   {user_key}: 全部 {len(val_images)} 张用于验证")
-        else:
-            # 该用户的数据划分为训练集
-            train_images, user_val = split_user_data(user_folder, train_ratio=0.9)  # 90%训练
-            dataset_split["train"][user_key] = train_images
-            dataset_split["val"][user_key] = user_val  # 10%用于训练中验证
-            dataset_split["statistics"]["train_images"] += len(train_images)
-            dataset_split["statistics"]["val_images"] += len(user_val)
-            print(f"   {user_key}: {len(train_images)} 训练, {len(user_val)} 验证")
+        # 每个用户内部80/20划分
+        train_images, val_images = split_user_data(user_folder, train_ratio=0.8)
+        dataset_split["train"][user_key] = train_images
+        dataset_split["val"][user_key] = val_images
+        dataset_split["statistics"]["train_images"] += len(train_images)
+        dataset_split["statistics"]["val_images"] += len(val_images)
+        print(f"   {user_key}: {len(train_images)} 训练, {len(val_images)} 验证")
     
     # 保存划分信息
     split_file = output_root / "dataset_split.json"
@@ -139,7 +130,7 @@ def prepare_microdoppler_dataset():
         "split_file": str(split_file),
         "labels_file": str(labels_file),
         "num_users": len(user_stats),
-        "val_users": val_users,
+        "split_strategy": "per_user_80_20",  # 每个用户内部80/20划分
         "image_size": 256,
         "batch_size": 8,
         "num_workers": 4
@@ -155,8 +146,8 @@ def prepare_microdoppler_dataset():
     print("📊 数据集准备完成!")
     print(f"   训练图像: {dataset_split['statistics']['train_images']}")
     print(f"   验证图像: {dataset_split['statistics']['val_images']}")
-    print(f"   训练用户: {27} 个")
-    print(f"   验证用户: {4} 个")
+    print(f"   总用户数: {len(user_stats)} 个")
+    print(f"   每个用户都有训练和验证数据（80/20划分）")
     
     print("\n下一步:")
     print("1. 运行 python step4_train_stage1.py 开始第一阶段训练（语义对齐）")

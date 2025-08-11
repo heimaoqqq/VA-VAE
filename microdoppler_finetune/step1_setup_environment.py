@@ -9,6 +9,55 @@ import sys
 import subprocess
 from pathlib import Path
 
+def setup_taming_transformers(base_path):
+    """设置taming-transformers（克隆方式）"""
+    print("\n📥 设置taming-transformers...")
+    
+    taming_dir = base_path / "taming-transformers"
+    if not taming_dir.exists():
+        print("📥 克隆taming-transformers...")
+        try:
+            subprocess.check_call([
+                "git", "clone", 
+                "https://github.com/CompVis/taming-transformers.git",
+                str(taming_dir)
+            ])
+            print("✅ taming-transformers 克隆成功")
+        except subprocess.CalledProcessError as e:
+            print(f"❌ 克隆失败: {e}")
+            return False
+    else:
+        print("✅ taming-transformers已存在")
+    
+    # 修复torch兼容性问题
+    utils_file = taming_dir / "taming" / "data" / "utils.py"
+    if utils_file.exists():
+        print("🔧 修复torch兼容性...")
+        try:
+            content = utils_file.read_text()
+            if "from torch._six import string_classes" in content:
+                content = content.replace(
+                    "from torch._six import string_classes",
+                    "from six import string_types as string_classes"
+                )
+                utils_file.write_text(content)
+                print("✅ 兼容性修复完成")
+        except Exception as e:
+            print(f"⚠️ 兼容性修复失败: {e}")
+    
+    # 添加到Python路径
+    taming_path = str(taming_dir.absolute())
+    if taming_path not in sys.path:
+        sys.path.insert(0, taming_path)
+        print(f"📂 已添加taming路径: {taming_path}")
+    
+    # 保存路径信息
+    path_file = base_path / ".taming_path"
+    with open(path_file, "w") as f:
+        f.write(taming_path)
+    
+    return True
+
 def setup_vavae_environment():
     """配置VA-VAE微调环境"""
     print("🔧 配置VA-VAE微调环境")
@@ -42,7 +91,7 @@ def setup_vavae_environment():
     # 基础依赖
     packages = [
         "torch>=2.0.0",
-        "torchvision>=0.15.0",
+        "torchvision>=0.15.0", 
         "pytorch-lightning>=2.0.0",
         "transformers>=4.30.0",  # 用于DINOv2
         "einops>=0.6.0",
@@ -53,10 +102,17 @@ def setup_vavae_environment():
         "matplotlib",
         "seaborn",
         "tensorboard",
-        "tqdm"
+        "tqdm",
+        # LightningDiT/VA-VAE特定依赖
+        "diffusers>=0.20.0",
+        "accelerate>=0.20.0",
+        "lpips>=0.1.4",  # 感知损失
+        "timm>=0.9.0",   # Vision Transformer模型
+        # 注意：不要包含clip-by-openai，有依赖冲突
+        # 注意：不要包含taming，使用克隆方式
     ]
     
-    # 安装包
+    # 安装基础包
     for package in packages:
         try:
             if "torch" in package and os.path.exists('/kaggle/working'):
@@ -69,6 +125,9 @@ def setup_vavae_environment():
         except subprocess.CalledProcessError as e:
             print(f"⚠️ 安装 {package} 失败: {e}")
             print("   尝试继续...")
+    
+    # 设置taming-transformers（使用克隆方式）
+    setup_taming_transformers(base_path)
     
     # 克隆或链接LightningDiT代码
     print("\n📂 配置LightningDiT代码库...")
