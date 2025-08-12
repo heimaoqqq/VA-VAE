@@ -424,6 +424,11 @@ def main():
     # 创建模型
     model = instantiate_from_config(config)
     
+    # 修复：手动设置learning_rate属性（PyTorch Lightning需要）
+    if not hasattr(model, 'learning_rate'):
+        model.learning_rate = config['base_learning_rate']
+        print(f"✅ 手动设置 learning_rate = {model.learning_rate}")
+    
     # 创建数据模块
     data_module = MicroDopplerDataModule(
         data_dir=args.data_dir,
