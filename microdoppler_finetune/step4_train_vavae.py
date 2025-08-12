@@ -182,7 +182,7 @@ class TrainingMonitorCallback(Callback):
         else:
             best_icon = ""
         
-        print(f"\n{stability_icon} Stage {self.stage} - Epoch {epoch} {best_icon}")
+        print(f"\n{stability_icon} Stage {self.stage} - Epoch {epoch + 1} {best_icon}")
         print(f"📊 验证损失:")
         print(f"   重建: {val_rec_loss:.4f} | KL: {val_kl_loss:.4f} | VF: {val_vf_loss:.4f}")
         print(f"🎯 训练损失:")
@@ -349,7 +349,7 @@ class TrainingMonitorCallback(Callback):
                     
                     # 创建可视化
                     fig, axes = plt.subplots(2, 8, figsize=(16, 4))
-                    fig.suptitle(f'Stage {self.stage} - Epoch {epoch} 重建效果对比')
+                    fig.suptitle(f'Stage {self.stage} - Epoch {epoch + 1} 重建效果对比')
                     
                     for i in range(min(8, inputs.shape[0])):
                         # 原始图像 (转换为numpy显示格式)
@@ -385,7 +385,7 @@ class TrainingMonitorCallback(Callback):
                             axes[1, i].set_title('重建图像', fontsize=10)
                     
                     # 保存图像
-                    save_path = self.save_dir / f'stage{self.stage}_epoch{epoch:03d}.png'
+                    save_path = self.save_dir / f'stage{self.stage}_epoch{epoch + 1:03d}.png'
                     plt.savefig(save_path, dpi=100, bbox_inches='tight', facecolor='white')
                     plt.close()
                     
@@ -448,7 +448,7 @@ def create_stage_config(args, stage, checkpoint_path=None):
     """创建阶段配置"""
     
     stage_params = {
-        1: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 50},
+        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 50},
         2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 15},
         3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 15}
     }
