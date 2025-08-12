@@ -164,6 +164,13 @@ class TrainingMonitorCallback(Callback):
         train_vf_loss = metrics.get('train/vf_loss', 0)        # VF对齐损失
         train_g_loss = metrics.get('train/g_loss', 0)          # 生成器损失
         
+        # 调试：如果损失异常高，打印所有可用的metrics
+        if train_ae_loss > 1000:
+            print(f"\n⚠️ 检测到异常高损失，详细metrics:")
+            for key, value in metrics.items():
+                if 'train/' in key and value != 0:
+                    print(f"   {key}: {value:.4f}")
+        
         # 获取学习率
         current_lr = 0
         if hasattr(pl_module, 'optimizers'):
