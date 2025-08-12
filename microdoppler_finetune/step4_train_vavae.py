@@ -359,11 +359,23 @@ class TrainingMonitorCallback(Callback):
                     print(f"   📐 潜在编码形状: {z.shape}, 范围: [{z.min():.2f}, {z.max():.2f}]")
                     print(f"   📐 重建形状: {reconstructions.shape}, 范围: [{reconstructions.min():.2f}, {reconstructions.max():.2f}]")
                     
-                    # 创建可视化
-                    fig, axes = plt.subplots(2, 8, figsize=(16, 4))
+                    # 验证重建是否真的不同
+                    input_mean = inputs.mean().item()
+                    recon_mean = reconstructions.mean().item()
+                    mse = ((inputs - reconstructions) ** 2).mean().item()
+                    print(f"   🔍 输入均值: {input_mean:.4f}, 重建均值: {recon_mean:.4f}")
+                    print(f"   🔍 MSE差异: {mse:.6f}")
+                    
+                    # 根据实际batch大小创建可视化
+                    num_samples = min(8, inputs.shape[0])  # 最多显示8张
+                    fig, axes = plt.subplots(2, num_samples, figsize=(num_samples * 2, 4))
                     fig.suptitle(f'Stage {self.stage} - Epoch {epoch + 1} 重建效果对比')
                     
-                    for i in range(min(8, inputs.shape[0])):
+                    # 确保axes是二维数组，即使只有一列
+                    if num_samples == 1:
+                        axes = axes.reshape(2, 1)
+                    
+                    for i in range(num_samples):
                         # 原始图像 (转换为numpy显示格式)
                         orig = inputs[i].cpu().detach().numpy()
                         if orig.shape[0] == 3:  # RGB
@@ -577,13 +589,21 @@ def train_stage(args, stage):
     
     training_monitor = TrainingMonitorCallback(stage)
     
+    # 使用RichProgressBar来统一进度条显示
+    from pytorch_lightning.callbacks import RichProgressBar
+    
+    progress_bar = RichProgressBar(
+        refresh_rate=10,  # 刷新频率
+        leave=False  # 完成后不保留进度条
+    )
+    
     trainer = pl.Trainer(
         devices='auto',
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
         max_epochs=params.get('max_epochs', 50),
         precision=32,
-        callbacks=[checkpoint_callback, training_monitor],
-        enable_progress_bar=True,  # 启用进度条
+        callbacks=[checkpoint_callback, training_monitor, progress_bar],
+        enable_progress_bar=False,  # 禁用默认进度条，使用RichProgressBar
         enable_model_summary=False,  # 禁用模型摘要输出
         log_every_n_steps=10,  # 减少日志频率
         enable_checkpointing=True,
