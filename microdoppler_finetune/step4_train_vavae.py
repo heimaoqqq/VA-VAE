@@ -62,6 +62,9 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from PIL import Image
 import pytorch_lightning as pl
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # 无GUI环境
 from pytorch_lightning import seed_everything
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from pytorch_lightning.strategies import DDPStrategy
@@ -125,13 +128,16 @@ class MicroDopplerDataset(Dataset):
 
 
 class TrainingMonitorCallback(Callback):
-    """训练监控回调"""
+    """训练监控回调 - 增强版"""
     
     def __init__(self, stage):
         super().__init__()
         self.stage = stage
         self.best_val_loss = float('inf')
         self.loss_history = []
+        # 创建重建图像保存目录
+        self.save_dir = Path(f'logs/stage{stage}/reconstructions')
+        self.save_dir.mkdir(parents=True, exist_ok=True)
         
     def on_validation_epoch_end(self, trainer, pl_module):
         metrics = trainer.callback_metrics
@@ -223,6 +229,13 @@ class TrainingMonitorCallback(Callback):
         
         # 异常警告
         self._check_anomalies(val_rec_loss, train_ae_loss, current_lr)
+        
+        # 🎯 新增功能1: VF语义对齐检查
+        self._check_vf_alignment(trainer, pl_module)
+        
+        # 🎯 新增功能2: 每个epoch生成重建图像
+        self._generate_reconstruction_images(trainer, pl_module, epoch)
+        
         print("-" * 50)
         
     def _check_training_stability(self, val_loss, train_loss):
@@ -256,6 +269,121 @@ class TrainingMonitorCallback(Callback):
             
         for warning in warnings:
             print(warning)
+    
+    def _check_vf_alignment(self, trainer, pl_module):
+        """检查VF语义对齐质量"""
+        try:
+            if not hasattr(pl_module, 'foundation_model') or pl_module.foundation_model is None:
+                print("⚠️ VF模块未初始化")
+                return
+            
+            # 获取验证数据批次进行VF检查
+            val_dataloader = trainer.val_dataloaders[0] if isinstance(trainer.val_dataloaders, list) else trainer.val_dataloaders
+            
+            with torch.no_grad():
+                for batch in val_dataloader:
+                    inputs = pl_module.get_input(batch, pl_module.image_key)
+                    inputs = inputs[:4].to(pl_module.device)  # 只用前4个样本
+                    
+                    # 前向传播获取特征
+                    reconstructions, posterior, z, aux_feature = pl_module(inputs)
+                    
+                    if aux_feature is not None and z is not None:
+                        # 计算VF特征范数
+                        vf_norm = torch.norm(aux_feature, dim=1).mean().item()
+                        z_norm = torch.norm(z, dim=1).mean().item()
+                        
+                        # 计算余弦相似度
+                        aux_flat = aux_feature.view(aux_feature.size(0), -1)
+                        z_flat = z.view(z.size(0), -1)
+                        similarity = torch.nn.functional.cosine_similarity(aux_flat, z_flat, dim=1).mean().item()
+                        
+                        print(f"\n🔍 VF语义对齐检查:")
+                        print(f"   VF特征范数: {vf_norm:.4f}")
+                        print(f"   潜在编码范数: {z_norm:.4f}")
+                        print(f"   余弦相似度: {similarity:.4f}")
+                        
+                        if similarity > 0.3:
+                            print(f"   ✅ VF语义对齐良好 (相似度 > 0.3)")
+                        elif similarity > 0.1:
+                            print(f"   ⚠️ VF语义对齐中等 (需要更多训练)")
+                        else:
+                            print(f"   ❌ VF语义对齐较差 (需要检查配置)")
+                        
+                        if vf_norm > 0.1:
+                            print(f"   ✅ VF特征正常工作 (范数 > 0.1)")
+                        else:
+                            print(f"   ❌ VF特征可能未激活")
+                    else:
+                        print("⚠️ VF特征或潜在编码为None")
+                    
+                    break  # 只检查第一个批次
+                    
+        except Exception as e:
+            print(f"⚠️ VF对齐检查失败: {e}")
+    
+    def _generate_reconstruction_images(self, trainer, pl_module, epoch):
+        """生成并保存重建图像可视化"""
+        try:
+            pl_module.eval()
+            val_dataloader = trainer.val_dataloaders[0] if isinstance(trainer.val_dataloaders, list) else trainer.val_dataloaders
+            
+            with torch.no_grad():
+                for batch in val_dataloader:
+                    inputs = pl_module.get_input(batch, pl_module.image_key)
+                    inputs = inputs[:8].to(pl_module.device)  # 只处理前8个样本
+                    
+                    # 生成重建
+                    reconstructions, posterior, z, aux_feature = pl_module(inputs)
+                    
+                    # 创建可视化
+                    fig, axes = plt.subplots(2, 8, figsize=(16, 4))
+                    fig.suptitle(f'Stage {self.stage} - Epoch {epoch} 重建效果对比')
+                    
+                    for i in range(min(8, inputs.shape[0])):
+                        # 原始图像 (转换为numpy显示格式)
+                        orig = inputs[i].cpu().numpy()
+                        if orig.shape[0] == 3:  # RGB
+                            orig = np.transpose(orig, (1, 2, 0))
+                            orig = (orig + 1.0) / 2.0  # 从[-1,1]转为[0,1]
+                        else:  # 单通道
+                            orig = orig[0]
+                            orig = (orig + 1.0) / 2.0
+                        
+                        # 重建图像
+                        recon = reconstructions[i].cpu().numpy()
+                        if recon.shape[0] == 3:  # RGB
+                            recon = np.transpose(recon, (1, 2, 0))
+                            recon = (recon + 1.0) / 2.0
+                            recon = np.clip(recon, 0, 1)
+                        else:  # 单通道
+                            recon = recon[0]
+                            recon = (recon + 1.0) / 2.0
+                            recon = np.clip(recon, 0, 1)
+                        
+                        # 显示原始图像
+                        axes[0, i].imshow(orig, cmap='viridis' if orig.ndim == 2 else None)
+                        axes[0, i].axis('off')
+                        if i == 0:
+                            axes[0, i].set_title('原始图像', fontsize=10)
+                        
+                        # 显示重建图像
+                        axes[1, i].imshow(recon, cmap='viridis' if recon.ndim == 2 else None)
+                        axes[1, i].axis('off')
+                        if i == 0:
+                            axes[1, i].set_title('重建图像', fontsize=10)
+                    
+                    # 保存图像
+                    save_path = self.save_dir / f'stage{self.stage}_epoch{epoch:03d}.png'
+                    plt.savefig(save_path, dpi=100, bbox_inches='tight', facecolor='white')
+                    plt.close()
+                    
+                    print(f"💾 重建图像已保存: {save_path}")
+                    break  # 只处理第一个批次
+                    
+            pl_module.train()
+        except Exception as e:
+            print(f"⚠️ 图像生成失败: {e}")
 
 
 class MicroDopplerDataModule(pl.LightningDataModule):
@@ -342,7 +470,7 @@ def create_stage_config(args, stage, checkpoint_path=None):
                         'kl_weight': 1e-6, 'logvar_init': 0.0,
                         'use_actnorm': False,  # 判别器中不使用ActNorm
                         'pp_style': False,  # 不使用pp_style的nll损失计算
-                        'vf_weight': params['vf_weight'], 'adaptive_vf': True,
+                        'vf_weight': params['vf_weight'], 'adaptive_vf': False,  # 禁用自适应避免权重失控
                         'distmat_weight': 1.0, 'cos_weight': 1.0,
                         'distmat_margin': params['distmat_margin'],
                         'cos_margin': params['cos_margin']
