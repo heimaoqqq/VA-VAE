@@ -454,7 +454,7 @@ def main():
         version=f'run_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
     )
     
-    # 创建训练器
+    # 创建训练器（手动优化模式，不使用自动梯度裁剪）
     trainer = pl.Trainer(
         devices='auto',
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
@@ -463,7 +463,7 @@ def main():
         callbacks=[checkpoint_callback, loss_monitor],
         logger=logger,
         log_every_n_steps=10,
-        gradient_clip_val=1.0,  # 梯度裁剪防止爆炸
+        # gradient_clip_val=1.0,  # 移除：与手动优化冲突
         accumulate_grad_batches=args.gradient_accumulation,  # 梯度累积
         enable_progress_bar=True
     )
