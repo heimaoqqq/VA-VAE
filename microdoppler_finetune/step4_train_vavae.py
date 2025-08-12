@@ -28,6 +28,35 @@ from datetime import datetime
 # 添加项目路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT', 'vavae'))
 
+# 添加taming-transformers路径（解决taming模块导入问题）
+def setup_taming_path():
+    """设置taming-transformers路径"""
+    # 检查多个可能的taming位置
+    possible_paths = [
+        os.path.join(os.path.dirname(__file__), '..', 'taming-transformers'),  # 相对路径
+        '/kaggle/working/taming-transformers',  # Kaggle环境
+        os.path.join(os.getcwd(), 'taming-transformers'),  # 当前目录
+    ]
+    
+    # 检查.taming_path文件
+    taming_path_file = os.path.join(os.path.dirname(__file__), '..', '.taming_path')
+    if os.path.exists(taming_path_file):
+        with open(taming_path_file, 'r') as f:
+            possible_paths.insert(0, f.read().strip())
+    
+    for taming_path in possible_paths:
+        if os.path.exists(taming_path):
+            if taming_path not in sys.path:
+                sys.path.insert(0, taming_path)
+                print(f"✅ 已添加taming路径: {taming_path}")
+            return True
+    
+    print("❌ 未找到taming-transformers，请先运行step1_setup_environment.py")
+    return False
+
+# 设置taming路径
+setup_taming_path()
+
 from ldm.util import instantiate_from_config
 from ldm.data.microdoppler import MicroDopplerDataset
 from ldm.models.autoencoder import AutoencoderKL
