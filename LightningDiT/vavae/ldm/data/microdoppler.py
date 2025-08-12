@@ -25,23 +25,13 @@ class MicroDopplerDataset(Dataset):
 
         print(f"Found {len(self.image_paths)} images in {data_root}")
 
-        # 数据预处理 - 针对256×256图像优化
-        if size == 256:
-            # 如果目标尺寸是256×256，跳过resize和crop（假设输入已经是256×256）
-            self.transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # 归一化到[-1,1]
-            ])
-            print(f"⚡ 优化：跳过resize和crop，假设输入图像已是{size}×{size}")
-        else:
-            # 如果需要其他尺寸，保留完整预处理
-            self.transform = transforms.Compose([
-                transforms.Resize(size, interpolation=self.interpolation),
-                transforms.CenterCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # 归一化到[-1,1]
-            ])
-            print(f"📐 标准预处理：resize到{size}×{size}")
+        # 数据预处理 - 恢复原始流程
+        self.transform = transforms.Compose([
+            transforms.Resize(size, interpolation=self.interpolation),
+            transforms.CenterCrop(size),
+            transforms.ToTensor(),
+            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))  # 归一化到[-1,1]
+        ])
 
     def __len__(self):
         return len(self.image_paths)
