@@ -347,22 +347,36 @@ class TrainingMonitorCallback(Callback):
                     z = posterior.sample()
                     reconstructions = pl_module.decode(z)
                     
+                    # 确保重建不是None且形状正确
+                    if reconstructions is None:
+                        print(f"   ⚠️ 解码器返回None，尝试使用完整前向传播")
+                        # 备用方案：使用完整的前向传播
+                        outputs, posterior = pl_module(inputs)
+                        reconstructions = outputs
+                    
+                    # 调试：打印张量形状和范围
+                    print(f"   📐 输入形状: {inputs.shape}, 范围: [{inputs.min():.2f}, {inputs.max():.2f}]")
+                    print(f"   📐 潜在编码形状: {z.shape}, 范围: [{z.min():.2f}, {z.max():.2f}]")
+                    print(f"   📐 重建形状: {reconstructions.shape}, 范围: [{reconstructions.min():.2f}, {reconstructions.max():.2f}]")
+                    
                     # 创建可视化
                     fig, axes = plt.subplots(2, 8, figsize=(16, 4))
                     fig.suptitle(f'Stage {self.stage} - Epoch {epoch + 1} 重建效果对比')
                     
                     for i in range(min(8, inputs.shape[0])):
                         # 原始图像 (转换为numpy显示格式)
-                        orig = inputs[i].cpu().numpy()
+                        orig = inputs[i].cpu().detach().numpy()
                         if orig.shape[0] == 3:  # RGB
                             orig = np.transpose(orig, (1, 2, 0))
                             orig = (orig + 1.0) / 2.0  # 从[-1,1]转为[0,1]
+                            orig = np.clip(orig, 0, 1)
                         else:  # 单通道
                             orig = orig[0]
                             orig = (orig + 1.0) / 2.0
+                            orig = np.clip(orig, 0, 1)
                         
-                        # 重建图像
-                        recon = reconstructions[i].cpu().numpy()
+                        # 重建图像 - 确保使用正确的重建结果
+                        recon = reconstructions[i].cpu().detach().numpy()
                         if recon.shape[0] == 3:  # RGB
                             recon = np.transpose(recon, (1, 2, 0))
                             recon = (recon + 1.0) / 2.0
@@ -372,17 +386,22 @@ class TrainingMonitorCallback(Callback):
                             recon = (recon + 1.0) / 2.0
                             recon = np.clip(recon, 0, 1)
                         
-                        # 显示原始图像
+                        # 显示原始图像（第一行）
                         axes[0, i].imshow(orig, cmap='viridis' if orig.ndim == 2 else None)
                         axes[0, i].axis('off')
                         if i == 0:
                             axes[0, i].set_title('原始图像', fontsize=10)
                         
-                        # 显示重建图像
+                        # 显示重建图像（第二行）- 确保是重建而不是原始
                         axes[1, i].imshow(recon, cmap='viridis' if recon.ndim == 2 else None)
                         axes[1, i].axis('off')
                         if i == 0:
                             axes[1, i].set_title('重建图像', fontsize=10)
+                        
+                        # 调试：检查是否真的不同
+                        if i == 0:
+                            diff = np.abs(orig - recon).mean()
+                            print(f"   📊 第一张图的平均差异: {diff:.4f}")
                     
                     # 保存图像
                     save_path = self.save_dir / f'stage{self.stage}_epoch{epoch + 1:03d}.png'
@@ -566,7 +585,9 @@ def train_stage(args, stage):
         callbacks=[checkpoint_callback, training_monitor],
         enable_progress_bar=True,  # 启用进度条
         enable_model_summary=False,  # 禁用模型摘要输出
-        log_every_n_steps=10  # 减少日志频率
+        log_every_n_steps=10,  # 减少日志频率
+        enable_checkpointing=True,
+        num_sanity_val_steps=0  # 跳过sanity check避免额外的验证输出
     )
     
     print(f"\n第{stage}阶段训练 - LR: {config.model.base_learning_rate:.2e}")
