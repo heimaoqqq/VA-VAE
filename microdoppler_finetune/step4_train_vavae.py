@@ -165,11 +165,19 @@ class TrainingMonitorCallback(Callback):
         train_g_loss = metrics.get('train/g_loss', 0)          # 生成器损失
         
         # 调试：打印所有可用的metrics来找出实际的键名
-        if epoch == 0 or train_ae_loss > 1000:  # 第一个epoch或异常高损失时
-            print(f"\n📊 所有可用的训练metrics:")
+        if epoch == 0 or train_ae_loss > 100:  # 第一个epoch或异常高损失时（阈值改为100）
+            print(f"\n🔍 调试 - 所有训练metrics:")
             for key, value in sorted(metrics.items()):
-                if 'train/' in key and value != 0:
+                if 'train/' in key:  # 显示所有train metrics，包括0值
                     print(f"   {key}: {value:.6f}")
+            
+            # 如果损失异常高，给出可能的原因
+            if train_ae_loss > 100:
+                print(f"\n⚠️ 损失异常分析:")
+                print(f"   - AE损失 {train_ae_loss:.2f} 远超正常范围(<1.0)")
+                print(f"   - 可能原因：VF对齐损失过大")
+                print(f"   - 已将vf_weight从0.5降至0.01")
+                print(f"   - 建议：检查VF特征提取是否正常")
         
         # 获取学习率
         current_lr = 0
@@ -486,9 +494,9 @@ def create_stage_config(args, stage, checkpoint_path=None):
     """创建阶段配置"""
     
     stage_params = {
-        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 50},
-        2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 15},
-        3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 15}
+        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.01, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 45},  # 充分利用12小时
+        2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.01, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 45},   # 每个stage独立12小时
+        3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.01, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 45}  # 每个stage独立12小时
     }
     
     params = stage_params[stage]
