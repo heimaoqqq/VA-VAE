@@ -29,8 +29,57 @@ from datetime import datetime
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT', 'vavae'))
 
 from ldm.util import instantiate_from_config
-from ldm.data.microdoppler import MicroDopplerDataModule
+from ldm.data.microdoppler import MicroDopplerDataset
 from ldm.models.autoencoder import AutoencoderKL
+from torch.utils.data import DataLoader, random_split
+
+class MicroDopplerDataModule(pl.LightningDataModule):
+    """PyTorch Lightning数据模块"""
+    def __init__(self, data_dir, batch_size=4, num_workers=2, val_split=0.1):
+        super().__init__()
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.val_split = val_split
+        self.dataset = None
+        self.train_dataset = None
+        self.val_dataset = None
+        
+    def setup(self, stage=None):
+        if self.dataset is None:
+            self.dataset = MicroDopplerDataset(self.data_dir)
+            
+            # 分割训练和验证集
+            total_size = len(self.dataset)
+            val_size = int(total_size * self.val_split)
+            train_size = total_size - val_size
+            
+            self.train_dataset, self.val_dataset = random_split(
+                self.dataset, [train_size, val_size],
+                generator=torch.Generator().manual_seed(42)
+            )
+            
+            print(f"数据集分割: 训练{train_size}, 验证{val_size}")
+    
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True if self.num_workers > 0 else False,
+            pin_memory=True
+        )
+    
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True if self.num_workers > 0 else False,
+            pin_memory=True
+        )
 
 class DetailedLossMonitor(Callback):
     """详细损失监控回调"""
