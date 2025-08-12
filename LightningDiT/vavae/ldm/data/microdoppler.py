@@ -10,7 +10,7 @@ class MicroDopplerDataset(Dataset):
     def __init__(self, data_root, size=256, interpolation="bicubic", flip_p=0.5):
         self.data_root = data_root
         self.size = size
-        self.interpolation = {"linear": Image.LINEAR,
+        self.interpolation = {"linear": Image.BILINEAR,  # 修复：LINEAR已被移除，使用BILINEAR
                             "bilinear": Image.BILINEAR,
                             "bicubic": Image.BICUBIC,
                             "lanczos": Image.LANCZOS,}[interpolation]
