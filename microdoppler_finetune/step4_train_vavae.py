@@ -342,8 +342,10 @@ class TrainingMonitorCallback(Callback):
                     inputs = pl_module.get_input(batch, pl_module.image_key)
                     inputs = inputs[:8].to(pl_module.device)  # 只处理前8个样本
                     
-                    # 生成重建
-                    reconstructions, posterior, z, aux_feature = pl_module(inputs)
+                    # 使用正确的方式生成重建：先编码后解码
+                    posterior = pl_module.encode(inputs)
+                    z = posterior.sample()
+                    reconstructions = pl_module.decode(z)
                     
                     # 创建可视化
                     fig, axes = plt.subplots(2, 8, figsize=(16, 4))
@@ -446,7 +448,7 @@ def create_stage_config(args, stage, checkpoint_path=None):
     """创建阶段配置"""
     
     stage_params = {
-        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 50},
+        1: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 50},
         2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 15},
         3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 15}
     }
@@ -561,7 +563,10 @@ def train_stage(args, stage):
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
         max_epochs=params.get('max_epochs', 50),
         precision=32,
-        callbacks=[checkpoint_callback, training_monitor]
+        callbacks=[checkpoint_callback, training_monitor],
+        enable_progress_bar=True,  # 启用进度条
+        enable_model_summary=False,  # 禁用模型摘要输出
+        log_every_n_steps=10  # 减少日志频率
     )
     
     print(f"\n第{stage}阶段训练 - LR: {config.model.base_learning_rate:.2e}")
