@@ -188,9 +188,14 @@ class TrainingMonitorCallback(Callback):
         print(f"🎯 训练损失:")
         print(f"   AutoEncoder: {train_ae_loss:.4f} | 判别器: {train_disc_loss:.4f}")
         
-        # 显示详细损失分解 - 用于诊断
-        if train_total_loss > 0 or train_rec_loss > 0 or train_kl_loss > 0 or train_vf_loss > 0:
-            print(f"\n📊 训练损失详情 (高精度):")
+        # 显示详细损失分解 - 用于诊断 (始终尝试显示，即使是第一个epoch)
+        print(f"\n📊 训练损失详情 (高精度):")
+        
+        # 检查是否有任何详细损失被记录
+        has_detailed_loss = (train_total_loss != 0 or train_rec_loss != 0 or 
+                           train_kl_loss != 0 or train_vf_loss != 0 or train_g_loss != 0)
+        
+        if has_detailed_loss:
             print(f"   - Total Loss: {train_total_loss:.6f}")
             print(f"   - Rec Loss: {train_rec_loss:.6f}")
             
@@ -211,8 +216,12 @@ class TrainingMonitorCallback(Callback):
                 print(f"   - VF Loss: {train_vf_loss:.12f} (原始VF={raw_vf:.6f}, 权重={vf_weight})")
                 
             print(f"   - Disc Loss: {train_disc_loss:.6f}")
+            print(f"   - Generator Loss: {train_g_loss:.6f}")
         else:
-            print(f"   ⚠️  详细损失暂未记录 (可能是Epoch 0初始化)")
+            # 如果没有详细损失，尝试从autoencoder和discriminator损失推断
+            print(f"   - AE Loss (聚合): {train_ae_loss:.6f}")
+            print(f"   - Disc Loss (聚合): {train_disc_loss:.6f}")
+            print(f"   ℹ️ 详细损失分解将在下个epoch开始记录")
         
         print(f"⚙️  学习率: {current_lr:.2e}")
         
@@ -293,9 +302,9 @@ class TrainingMonitorCallback(Callback):
                         vf_norm = torch.norm(aux_feature, dim=1).mean().item()
                         z_norm = torch.norm(z, dim=1).mean().item()
                         
-                        # 计算余弦相似度
-                        aux_flat = aux_feature.view(aux_feature.size(0), -1)
-                        z_flat = z.view(z.size(0), -1)
+                        # 计算余弦相似度 - 使用reshape避免tensor stride问题
+                        aux_flat = aux_feature.reshape(aux_feature.size(0), -1)
+                        z_flat = z.reshape(z.size(0), -1)
                         similarity = torch.nn.functional.cosine_similarity(aux_flat, z_flat, dim=1).mean().item()
                         
                         print(f"\n🔍 VF语义对齐检查:")
