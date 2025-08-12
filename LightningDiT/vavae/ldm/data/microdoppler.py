@@ -10,7 +10,7 @@ class MicroDopplerDataset(Dataset):
     def __init__(self, data_root, size=256, interpolation="bicubic", flip_p=0.5):
         self.data_root = data_root
         self.size = size
-        self.interpolation = {"linear": Image.BILINEAR,  # 修复：LINEAR已被移除，使用BILINEAR
+        self.interpolation = {"linear": Image.LINEAR,
                             "bilinear": Image.BILINEAR,
                             "bicubic": Image.BICUBIC,
                             "lanczos": Image.LANCZOS,}[interpolation]
@@ -25,7 +25,7 @@ class MicroDopplerDataset(Dataset):
 
         print(f"Found {len(self.image_paths)} images in {data_root}")
 
-        # 数据预处理 - 恢复原始流程
+        # 数据预处理
         self.transform = transforms.Compose([
             transforms.Resize(size, interpolation=self.interpolation),
             transforms.CenterCrop(size),
