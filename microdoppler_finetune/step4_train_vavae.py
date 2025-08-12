@@ -309,8 +309,9 @@ def create_stage_config(stage, checkpoint_path=None):
     
     params = stage_configs[stage]
     
+    # 按照官方配置结构：base_learning_rate在model级别
     config = {
-        'base_learning_rate': params['learning_rate'],
+        'base_learning_rate': params['learning_rate'],  # ✅ 正确位置
         'target': 'ldm.models.autoencoder.AutoencoderKL',
         'params': {
             'embed_dim': 32,
