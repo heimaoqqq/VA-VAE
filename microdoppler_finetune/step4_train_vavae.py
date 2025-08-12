@@ -589,25 +589,18 @@ def train_stage(args, stage):
     
     training_monitor = TrainingMonitorCallback(stage)
     
-    # 使用RichProgressBar来统一进度条显示
-    from pytorch_lightning.callbacks import RichProgressBar
-    
-    progress_bar = RichProgressBar(
-        refresh_rate=10,  # 刷新频率
-        leave=False  # 完成后不保留进度条
-    )
-    
     trainer = pl.Trainer(
         devices='auto',
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
         max_epochs=params.get('max_epochs', 50),
         precision=32,
-        callbacks=[checkpoint_callback, training_monitor, progress_bar],
-        enable_progress_bar=False,  # 禁用默认进度条，使用RichProgressBar
+        callbacks=[checkpoint_callback, training_monitor],
+        enable_progress_bar=True,  # 启用默认进度条
         enable_model_summary=False,  # 禁用模型摘要输出
-        log_every_n_steps=10,  # 减少日志频率
+        log_every_n_steps=50,  # 增加日志步长减少输出频率
         enable_checkpointing=True,
-        num_sanity_val_steps=0  # 跳过sanity check避免额外的验证输出
+        num_sanity_val_steps=0,  # 跳过sanity check避免额外的验证输出
+        logger=False  # 禁用默认logger减少输出
     )
     
     print(f"\n第{stage}阶段训练 - LR: {config.model.base_learning_rate:.2e}")
