@@ -360,18 +360,36 @@ def create_stage_config(stage, checkpoint_path=None):
     return config, params
 
 def main():
-    # 解析参数
+    # 解析参数 - 兼容多种格式
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--stage', type=int, default=1, choices=[1, 2, 3])
-    parser.add_argument('--batch_size', type=int, default=4)
-    parser.add_argument('--num_workers', type=int, default=2)
-    parser.add_argument('--data_dir', type=str, default='data/microdoppler_dataset')
+    
+    # 基本训练参数
+    parser.add_argument('--stage', '--stages', type=int, default=1, choices=[1, 2, 3], 
+                       help='训练阶段')
+    parser.add_argument('--batch_size', type=int, default=4, help='批次大小')
+    parser.add_argument('--num_workers', type=int, default=2, help='数据加载进程数')
+    
+    # 数据和模型路径 - 兼容多种参数名
+    parser.add_argument('--data_dir', '--data_root', type=str, 
+                       default='data/microdoppler_dataset', help='数据集目录')
     parser.add_argument('--checkpoint', type=str, default=None, help='从检查点恢复训练')
-    parser.add_argument('--pretrained', type=str, 
+    parser.add_argument('--pretrained', '--pretrained_path', type=str, 
                        default='pretrained_models/vavae/dinov2_f16d32_res256x256.pth',
                        help='预训练模型路径')
+    
+    # Kaggle环境参数
+    parser.add_argument('--kaggle', action='store_true', help='Kaggle环境标志')
+    parser.add_argument('--gradient_accumulation', type=int, default=1, help='梯度累积步数')
+    parser.add_argument('--seed', type=int, default=42, help='随机种子')
+    
     args = parser.parse_args()
+    
+    # 设置随机种子
+    if args.seed:
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(args.seed)
     
     # 打印训练信息
     print(f"\n{'='*60}")
@@ -446,6 +464,7 @@ def main():
         logger=logger,
         log_every_n_steps=10,
         gradient_clip_val=1.0,  # 梯度裁剪防止爆炸
+        accumulate_grad_batches=args.gradient_accumulation,  # 梯度累积
         enable_progress_bar=True
     )
     
