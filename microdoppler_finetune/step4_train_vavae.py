@@ -678,8 +678,8 @@ def train_stage(args, stage):
         log_every_n_steps=50,  # 增加日志步长减少输出频率
         enable_checkpointing=True,
         num_sanity_val_steps=0,  # 跳过sanity check避免额外的验证输出
-        logger=False,  # 禁用默认logger减少输出
-        gradient_clip_val=1.0  # 添加梯度裁剪防止VF损失导致的梯度爆炸
+        logger=False  # 禁用默认logger减少输出
+        # 注意：移除gradient_clip_val因为与手动优化冲突
     )
     
     print(f"\n第{stage}阶段训练 - LR: {config.model.base_learning_rate:.2e}")
