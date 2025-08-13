@@ -559,7 +559,17 @@ def train_stage(args, stage):
                 print(f"加载checkpoint: {checkpoint_path}")
 
     config = create_stage_config(args, stage, checkpoint_path)
-    params = config.model.params.lossconfig.params
+    
+    # 获取stage参数（包含max_epochs等）
+    stage_params = {
+        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 45},
+        2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 45},
+        3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 45}
+    }
+    stage_config = stage_params[stage]
+    
+    # 获取损失配置参数
+    loss_params = config.model.params.lossconfig.params
 
     model = instantiate_from_config(config.model)
     model.learning_rate = config.model.base_learning_rate
@@ -611,7 +621,7 @@ def train_stage(args, stage):
     trainer = pl.Trainer(
         devices='auto',
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-        max_epochs=params['max_epochs'],  # 使用stage配置的精确轮次，无默认值
+        max_epochs=stage_config['max_epochs'],  # 使用stage配置的精确轮次
         precision=32,
         callbacks=[checkpoint_callback, training_monitor],
         enable_progress_bar=True,  # 启用默认进度条
