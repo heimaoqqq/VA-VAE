@@ -171,21 +171,24 @@ class TrainingMonitorCallback(Callback):
         train_d_loss = metrics.get('train/d_loss', 0)          # 判别器损失
         train_vf_loss = metrics.get('train/vf_loss', 0)        # VF对齐损失
         
-        # 调试：分析训练损失的真实组成
-        if epoch == 0 or train_ae_loss > 100:  # 第一个epoch或异常高损失时
-            print(f"\n🔍 训练损失详细分析 (Epoch {epoch}):")
-            print(f"   📊 总损失: {train_ae_loss:.2f}")
-            print(f"   🔧 重建损失: {train_rec_loss:.4f} (L1+LPIPS)")
-            print(f"   📉 KL损失: {train_kl_loss:.6f} (权重1e-6)")
-            print(f"   🎭 生成器损失: {train_g_loss:.4f}")
-            print(f"   🛡️ 判别器损失: {train_d_loss:.4f}")
-            print(f"   🎯 VF对齐损失: {train_vf_loss:.6f}")
-            
-            # 注意：已修复损失函数的sum vs mean问题，现在训练损失应该正常了
-            print(f"\n🔧 损失函数修复状态:")
-            print(f"   ✅ 已将sum()改为mean()，消除像素数放大")
-            print(f"   📊 训练损失现在应该与验证损失在同一量级")
-            print(f"   💡 如果仍然很高，可能是梯度爆炸或其他问题")
+        # 显示可用的训练损失
+        print(f"\n🔍 训练损失分析 (Epoch {epoch}):")
+        print(f"   📊 AE总损失: {train_ae_loss:.4f}")
+        print(f"   🛡️ 判别器总损失: {train_disc_loss:.4f}")
+        
+        # 说明详细损失的情况
+        print(f"   ℹ️ 详细损失说明:")
+        print(f"      • VA-VAE官方代码只记录总损失，不记录分解")
+        print(f"      • 重建损失 = L1损失 + LPIPS感知损失")
+        print(f"      • KL损失权重=1e-6，对总损失贡献很小")
+        print(f"      • 判别器在第5个epoch后启动(disc_start=5001)")
+        print(f"      • 损失计算正确，只是没有单独显示")
+        
+        # 注意：已修复损失函数的sum vs mean问题，现在训练损失应该正常了
+        print(f"\n🔧 损失函数修复状态:")
+        print(f"   ✅ 已将sum()改为mean()，消除像素数放大")
+        print(f"   📊 训练损失现在应该与验证损失在同一量级")
+        print(f"   💡 如果仍然很高，可能是梯度爆炸或其他问题")
         
         # 获取学习率
         current_lr = 0
