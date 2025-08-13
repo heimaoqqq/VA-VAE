@@ -198,52 +198,28 @@ class TrainingMonitorCallback(Callback):
         is_stable = self._check_training_stability(val_rec_loss, train_ae_loss)
         stability_icon = "✅" if is_stable else "⚠️"
         
-        # 更新最佳损失
-        if val_rec_loss < self.best_val_loss:
-            self.best_val_loss = val_rec_loss
+        # 🔧 损失缩放修正 - 不修改官方代码的替代方案
+        # 问题：官方损失函数使用sum/batch_size导致训练损失×像素数放大
+        # 解决：在显示时进行反向缩放修正
+        
+        # 计算像素数（避免硬编码）
+        image_size = getattr(pl_module, 'image_size', 256)  # 从模型获取，或默认256
+        channels = 3  # RGB图像
+        pixel_count = channels * image_size * image_size
+        
+        # 修正训练损失显示（反向缩放）
+        corrected_train_loss = train_ae_loss / pixel_count if train_ae_loss > 100 else train_ae_loss
+        
+        # 更新最佳损失（使用修正后的训练损失）
+        if corrected_train_loss < self.best_val_loss:
+            self.best_val_loss = corrected_train_loss
             best_icon = "🏆"
         else:
             best_icon = ""
         
         print(f"\n{stability_icon} Stage {self.stage} - Epoch {epoch + 1} {best_icon}")
-        print(f"📊 验证损失:")
-        print(f"   重建: {val_rec_loss:.4f} | KL: {val_kl_loss:.4f} | VF: {val_vf_loss:.4f}")
-        print(f"🎯 训练损失:")
-        print(f"   AutoEncoder: {train_ae_loss:.4f} | 判别器: {train_disc_loss:.4f}")
-        
-        # 显示详细损失分解 - 用于诊断 (始终尝试显示，即使是第一个epoch)
-        print(f"\n📊 训练损失详情 (高精度):")
-        
-        # 检查是否有任何详细损失被记录
-        has_detailed_loss = (train_total_loss != 0 or train_rec_loss != 0 or 
-                           train_kl_loss != 0 or train_vf_loss != 0 or train_g_loss != 0)
-        
-        if has_detailed_loss:
-            print(f"   - Total Loss: {train_total_loss:.6f}")
-            print(f"   - Rec Loss: {train_rec_loss:.6f}")
-            
-            # 显示KL损失的精确值（显示12位小数以观察微小变化）
-            if train_kl_loss == 0:
-                print(f"   - KL Loss: 0.000000000000 (完全为零)")
-            else:
-                # 显示实际KL值和加权后的值
-                raw_kl = train_kl_loss / 1e-6 if train_kl_loss > 0 else 0
-                print(f"   - KL Loss: {train_kl_loss:.12f} (原始KL={raw_kl:.6f}, 权重=1e-6)")
-                
-            # 显示VF损失的精确值（显示12位小数）
-            if train_vf_loss == 0:
-                print(f"   - VF Loss: 0.000000000000 (完全为零)")
-            else:
-                vf_weight = metrics.get('train/vf_weight', 0.5)
-                raw_vf = train_vf_loss / vf_weight if vf_weight > 0 else train_vf_loss
-                print(f"   - VF Loss: {train_vf_loss:.12f} (原始VF={raw_vf:.6f}, 权重={vf_weight})")
-            print(f"   - Disc Loss: {train_disc_loss:.6f}")
-            print(f"   - Generator Loss: {train_g_loss:.6f}")
-        else:
-            # 如果没有详细损失，尝试从autoencoder和discriminator损失推断
-            print(f"   - AE Loss (聚合): {train_ae_loss:.6f}")
-            print(f"   - Disc Loss (聚合): {train_disc_loss:.6f}")
-            print(f"   ℹ️ 详细损失分解将在下个epoch开始记录")
+        print(f"📊 验证损失: {val_rec_loss:.4f}")
+        print(f"🎯 训练损失: {corrected_train_loss:.4f}")
         
         print(f"⚙️  学习率: {current_lr:.2e}")
         
@@ -266,41 +242,6 @@ class TrainingMonitorCallback(Callback):
         
         # 🎯 新增功能2: 每个epoch生成重建图像
         self._generate_reconstruction_images(trainer, pl_module, epoch)
-        
-        # 🔧 损失缩放修正 - 不修改官方代码的替代方案
-        # 问题：官方损失函数使用sum/batch_size导致训练损失×像素数放大
-        # 解决：在显示时进行反向缩放修正
-        
-        # 计算像素数（避免硬编码）
-        image_size = getattr(pl_module, 'image_size', 256)  # 从模型获取，或默认256
-        channels = 3  # RGB图像
-        pixel_count = channels * image_size * image_size
-        
-        # 修正训练损失显示（反向缩放）
-        corrected_train_loss = train_ae_loss / pixel_count if train_ae_loss > 100 else train_ae_loss
-        
-        # 获取训练时间
-        elapsed = getattr(trainer, '_epoch_time', 0)
-        
-        print(f"\n📊 **训练进度** (Epoch {epoch}):")
-        if train_ae_loss > 100:  # 如果训练损失异常高，显示修正值
-            print(f"   🔧 训练损失: {train_ae_loss:.1f} → 修正后: {corrected_train_loss:.4f}")
-            print(f"   💡 官方损失函数使用sum缩放，这里显示修正后的真实值")
-        else:
-            print(f"   🔧 训练损失: {train_ae_loss:.4f}")
-        print(f"   📈 验证损失: {val_rec_loss:.4f}")
-        print(f"   ⏱️ 训练时间: {elapsed:.1f}s")
-        
-        # 使用修正后的训练损失进行比较
-        comparison_train_loss = corrected_train_loss if train_ae_loss > 100 else train_ae_loss
-        if comparison_train_loss > 0 and val_rec_loss > 0:
-            ratio = comparison_train_loss / val_rec_loss
-            if ratio > 2.0:
-                print(f"   ⚠️ 训练/验证比值: {ratio:.2f} (可能过拟合)")
-            elif ratio < 0.5:
-                print(f"   ⚠️ 训练/验证比值: {ratio:.2f} (可能欠拟合)")
-            else:
-                print(f"   ✅ 训练/验证比值: {ratio:.2f} (正常)")
         
         print("-" * 50)
         
@@ -382,8 +323,8 @@ class TrainingMonitorCallback(Callback):
                             print(f"\n🔍 VF语义对齐检查（正确版本）:")
                             print(f"   重建-原始VF特征相似度: {vf_similarity:.4f}")
                             print(f"   距离矩阵差异: {distmat_diff:.4f}")
-                            print(f"   Z投影维度: {z.shape[1]} (应该是768)")
-                            print(f"   VF特征维度: {aux_feature.shape[1]} (应该是768)")
+                            print(f"   Z投影维度: {z.shape[1]} (DINOv2-Large: 1024维)")
+                            print(f"   VF特征维度: {aux_feature.shape[1]} (DINOv2-Large: 1024维)")
                             
                             if vf_similarity > 0.7:
                                 print(f"   ✅ VF语义保持良好 (相似度 > 0.7)")
@@ -557,7 +498,7 @@ def create_stage_config(args, stage, checkpoint_path=None):
     """创建阶段配置"""
     
     stage_params = {
-        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 45},  # Stage 1: VF对齐阶段
+        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 45},  # Stage 1: VF对齐阶段 (Kaggle 12h安全)
         2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 45},   # Stage 2: 重建优化  
         3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 45}  # Stage 3: 边距优化
     }
@@ -670,7 +611,7 @@ def train_stage(args, stage):
     trainer = pl.Trainer(
         devices='auto',
         accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-        max_epochs=params.get('max_epochs', 50),
+        max_epochs=params['max_epochs'],  # 使用stage配置的精确轮次，无默认值
         precision=32,
         callbacks=[checkpoint_callback, training_monitor],
         enable_progress_bar=True,  # 启用默认进度条
