@@ -240,8 +240,8 @@ class TrainingMonitorCallback(Callback):
         elif self.stage == 3:
             print(f"🎯 Stage 3 重点: 用户区分优化")
         
-        # 异常警告
-        self._check_anomalies(val_rec_loss, train_ae_loss, current_lr)
+        # 异常警告（使用修正后的训练损失）
+        self._check_anomalies(val_rec_loss, corrected_train_loss, current_lr)
         
         # 🎯 新增功能1: VF语义对齐检查
         self._check_vf_alignment(trainer, pl_module)
