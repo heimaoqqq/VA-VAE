@@ -207,7 +207,10 @@ class TrainingMonitorCallback(Callback):
         
         # 计算像素数（避免硬编码）
         image_size = getattr(pl_module, 'image_size', 256)  # 从模型获取，或默认256
-        channels = 3  # RGB图像
+        channels = getattr(pl_module, 'channels', 3)  # 从模型获取通道数，默认3
+        # 或从ddconfig获取：pl_module.decoder.conv_out.out_channels
+        if hasattr(pl_module, 'decoder') and hasattr(pl_module.decoder, 'conv_out'):
+            channels = pl_module.decoder.conv_out.out_channels
         pixel_count = channels * image_size * image_size
         
         # 修正训练损失显示（反向缩放）
@@ -501,9 +504,9 @@ def create_stage_config(args, stage, checkpoint_path=None):
     """创建阶段配置"""
     
     stage_params = {
-        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 45},  # Stage 1: VF对齐阶段 (Kaggle 12h安全)
-        2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 45},   # Stage 2: 重建优化  
-        3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 45}  # Stage 3: 边距优化
+        1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 45},  # Stage 1: VF对齐阶段
+        2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 15},   # Stage 2: 重建优化 (官方15epochs，短期微调避免过拟合)
+        3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 30}  # Stage 3: 用户区分优化 (重点阶段)
     }
     
     params = stage_params[stage]
@@ -558,8 +561,35 @@ def train_stage(args, stage):
         if prev_ckpt_dir.exists():
             ckpt_files = list(prev_ckpt_dir.glob('*.ckpt'))
             if ckpt_files:
-                checkpoint_path = str(max(ckpt_files, key=lambda x: x.stat().st_mtime))
-                print(f"加载checkpoint: {checkpoint_path}")
+                # 关键修复：选择最佳验证损失的checkpoint，而不是最新的
+                # checkpoint文件名格式: vavae-stage{stage}-{epoch:02d}-{val_rec_loss:.4f}.ckpt
+                best_ckpt = None
+                best_loss = float('inf')
+                
+                for ckpt_file in ckpt_files:
+                    # 从文件名提取验证损失
+                    try:
+                        # 提取val_rec_loss值
+                        filename = ckpt_file.stem  # 去掉.ckpt
+                        if 'val_rec_loss' in filename:
+                            # 格式: vavae-stage1-epoch=43-val_rec_loss=0.0000
+                            loss_str = filename.split('val_rec_loss=')[-1]
+                            val_loss = float(loss_str)
+                            if val_loss < best_loss:
+                                best_loss = val_loss
+                                best_ckpt = ckpt_file
+                    except:
+                        continue
+                
+                # 如果无法解析，选择最新的作为备选
+                if best_ckpt is None:
+                    best_ckpt = max(ckpt_files, key=lambda x: x.stat().st_mtime)
+                    print(f"⚠️ 无法从文件名解析验证损失，使用最新checkpoint")
+                
+                checkpoint_path = str(best_ckpt)
+                print(f"\n📦 Stage {stage} 加载 Stage {stage-1} checkpoint:")
+                print(f"   文件: {best_ckpt.name}")
+                print(f"   最佳验证损失: {best_loss:.6f}" if best_loss != float('inf') else "")
 
     config = create_stage_config(args, stage, checkpoint_path)
     
@@ -578,25 +608,38 @@ def train_stage(args, stage):
     model.learning_rate = config.model.base_learning_rate
 
     # 全面验证VF模块和权重加载
+    print(f"\n🔍 Stage {stage} 模型验证:")
+    
+    # 验证VF模块
     if hasattr(model, 'use_vf'):
-        print(f"🔍 VF模块状态: use_vf={model.use_vf}")
+        print(f"   VF模块: use_vf={model.use_vf}")
         if model.use_vf and hasattr(model, 'foundation_model'):
-            print(f"✅ DINOv2模型已加载")
             # 检查关键权重是否存在
             has_vf_weights = any('foundation_model' in k for k in model.state_dict().keys())
             has_proj_weights = any('linear_proj' in k for k in model.state_dict().keys())
-            print(f"   - Foundation权重: {'✅ 已加载' if has_vf_weights else '❌ 缺失'}")
-            print(f"   - Projection权重: {'✅ 已加载' if has_proj_weights else '❌ 缺失'}")
+            print(f"   DINOv2权重: {'✅ 已加载' if has_vf_weights else '❌ 缺失'}")
+            print(f"   Projection权重: {'✅ 已加载' if has_proj_weights else '❌ 缺失'}")
             
-            if not has_vf_weights:
-                print(f"⚠️  警告：DINOv2权重未从预训练模型加载！")
-                print(f"   这会导致VF损失为0，Stage 1训练无效")
-                print(f"   请确保预训练文件包含foundation_model权重")
-        else:
-            print(f"⚠️  DINOv2模型未正确初始化！")
-    else:
-        print(f"❌ 模型缺少use_vf属性！")
-    print(f"学习率: {model.learning_rate:.2e}")
+            if not has_vf_weights and stage == 1:
+                print(f"\n⚠️  警告：Stage 1 DINOv2权重未加载！")
+                print(f"   这会导致VF损失无效，请检查预训练模型")
+    
+    # Stage 2特定验证
+    if stage == 2 and checkpoint_path:
+        print(f"\n   Stage 2 状态恢复验证:")
+        # 验证编码器/解码器权重
+        has_encoder = any('encoder' in k for k in model.state_dict().keys())
+        has_decoder = any('decoder' in k for k in model.state_dict().keys())
+        print(f"   编码器权重: {'✅' if has_encoder else '❌'}")
+        print(f"   解码器权重: {'✅' if has_decoder else '❌'}")
+        
+        # 验证损失配置
+        print(f"\n   损失配置:")
+        print(f"   - 判别器启动: epoch {loss_params.disc_start}")
+        print(f"   - VF权重: {loss_params.vf_weight} (降低以优化重建)")
+        print(f"   - 学习率: {model.learning_rate:.2e} (降低以稳定训练)")
+    
+    print(f"\n   基础学习率: {model.learning_rate:.2e}")
 
     data_module = MicroDopplerDataModule(
         data_root=args.data_root,
@@ -636,7 +679,17 @@ def train_stage(args, stage):
         # 注意：移除gradient_clip_val因为与手动优化冲突
     )
     
-    print(f"\n第{stage}阶段训练 - LR: {config.model.base_learning_rate:.2e}")
+    print(f"\n{'='*60}")
+    print(f"🚀 开始 Stage {stage} 训练")
+    print(f"   配置摘要:")
+    print(f"   - 最大轮次: {stage_config['max_epochs']}")
+    print(f"   - 批次大小: {args.batch_size}")
+    print(f"   - 学习率: {config.model.base_learning_rate:.2e}")
+    print(f"   - VF权重: {loss_params.vf_weight}")
+    print(f"   - 判别器启动: epoch {loss_params.disc_start}")
+    if stage > 1:
+        print(f"   - 继承自: Stage {stage-1} 最佳模型")
+    print(f"{'='*60}\n")
     
     trainer.fit(model, data_module)
     
