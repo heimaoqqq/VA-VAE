@@ -557,39 +557,48 @@ def train_stage(args, stage):
     
     checkpoint_path = None
     if stage > 1:
-        prev_ckpt_dir = Path(f'checkpoints/stage{stage-1}')
-        if prev_ckpt_dir.exists():
-            ckpt_files = list(prev_ckpt_dir.glob('*.ckpt'))
-            if ckpt_files:
-                # 关键修复：选择最佳验证损失的checkpoint，而不是最新的
-                # checkpoint文件名格式: vavae-stage{stage}-{epoch:02d}-{val_rec_loss:.4f}.ckpt
-                best_ckpt = None
-                best_loss = float('inf')
-                
-                for ckpt_file in ckpt_files:
-                    # 从文件名提取验证损失
-                    try:
-                        # 提取val_rec_loss值
-                        filename = ckpt_file.stem  # 去掉.ckpt
-                        if 'val_rec_loss' in filename:
-                            # 格式: vavae-stage1-epoch=43-val_rec_loss=0.0000
-                            loss_str = filename.split('val_rec_loss=')[-1]
-                            val_loss = float(loss_str)
-                            if val_loss < best_loss:
-                                best_loss = val_loss
-                                best_ckpt = ckpt_file
-                    except:
-                        continue
-                
-                # 如果无法解析，选择最新的作为备选
-                if best_ckpt is None:
-                    best_ckpt = max(ckpt_files, key=lambda x: x.stat().st_mtime)
-                    print(f"⚠️ 无法从文件名解析验证损失，使用最新checkpoint")
-                
-                checkpoint_path = str(best_ckpt)
-                print(f"\n📦 Stage {stage} 加载 Stage {stage-1} checkpoint:")
-                print(f"   文件: {best_ckpt.name}")
-                print(f"   最佳验证损失: {best_loss:.6f}" if best_loss != float('inf') else "")
+        # Stage 2: 使用Kaggle训练好的Stage 1模型
+        if stage == 2:
+            kaggle_stage1_path = "/kaggle/input/stage1/vavae-stage1-epoch43-val_rec_loss0.0000.ckpt"
+            if Path(kaggle_stage1_path).exists():
+                checkpoint_path = kaggle_stage1_path
+                print(f"\n📦 Stage 2 加载Kaggle训练的Stage 1 checkpoint:")
+                print(f"   文件: {kaggle_stage1_path}")
+                print(f"   验证损失: 0.0000 (epoch 43)")
+            else:
+                print(f"❌ Kaggle Stage 1模型未找到: {kaggle_stage1_path}")
+                print("   请确保路径正确或将文件复制到本地")
+        
+        # Stage 3及以后: 查找前一阶段的checkpoint
+        else:
+            prev_ckpt_dir = Path(f'checkpoints/stage{stage-1}')
+            if prev_ckpt_dir.exists():
+                ckpt_files = list(prev_ckpt_dir.glob('*.ckpt'))
+                if ckpt_files:
+                    # 选择最佳验证损失的checkpoint
+                    best_ckpt = None
+                    best_loss = float('inf')
+                    
+                    for ckpt_file in ckpt_files:
+                        try:
+                            filename = ckpt_file.stem
+                            if 'val_rec_loss' in filename:
+                                loss_str = filename.split('val_rec_loss')[-1].replace('=', '').replace('.', '')
+                                val_loss = float('0.' + loss_str) if loss_str.isdigit() else float(loss_str)
+                                if val_loss < best_loss:
+                                    best_loss = val_loss
+                                    best_ckpt = ckpt_file
+                        except:
+                            continue
+                    
+                    if best_ckpt is None:
+                        best_ckpt = max(ckpt_files, key=lambda x: x.stat().st_mtime)
+                        print(f"⚠️ 无法解析验证损失，使用最新checkpoint")
+                    
+                    checkpoint_path = str(best_ckpt)
+                    print(f"\n📦 Stage {stage} 加载 Stage {stage-1} checkpoint:")
+                    print(f"   文件: {best_ckpt.name}")
+                    print(f"   验证损失: {best_loss:.6f}" if best_loss != float('inf') else "")
 
     config = create_stage_config(args, stage, checkpoint_path)
     
