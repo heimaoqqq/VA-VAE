@@ -92,13 +92,32 @@ def verify_stage2_readiness():
     
     # 4. 检查预训练模型
     print("\n🎯 预训练模型检查:")
-    pretrained_path = Path('../pretrained/vavae_ckpt.pt')
+    # 检查Kaggle预训练模型路径
+    kaggle_pretrained_path = Path("/kaggle/input/vavae-pretrained/vavae-imagenet256-f16d32-dinov2.pt")
     
-    if not pretrained_path.exists():
-        issues.append("❌ 预训练模型不存在")
+    if kaggle_pretrained_path.exists():
+        size_mb = kaggle_pretrained_path.stat().st_size / (1024*1024)
+        print(f"   ✅ Kaggle预训练模型存在")
+        print(f"   文件: {kaggle_pretrained_path.name}")
+        print(f"   文件大小: {size_mb:.1f} MB")
     else:
-        size_mb = pretrained_path.stat().st_size / (1024*1024)
-        print(f"   ✅ 预训练模型存在 ({size_mb:.1f} MB)")
+        # 检查本地路径
+        local_paths = [
+            Path('../pretrained/vavae_ckpt.pt'),
+            Path('../LightningDiT/pretrained/vavae_ckpt.pt'),
+            Path('pretrained/vavae_ckpt.pt')
+        ]
+        found = False
+        for local_path in local_paths:
+            if local_path.exists():
+                size_mb = local_path.stat().st_size / (1024*1024)
+                print(f"   ✅ 本地预训练模型存在: {local_path}")
+                print(f"   文件大小: {size_mb:.1f} MB")
+                found = True
+                break
+        
+        if not found:
+            warnings.append("⚠️ 预训练模型未在Kaggle和本地位置找到")
     
     # 5. Stage 2配置验证
     print("\n⚙️ Stage 2 配置验证:")
