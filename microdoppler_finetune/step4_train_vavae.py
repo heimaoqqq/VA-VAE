@@ -556,24 +556,58 @@ def train_stage(args, stage):
     seed_everything(args.seed, workers=True)
     
     checkpoint_path = None
-    if stage > 1:
-        # Stage 2: 使用Kaggle训练好的Stage 1模型
-        if stage == 2:
-            kaggle_stage1_path = "/kaggle/input/stage1/vavae-stage1-epoch43-val_rec_loss0.0000.ckpt"
-            if Path(kaggle_stage1_path).exists():
-                checkpoint_path = kaggle_stage1_path
-                print(f"\n📦 Stage 2 加载Kaggle训练的Stage 1 checkpoint:")
-                print(f"   文件: {kaggle_stage1_path}")
-                print(f"   验证损失: 0.0000 (epoch 43)")
-            else:
-                print(f"❌ Kaggle Stage 1模型未找到: {kaggle_stage1_path}")
-                print("   请确保路径正确或将文件复制到本地")
-        
-        # Stage 3及以后: 查找前一阶段的checkpoint
+    if stage == 2:
+        # Stage 2优先使用Kaggle训练好的Stage 1模型
+        kaggle_stage1_path = "/kaggle/input/stage1/vavae-stage1-epoch43-val_rec_loss0.0000.ckpt"
+        if Path(kaggle_stage1_path).exists():
+            checkpoint_path = kaggle_stage1_path
+            print(f"\n📦 Stage 2 加载Kaggle训练的Stage 1 checkpoint:")
+            print(f"   文件: {kaggle_stage1_path}")
+            print(f"   验证损失: 0.0000 (epoch 43)")
         else:
-            prev_ckpt_dir = Path(f'checkpoints/stage{stage-1}')
-            if prev_ckpt_dir.exists():
-                ckpt_files = list(prev_ckpt_dir.glob('*.ckpt'))
+            print(f"❌ Kaggle Stage 1模型未找到: {kaggle_stage1_path}")
+            print("   请确保路径正确或将文件复制到本地")
+    elif stage == 3:
+        # Stage 3优先使用Kaggle训练好的Stage 2模型
+        kaggle_stage2_path = "/kaggle/input/stage2/vavae-stage2-epoch09-val_rec_loss0.0000.ckpt"
+        if Path(kaggle_stage2_path).exists():
+            checkpoint_path = kaggle_stage2_path
+            print(f"\n📦 Stage 3 加载Kaggle训练的Stage 2 checkpoint:")
+            print(f"   文件: {kaggle_stage2_path}")
+            print(f"   验证损失: 0.0000 (epoch 9)")
+        else:
+            print(f"❌ Kaggle Stage 2模型未找到: {kaggle_stage2_path}")
+            print("   回退到本地checkpoint搜索")
+    else:
+        # Stage 3及以后: 查找前一阶段的checkpoint
+        prev_ckpt_dir = Path(f'checkpoints/stage{stage-1}')
+        if prev_ckpt_dir.exists():
+            ckpt_files = list(prev_ckpt_dir.glob('*.ckpt'))
+            if ckpt_files:
+                # 选择最佳验证损失的checkpoint
+                best_ckpt = None
+                best_loss = float('inf')
+                
+                for ckpt_file in ckpt_files:
+                    try:
+                        filename = ckpt_file.stem
+                        if 'val_rec_loss' in filename:
+                            loss_str = filename.split('val_rec_loss')[-1].replace('=', '').replace('.', '')
+                            val_loss = float('0.' + loss_str) if loss_str.isdigit() else float(loss_str)
+                            if val_loss < best_loss:
+                                best_loss = val_loss
+                                best_ckpt = ckpt_file
+                    except:
+                        continue
+                
+                if best_ckpt is None:
+                    best_ckpt = max(ckpt_files, key=lambda x: x.stat().st_mtime)
+                    print(f"⚠️ 无法解析验证损失，使用最新checkpoint")
+                
+                checkpoint_path = str(best_ckpt)
+                print(f"\n📦 Stage {stage} 加载 Stage {stage-1} checkpoint:")
+                print(f"   文件: {best_ckpt.name}")
+                print(f"   验证损失: {best_loss:.6f}" if best_loss != float('inf') else "")
                 if ckpt_files:
                     # 选择最佳验证损失的checkpoint
                     best_ckpt = None
@@ -605,8 +639,8 @@ def train_stage(args, stage):
     # 获取stage参数（包含max_epochs等）
     stage_params = {
         1: {'disc_start': 5001, 'disc_weight': 0.5, 'vf_weight': 0.5, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 1e-4, 'max_epochs': 45},
-        2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 45},
-        3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 45}
+        2: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.0, 'cos_margin': 0.0, 'learning_rate': 5e-5, 'max_epochs': 15},   # 修正：Stage 2应为15轮
+        3: {'disc_start': 1, 'disc_weight': 0.5, 'vf_weight': 0.1, 'distmat_margin': 0.25, 'cos_margin': 0.5, 'learning_rate': 2e-5, 'max_epochs': 30}   # 修正：Stage 3应为30轮
     }
     stage_config = stage_params[stage]
     
