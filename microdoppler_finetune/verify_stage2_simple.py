@@ -18,49 +18,36 @@ def verify_stage2_readiness():
     issues = []
     warnings = []
     
-    # 1. 检查Stage 1 checkpoint
+    # 1. 检查Stage 1 checkpoint (Kaggle训练好的模型)
     print("\n📦 Stage 1 Checkpoint检查:")
-    stage1_dir = Path('checkpoints/stage1')
+    kaggle_stage1_path = Path("/kaggle/input/stage1/vavae-stage1-epoch43-val_rec_loss0.0000.ckpt")
     
-    if not stage1_dir.exists():
-        issues.append("❌ Stage 1 checkpoint目录不存在")
+    if kaggle_stage1_path.exists():
+        size_mb = kaggle_stage1_path.stat().st_size / (1024*1024)
+        print(f"   ✅ Kaggle Stage 1模型存在")
+        print(f"   文件: {kaggle_stage1_path.name}")
+        print(f"   验证损失: 0.0000 (epoch 43)")
+        print(f"   文件大小: {size_mb:.1f} MB")
+        
+        if size_mb < 100:
+            warnings.append(f"⚠️ Checkpoint文件较小({size_mb:.1f}MB)，可能不完整")
     else:
-        ckpt_files = list(stage1_dir.glob('*.ckpt'))
-        if not ckpt_files:
-            issues.append("❌ 未找到Stage 1 checkpoint文件")
-        else:
-            # 找最佳checkpoint
-            best_ckpt = None
-            best_loss = float('inf')
-            
-            for ckpt_file in ckpt_files:
-                try:
-                    filename = ckpt_file.stem
-                    if 'val_rec_loss' in filename:
-                        loss_str = filename.split('val_rec_loss=')[-1]
-                        val_loss = float(loss_str)
-                        if val_loss < best_loss:
-                            best_loss = val_loss
-                            best_ckpt = ckpt_file
-                except:
-                    continue
-            
-            if best_ckpt:
-                print(f"   ✅ 找到最佳checkpoint: {best_ckpt.name}")
-                print(f"   验证损失: {best_loss:.6f}")
-                
-                # 检查文件大小
-                size_mb = best_ckpt.stat().st_size / (1024*1024)
-                print(f"   文件大小: {size_mb:.1f} MB")
-                
-                if size_mb < 100:
-                    warnings.append(f"⚠️ Checkpoint文件较小({size_mb:.1f}MB)，可能不完整")
-            else:
-                # 如果无法从文件名解析，列出所有文件
-                print("   可用的checkpoint文件:")
+        # 回退检查本地checkpoint
+        print(f"   ❌ Kaggle模型未找到: {kaggle_stage1_path}")
+        print("   尝试检查本地checkpoint...")
+        
+        stage1_dir = Path('checkpoints/stage1')
+        if stage1_dir.exists():
+            ckpt_files = list(stage1_dir.glob('*.ckpt'))
+            if ckpt_files:
+                print("   📂 本地checkpoint文件:")
                 for ckpt in ckpt_files:
                     size_mb = ckpt.stat().st_size / (1024*1024)
                     print(f"   - {ckpt.name} ({size_mb:.1f} MB)")
+            else:
+                issues.append("❌ 本地也未找到Stage 1 checkpoint文件")
+        else:
+            issues.append("❌ Kaggle和本地都未找到Stage 1 checkpoint")
     
     # 2. 检查数据配置
     print("\n📊 数据配置检查:")
