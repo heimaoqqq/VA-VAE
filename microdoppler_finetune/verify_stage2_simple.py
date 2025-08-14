@@ -51,22 +51,27 @@ def verify_stage2_readiness():
     
     # 2. 检查数据配置
     print("\n📊 数据配置检查:")
-    split_file = Path('data/microdoppler_split.json')
+    # 检查Kaggle数据路径
+    kaggle_split_file = Path("/kaggle/working/data_split/dataset_split.json")
+    local_split_file = Path('data/microdoppler_split.json')
     
-    if not split_file.exists():
-        issues.append("❌ 数据划分文件不存在")
-    else:
+    split_file = kaggle_split_file if kaggle_split_file.exists() else local_split_file
+    
+    if split_file.exists():
         with open(split_file, 'r') as f:
             split_data = json.load(f)
         
         train_count = sum(len(imgs) for imgs in split_data['train'].values())
         val_count = sum(len(imgs) for imgs in split_data['val'].values())
         
+        print(f"   ✅ 数据划分文件: {split_file}")
         print(f"   ✅ 训练集: {train_count} 张图像")
         print(f"   ✅ 验证集: {val_count} 张图像")
         
         if train_count < 100:
             warnings.append(f"⚠️ 训练集较小({train_count}张)，可能过拟合")
+    else:
+        issues.append("❌ 数据划分文件不存在 (检查了Kaggle和本地路径)")
     
     # 3. 检查损失计算修复
     print("\n🔧 损失计算修复检查:")
@@ -113,11 +118,18 @@ def verify_stage2_readiness():
     
     # 5. 检查预训练模型
     print("\n🎯 预训练模型检查:")
-    pretrained_path = Path('../pretrained/vavae_ckpt.pt')
+    # 检查Kaggle预训练模型路径
+    kaggle_pretrained_path = Path("/kaggle/input/vavae-pretrained/vavae-imagenet256-f16d32-dinov2.pt")
     
-    if not pretrained_path.exists():
+    if kaggle_pretrained_path.exists():
+        size_mb = kaggle_pretrained_path.stat().st_size / (1024*1024)
+        print(f"   ✅ Kaggle预训练模型存在")
+        print(f"   文件: {kaggle_pretrained_path.name}")
+        print(f"   文件大小: {size_mb:.1f} MB")
+    else:
         # 尝试其他可能的位置
         alt_paths = [
+            Path('../pretrained/vavae_ckpt.pt'),
             Path('../LightningDiT/pretrained/vavae_ckpt.pt'),
             Path('pretrained/vavae_ckpt.pt')
         ]
@@ -131,10 +143,7 @@ def verify_stage2_readiness():
                 break
         
         if not found:
-            warnings.append("⚠️ 预训练模型未在标准位置找到")
-    else:
-        size_mb = pretrained_path.stat().st_size / (1024*1024)
-        print(f"   ✅ 预训练模型存在 ({size_mb:.1f} MB)")
+            warnings.append("⚠️ 预训练模型未在Kaggle和本地位置找到")
     
     # 6. Stage 2配置验证
     print("\n📋 Stage 2 预期配置:")
