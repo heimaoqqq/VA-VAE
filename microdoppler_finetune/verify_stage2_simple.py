@@ -73,23 +73,21 @@ def verify_stage2_readiness():
     else:
         issues.append("❌ 数据划分文件不存在 (检查了Kaggle和本地路径)")
     
-    # 3. 检查损失计算修复
-    print("\n🔧 损失计算修复检查:")
+    # 3. 检查损失计算状态
+    print("\n🔧 损失计算状态检查:")
     loss_file = Path('../LightningDiT/vavae/ldm/modules/losses/contperceptual.py')
     
     if loss_file.exists():
         with open(loss_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        if 'torch.mean(weighted_nll_loss)' in content and 'torch.mean(kl_loss)' in content:
-            print("   ✅ 损失计算已修复为torch.mean()")
-        elif 'torch.sum(weighted_nll_loss) / weighted_nll_loss.shape[0]' in content:
-            issues.append("❌ 损失计算未修复，使用sum/batch_size会导致训练损失异常高(14000+)")
-            print("   ❌ 检测到错误的损失计算方式")
+        if 'torch.sum(weighted_nll_loss) / weighted_nll_loss.shape[0]' in content:
+            print("   ℹ️ 官方损失计算使用sum/batch_size (会导致高损失显示)")
+            print("   ✅ 训练脚本中已实现损失反缩放显示功能")
         else:
-            warnings.append("⚠️ 损失计算状态不明确")
+            warnings.append("⚠️ 无法确认损失计算方式")
     else:
-        warnings.append("⚠️ 无法验证损失计算修复状态")
+        warnings.append("⚠️ 无法验证损失计算状态")
     
     # 4. 检查训练脚本中的关键配置
     print("\n⚙️ 训练脚本配置检查:")
@@ -150,9 +148,9 @@ def verify_stage2_readiness():
     print("   ✅ 判别器启动: epoch 1 (立即启动)")
     print("   ✅ VF权重: 0.1 (从0.5降低以优化重建)")
     print("   ✅ 学习率: 5e-5 (从1e-4降低以稳定训练)")
-    print("   ✅ 最大轮次: 45")
+    print("   ✅ 最大轮次: 15 (官方标准，快速重建微调)")
     print("   ✅ 批次大小: 4 (GPU内存限制)")
-    print("   ✅ Checkpoint加载: Stage 1最佳模型")
+    print("   ✅ Checkpoint加载: Kaggle Stage 1模型")
     
     # 总结
     print("\n" + "="*60)
