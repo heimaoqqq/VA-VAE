@@ -53,22 +53,27 @@ def verify_stage2_readiness():
     
     # 2. 检查数据配置
     print("\n📊 数据配置检查:")
-    split_file = Path('data/microdoppler_split.json')
+    # 检查Kaggle数据路径
+    kaggle_split_file = Path("/kaggle/working/data_split/dataset_split.json")
+    local_split_file = Path('data/microdoppler_split.json')
     
-    if not split_file.exists():
-        issues.append("❌ 数据划分文件不存在")
-    else:
+    split_file = kaggle_split_file if kaggle_split_file.exists() else local_split_file
+    
+    if split_file.exists():
         with open(split_file, 'r') as f:
             split_data = json.load(f)
         
         train_count = sum(len(imgs) for imgs in split_data['train'].values())
         val_count = sum(len(imgs) for imgs in split_data['val'].values())
         
+        print(f"   ✅ 数据划分文件: {split_file}")
         print(f"   ✅ 训练集: {train_count} 张图像")
         print(f"   ✅ 验证集: {val_count} 张图像")
         
         if train_count < 100:
             warnings.append(f"⚠️ 训练集较小({train_count}张)，可能过拟合")
+    else:
+        issues.append("❌ 数据划分文件不存在 (检查了Kaggle和本地路径)")
     
     # 3. 检查损失计算修复
     print("\n🔧 损失计算修复检查:")
