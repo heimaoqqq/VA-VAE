@@ -413,23 +413,27 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     # 数据集
     logger.info("=== 准备数据集 ===")
     # 创建数据集，传入VA-VAE和设备用于在线编码
+    data_dir = config['data']['params']['data_dir']
+    val_split = config['data']['params']['val_split']
+    train_ratio = 1.0 - val_split
+    
     train_dataset = MicroDopplerDataset(
-        data_dir=config['data_dir'], 
+        data_dir=data_dir, 
         split="train", 
-        train_ratio=config['train_ratio'],
+        train_ratio=train_ratio,
         vae=vae,
         device=device  # 传递设备信息
     )
     val_dataset = MicroDopplerDataset(
-        data_dir=config['data_dir'], 
+        data_dir=data_dir, 
         split="val", 
-        train_ratio=config['train_ratio'],
+        train_ratio=train_ratio,
         vae=vae,
         device=device  # 传递设备信息
     )
     
     # T4*2优化的batch_size配置
-    base_batch_size = 16  # T4支持更大batch_size
+    base_batch_size = config['data']['params']['batch_size']  # 从配置文件读取
     batch_size = base_batch_size // world_size  # 分布式训练时每个GPU的batch_size
     
     if is_main_process:
