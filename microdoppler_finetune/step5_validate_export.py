@@ -333,8 +333,8 @@ def test_reconstruction(model, data_root, split_file=None, device='cuda'):
     return evaluate_reconstruction_quality(model, data_root, split_file, device=device)
 
 
-def evaluate_reconstruction_quality(model, data_root, split_file=None, num_samples=50, device='cuda'):
-    """评估VA-VAE重建质量（核心指标）"""
+def evaluate_reconstruction_quality(model, data_root, split_file=None, samples_per_user=100, device='cuda'):
+    """评估VA-VAE重建质量（核心指标） - 从原始数据集每个用户取样本"""
     print("\n" + "="*60)
     print("📊 评估重建质量 (Reconstruction Quality)")
     print("="*60)
@@ -343,61 +343,24 @@ def evaluate_reconstruction_quality(model, data_root, split_file=None, num_sampl
     mse_scores = []
     psnr_scores = []
     
-    # 加载数据划分
+    # 从原始数据集中每个用户取样本
     all_images = []
-    if split_file and os.path.exists(split_file):
-        print(f"  📂 使用数据分割文件: {split_file}")
-        with open(split_file, 'r') as f:
-            split_data = json.load(f)
+    print(f"  📂 使用原始数据集路径: {data_root}")
+    print(f"  📷 每个用户取 {samples_per_user} 个样本")
+    
+    for user_id in range(1, 32):
+        user_folder = data_path / f'ID_{user_id}'
+        if not user_folder.exists():
+            continue
         
-        # 检查split_file的结构
-        print(f"  📊 Split文件结构: {list(split_data.keys())[:5]}")
+        # 尝试不同格式的图像
+        images = list(user_folder.glob('*.jpg'))[:samples_per_user]
+        if len(images) == 0:
+            png_images = list(user_folder.glob('*.png'))[:samples_per_user]
+            jpeg_images = list(user_folder.glob('*.jpeg'))[:samples_per_user]
+            images = png_images if png_images else jpeg_images
         
-        # 支持两种格式：新格式(val列表) 和 旧格式(用户字典)
-        if 'val' in split_data:  # 新格式：{"train": [...], "val": [...], "test": [...]}
-            val_data = split_data['val']
-            print(f"  📊 Val数据类型: {type(val_data)}, 长度: {len(val_data) if hasattr(val_data, '__len__') else 'N/A'}")
-            
-            # 处理不同的数据类型
-            if isinstance(val_data, list):
-                val_images = val_data[:num_samples]
-            elif isinstance(val_data, dict):
-                # 如果是字典，可能是 {user_id: [files]}的格式
-                val_images = []
-                for user_files in val_data.values():
-                    if isinstance(user_files, list):
-                        val_images.extend(user_files[:3])  # 每个用户取3张
-                val_images = val_images[:num_samples]
-            else:
-                print(f"  ⚠️ 不支持的val数据格式: {type(val_data)}")
-                val_images = []
-            
-            for img_path in val_images:
-                # 从路径推断用户ID
-                user_id = 1  # 默认
-                if 'user' in str(img_path):
-                    try:
-                        user_id = int(str(img_path).split('user')[1].split('/')[0])
-                    except:
-                        pass
-                full_path = os.path.join(data_root, str(img_path))
-                if os.path.exists(full_path):
-                    all_images.append((full_path, user_id))
-        else:  # 旧格式：{"user1": {"val": [...]}, ...}
-            for user_id, user_data in split_data.items():
-                val_images = user_data.get('val', [])
-                for img_path in val_images[:5]:  # 每个用户取5张
-                    full_path = os.path.join(data_root, img_path)
-                    if os.path.exists(full_path):
-                        all_images.append((full_path, int(user_id.replace('user', ''))))
-    else:
-        # 兼容旧版：直接从文件夹读取
-        print(f"  📂 直接扫描数据目录: {data_root}")
-        for user_id in range(1, 32):
-            user_folder = data_path / f'user{user_id}'
-            if user_folder.exists():
-                images = sorted(user_folder.glob('*.jpg'))[:5]
-                all_images.extend([(str(img), user_id) for img in images])
+        all_images.extend([(str(img), user_id) for img in images])
 
     print(f"  📊 找到 {len(all_images)} 个图片文件")
 
@@ -502,13 +465,13 @@ def evaluate_reconstruction_quality(model, data_root, split_file=None, num_sampl
     return results
 
 
-def test_vf_alignment(model, data_root, split_file=None, num_samples=50, device='cuda'):
+def test_vf_alignment(model, data_root, split_file=None, samples_per_user=100, device='cuda'):
     """评估Vision Foundation对齐度（VA-VAE核心创新）"""
-    return evaluate_vf_alignment(model, data_root, split_file, num_samples, device)
+    return evaluate_vf_alignment(model, data_root, split_file, samples_per_user, device)
 
 
-def evaluate_vf_alignment(model, data_root, split_file=None, num_samples=30, device='cuda'):
-    """评估Vision Foundation对齐度（VA-VAE核心创新）"""
+def evaluate_vf_alignment(model, data_root, split_file=None, samples_per_user=100, device='cuda'):
+    """评估Vision Foundation对齐度（VA-VAE核心创新） - 从原始数据集每个用户取样本"""
     print("\n" + "="*60)
     print("🎯 评估VF语义对齐 (Vision Foundation Alignment)")
     print("="*60)
@@ -536,43 +499,24 @@ def evaluate_vf_alignment(model, data_root, split_file=None, num_samples=30, dev
     cosine_sims = []
     feature_dists = []
     
-    # 收集测试样本 - 支持split_file和直接扫描
+    # 收集测试样本 - 从原始数据集每个用户取样本
     test_samples = []
+    print(f"  📂 使用原始数据集路径: {data_root}")
+    print(f"  📷 每个用户取 {samples_per_user} 个样本")
     
-    if split_file and os.path.exists(split_file):
-        print(f"  📂 使用split文件: {split_file}")
-        with open(split_file, 'r') as f:
-            split_data = json.load(f)
+    for user_id in range(1, 32):
+        user_folder = data_path / f'ID_{user_id}'
+        if not user_folder.exists():
+            continue
         
-        if 'val' in split_data:
-            val_data = split_data['val']
-            if isinstance(val_data, dict):
-                # 格式: {"user1": [files], "user2": [files]}
-                for user_files in val_data.values():
-                    if isinstance(user_files, list):
-                        for file_path in user_files[:2]:  # 每个用户2张
-                            full_path = os.path.join(data_root, str(file_path))
-                            if os.path.exists(full_path):
-                                test_samples.append(Path(full_path))
-            elif isinstance(val_data, list):
-                # 格式: ["user1/file1.jpg", ...]
-                for file_path in val_data[:num_samples]:
-                    full_path = os.path.join(data_root, str(file_path))
-                    if os.path.exists(full_path):
-                        test_samples.append(Path(full_path))
-    else:
-        # 直接扫描目录 - 修复文件扩展名
-        for user_id in range(1, 32):
-            user_folder = data_path / f'user{user_id}'
-            if user_folder.exists():
-                # 搜索jpg而不是png
-                images = sorted(user_folder.glob('*.jpg'))[:2]
-                test_samples.extend(images)
-    
-    if len(test_samples) > num_samples:
-        import random
-        random.seed(42)
-        test_samples = random.sample(test_samples, num_samples)
+        # 尝试不同格式的图像
+        images = list(user_folder.glob('*.jpg'))[:samples_per_user]
+        if len(images) == 0:
+            png_images = list(user_folder.glob('*.png'))[:samples_per_user]
+            jpeg_images = list(user_folder.glob('*.jpeg'))[:samples_per_user]
+            images = png_images if png_images else jpeg_images
+        
+        test_samples.extend(images)
     
     print(f"  评估 {len(test_samples)} 个样本的VF对齐度...")
     
