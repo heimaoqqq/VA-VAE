@@ -233,6 +233,8 @@ def cleanup_distributed_training():
 def hybrid_dit_train_worker(rank, config_path, use_user_loss, user_loss_weight, world_size):
     """分布式训练worker函数 - Kaggle T4×2优化"""
     try:
+        # 设置内存优化环境变量
+        os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
         os.environ['MASTER_ADDR'] = 'localhost'
         os.environ['MASTER_PORT'] = '12355'
         
@@ -254,6 +256,7 @@ def hybrid_dit_train_worker(rank, config_path, use_user_loss, user_loss_weight, 
         
         # 清理GPU缓存
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
         print(f"{'='*60}")
         
         # 调用训练函数
@@ -384,6 +387,12 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
             os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
             # 清理缓存
             torch.cuda.empty_cache()
+            
+            # 禁用torch.compile - T4内存不足
+            import torch._dynamo
+            torch._dynamo.config.suppress_errors = True
+            torch._dynamo.disable()
+            logger.warning("⚠️ T4内存限制：已禁用torch.compile以节省内存")
             logger.info("🔧 T4内存优化：启用expandable_segments减少碎片")
     
     pretrained_path = os.path.join(va_vae_root, 'LightningDiT', 'models', 'lightningdit-xl-imagenet256-64ep.pt')
@@ -428,8 +437,8 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     # 改用torch.utils.checkpoint
     logger.info("📊 T4内存优化配置：")
     logger.info(f"  - 混合精度训练: {use_amp}")
-    # 梯度累积参数 - 平衡内存和效率
-    accumulate_grad_batches = config['trainer'].get('accumulate_grad_batches', 2)  # 累积2步，有效batch_size=4*2=8
+    # 梯度累积参数 - T4需要更多累积步数
+    accumulate_grad_batches = config['trainer'].get('accumulate_grad_batches', 4)  # T4:累积4步，有效batch_size=2*4=8
     logger.info(f"  - 梯度累积步数: {accumulate_grad_batches}")
     logger.info(f"  - 梯度裁剪: {config['trainer'].get('gradient_clip_val', 1.0)}")
     
@@ -493,9 +502,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     if torch.cuda.is_available():
         gpu_memory_gb = torch.cuda.get_device_properties(device).total_memory / 1024**3
         if gpu_memory_gb < 16:  # T4只有15GB
-            # Kaggle T4×2配置：每GPU 2个样本，总共4个
-            batch_size = 2  # 经测试T4可以处理batch_size=2
-            logger.info(f"T4 GPU配置({gpu_memory_gb:.1f}GB)，每GPU batch_size={batch_size}")
+            # T4内存严重受限，必须使用最小batch_size
+            batch_size = 1  # torch.compile禁用后仍需batch_size=1
+            logger.warning(f"⚠️ T4 GPU内存限制({gpu_memory_gb:.1f}GB)，强制batch_size=1")
             logger.info(f"总有效batch_size = {batch_size * world_size} = {batch_size * world_size}")
     
     # 强制验证batch_size配置
@@ -641,33 +650,22 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
                 logger.info(f"[GPU {rank}] Actual batch size: {actual_batch_size} (expected: {batch_size})")
                 if actual_batch_size != batch_size:
                     logger.warning(f"[GPU {rank}] ⚠️ Batch size mismatch! Got {actual_batch_size}, expected {batch_size}")       
-            # VA-VAE编码 - 优化内存使用
+            # VA-VAE编码 - T4内存极限优化
             with torch.no_grad():
-                # 批处理编码以减少内存峰值
+                # 在T4上batch_size=1，无需分批
                 if device.index != 0:
-                    # 非cuda:0设备：分批编码以减少内存压力
-                    batch_size_encode = real_images.shape[0]
-                    if batch_size_encode > 1:
-                        # 分两批编码
-                        half = batch_size_encode // 2
-                        images1 = real_images[:half].to('cuda:0')
-                        latents1 = vae.encode_images(images1)
-                        images1 = None  # 立即释放
-                        torch.cuda.empty_cache()
-                        
-                        images2 = real_images[half:].to('cuda:0')
-                        latents2 = vae.encode_images(images2)
-                        images2 = None
-                        torch.cuda.empty_cache()
-                        
-                        latents = torch.cat([latents1, latents2], dim=0).to(device)
-                    else:
-                        images_cuda0 = real_images.to('cuda:0')
-                        latents = vae.encode_images(images_cuda0)
-                        latents = latents.to(device)
+                    # 非cuda:0设备：转移到cuda:0编码
+                    images_cuda0 = real_images.to('cuda:0')
+                    latents = vae.encode_images(images_cuda0)
+                    images_cuda0 = None  # 立即释放
+                    torch.cuda.empty_cache()
+                    latents = latents.to(device)
                 else:
                     # cuda:0设备：直接编码
                     latents = vae.encode_images(real_images)  # [B, 32, 16, 16]
+                
+                # 编码后立即清理缓存
+                torch.cuda.empty_cache()
                 
                 # VA-VAE f16d32输出16x16，无需上采样
             
