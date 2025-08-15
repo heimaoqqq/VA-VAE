@@ -150,11 +150,12 @@ class MicroDopplerDataset(Dataset):
         
         # VAE编码到潜在空间
         if self.vae is not None:
-            # 暂时将VAE模型移动到CPU进行编码，避免分布式设备冲突
-            # 由于VA-VAE内部硬编码了.cuda()，我们需要确保在cuda:0上进行编码
-            img_tensor_cuda = img_tensor.to('cuda:0')
-            latent = self.vae.encode_images(img_tensor_cuda.unsqueeze(0))
-            latent = latent.squeeze(0).cpu()  # (32, 16, 16)
+            # 预编码策略：始终在主设备上进行VAE编码
+            with torch.cuda.device(0):  # 强制使用cuda:0
+                img_tensor_cuda = img_tensor.cuda(0)
+                with torch.no_grad():
+                    latent = self.vae.encode_images(img_tensor_cuda.unsqueeze(0))
+                latent = latent.squeeze(0).cpu()  # (32, 16, 16)
         
         return {
             'latent': latent if self.vae is not None else img_tensor,
@@ -224,16 +225,21 @@ class UserDiscriminationLoss(torch.nn.Module):
 
 # Kaggle T4*2 分布式训练辅助函数
 def setup_distributed_training(rank, world_size):
-    """初始化分布式训练进程组"""
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group(
-        backend='nccl',
-        init_method='env://',
-        world_size=world_size,
-        rank=rank
-    )
-    torch.cuda.set_device(rank)
+    """初始化分布式训练 - Kaggle T4*2优化"""
+    if world_size > 1:
+        # Kaggle环境特殊配置
+        os.environ['MASTER_ADDR'] = '127.0.0.1'  # 使用127.0.0.1更稳定
+        os.environ['MASTER_PORT'] = '29500'  # 使用较高端口避免冲突
+        os.environ['NCCL_DEBUG'] = 'WARN'  # 减少NCCL日志
+        os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'OFF'  # 关闭调试日志
+        
+        dist.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            world_size=world_size,
+            rank=rank
+        ) 
+        torch.cuda.set_device(rank)
 
 
 def cleanup_distributed_training():
@@ -301,9 +307,13 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     
     if is_main_process:
         print(f"Using device: {device}")
-        print(f"Distributed training: {'ON' if is_distributed else 'OFF'}")
-        print(f"World size: {world_size}, Rank: {rank}")
-        print(f"User discrimination loss: {'ON' if use_user_loss else 'OFF'}")
+        print(f"🖥️ 使用设备: {device}")
+    print(f"🔗 分布式训练: {'开启' if world_size > 1 else '关闭'}")
+    if world_size > 1:
+        print(f"📊 集群大小: {world_size} GPUs")
+        print(f"🏷️ 当前进程: Rank {rank}")
+    print(f"👤 用户区分损失: {'开启' if use_user_loss else '关闭'}")
+    print("=" * 50)
     
     # 创建实验目录
     exp_name = f"hybrid_dit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -314,16 +324,13 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     logger.info(f"Experiment directory: {exp_dir}")
     logger.info(f"User loss enabled: {use_user_loss}, weight: {user_loss_weight}")
     
-    # 初始化VA-VAE
-    logger.info("=== 初始化VA-VAE ===")
-    vae_checkpoint_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
-    
-    if not os.path.exists(vae_checkpoint_path):
-        raise FileNotFoundError(f"VA-VAE checkpoint not found: {vae_checkpoint_path}")
-    
-    logger.info(f"Loading VA-VAE from: {vae_checkpoint_path}")
-    
-    # 修复VA-VAE配置路径
+    # 加载VA-VAE - 始终在cuda:0上以避免分布式设备冲突
+    logger.info("=== 加载VA-VAE编码器 ===")
+    vae_device = torch.device('cuda:0')  # VA-VAE始终在cuda:0
+    vae = VA_VAE(
+        vae_path=os.path.join(va_vae_root, 'LightningDiT/models/vavae-ema.pt'),
+        device=vae_device
+    )
     vae_config_path = "../LightningDiT/tokenizer/configs/vavae_f16d32.yaml"
     if not os.path.isabs(vae_config_path):
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -507,15 +514,15 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
             pin_memory=True
         )
     else:
-        # 标准随机采样
+        # 标准随机采样 - 数据加载器禁用多进程避免VA-VAE设备冲突
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=batch_size,
             sampler=train_sampler,
-            shuffle=(train_sampler is None),  # 分布式时用sampler，否则shuffle
-            num_workers=4,  # T4*2有更多CPU核心
+            shuffle=False,  # 分布式采样器时不能shuffle
+            num_workers=0,  # 禁用多进程，避免VA-VAE在子进程中的设备冲突
             pin_memory=True,
-            drop_last=True
+            persistent_workers=False
         )
     
     val_loader = torch.utils.data.DataLoader(
@@ -523,8 +530,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         batch_size=batch_size,
         sampler=val_sampler,
         shuffle=False,
-        num_workers=4,
-        pin_memory=True
+        num_workers=0,  # 禁用多进程
+        pin_memory=True,
+        persistent_workers=False
     )
     
     # 优化器 - 按原项目标准设置
