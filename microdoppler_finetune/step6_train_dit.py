@@ -18,7 +18,7 @@ from pathlib import Path
 import json
 import logging
 from tqdm import tqdm
-from datetime import datetime
+from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from PIL import Image
 import warnings
@@ -57,7 +57,7 @@ def setup(rank, world_size):
         backend="nccl", 
         rank=rank, 
         world_size=world_size,
-        timeout=datetime.timedelta(seconds=60)
+        timeout=timedelta(seconds=60)
     )
     
     # 设置当前进程使用的GPU
@@ -177,16 +177,13 @@ def train_dit(rank=0, world_size=1):
     
     # ===== 1. 初始化VA-VAE（仅用于编码） =====
     logger.info("=== 初始化VA-VAE编码器 ===")
+    # VA-VAE需要配置文件路径
+    vae_config_path = project_root / 'LightningDiT' / 'configs' / 'lightningdit_xl_vavae_f16d32.yaml'
     vae = VA_VAE(
-        in_channels=3,
-        out_channels=3,
-        latent_dim=32,
-        downsample_factor=16,
-        num_res_blocks=2,
-        norm='group',
-        num_groups=32,
-        learned_variance=False,
-        use_vae_ema=True
+        config=str(vae_config_path),
+        img_size=256,
+        horizon_flip=0.0,  # 训练时不需要水平翻转
+        fp16=True
     )
     
     # 加载微调后的VA-VAE权重
