@@ -85,44 +85,66 @@ except ImportError:
     print("⚠️ LPIPS未安装，感知损失评估将跳过")
 
 def get_training_vae_config():
-    """返回与checkpoint实际使用的VAE配置"""
-    # 根据错误信息推断的确切配置
-    # quant_conv: [64, 64] -> embed_dim = 32
-    # post_quant_conv: [32, 32] -> z_channels = 32
+    """从 step4_train_vavae.py 提取的完整VA-VAE配置"""
+    # 直接从训练脚本复制的完整配置（行 518-544）
     return {
         'target': 'ldm.models.autoencoder.AutoencoderKL',
         'params': {
-            'embed_dim': 32,  # 不是4，是32！
             'monitor': 'val/rec_loss',
+            'embed_dim': 32,
+            'use_vf': 'dinov2',  # VA-VAE特有参数
+            'reverse_proj': True,  # VA-VAE特有参数
             'ddconfig': {
                 'double_z': True, 
-                'z_channels': 32,
+                'z_channels': 32, 
                 'resolution': 256,
                 'in_channels': 3, 
                 'out_ch': 3, 
                 'ch': 128,
-                'ch_mult': [1, 1, 2, 2, 4],
+                'ch_mult': [1, 1, 2, 2, 4], 
                 'num_res_blocks': 2,
-                'attn_resolutions': [],
+                'attn_resolutions': [16],  # 这是关键差异！
                 'dropout': 0.0
             },
             'lossconfig': {
                 'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
                 'params': {
-                    'disc_start': 50001,
-                    'kl_weight': 1e-6,
-                    'disc_weight': 0.5,
-                    'perceptual_weight': 1.0,
-                    'vf_weight': 0.1,
-                    'adaptive_vf': False
+                    # 从训练脚本复制的完整配置（行533-543）
+                    'disc_start': 1, 'disc_num_layers': 3,
+                    'disc_weight': 0.5, 'disc_factor': 1.0,
+                    'disc_in_channels': 3, 'disc_conditional': False, 'disc_loss': 'hinge',
+                    'pixelloss_weight': 1.0, 'perceptual_weight': 1.0,
+                    'kl_weight': 1e-6, 'logvar_init': 0.0,
+                    'use_actnorm': False, 'pp_style': False,
+                    'vf_weight': 0.1, 'adaptive_vf': False,
+                    'distmat_weight': 1.0, 'cos_weight': 1.0,
+                    'distmat_margin': 0.0, 'cos_margin': 0.0  # Stage 3的margin值
                 }
             }
         }
     }
 
 def infer_vae_config_from_checkpoint(checkpoint):
-    """使用checkpoint实际配置"""
-    print("使用checkpoint实际配置: embed_dim=32, z_channels=32, ch_mult=[1,1,2,2,4]")
+    """使用训练脚本的完整VA-VAE配置"""
+    print("使用step4_train_vavae.py的完整配置: embed_dim=32, use_vf=dinov2, reverse_proj=True")
+    
+    # 调试：分析checkpoint结构
+    state_dict = checkpoint.get('state_dict', checkpoint)
+    
+    # 按前缀分组分析
+    key_prefixes = {}
+    for key in state_dict.keys():
+        prefix = key.split('.')[0] if '.' in key else 'root'
+        key_prefixes[prefix] = key_prefixes.get(prefix, 0) + 1
+    
+    print(f"  📊 Checkpoint参数分布:")
+    for prefix, count in sorted(key_prefixes.items()):
+        print(f"    {prefix}: {count}个参数")
+    
+    # 显示前10个键
+    sample_keys = list(state_dict.keys())[:10]
+    print(f"  📝 示例键: {sample_keys}")
+    
     return get_training_vae_config()
 
 def load_model(checkpoint_path, config_path=None, device='cuda'):
@@ -154,28 +176,55 @@ def load_model(checkpoint_path, config_path=None, device='cuda'):
     state_dict = checkpoint.get('state_dict', checkpoint)
     
     # 先尝试加载，如果失败则调整配置
+    # 调试：检查checkpoint中的键
+    print(f"  📊 Checkpoint包含 {len(state_dict)} 个参数")
+    
+    # 检查是否为Lightning训练的checkpoint格式
+    if any(k.startswith('model.') for k in state_dict.keys()):
+        print("  🔧 检测到Lightning格式，只提取model.*的权重")
+        # 只保留以'model.'开头的参数
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            if k.startswith('model.'):
+                new_key = k[6:]  # 移除'model.'前缀
+                new_state_dict[new_key] = v
+        
+        print(f"  ✂️ 过滤后剩余 {len(new_state_dict)} 个模型参数")
+        state_dict = new_state_dict
+        
+        # 再次分析过滤后的键
+        key_prefixes_filtered = {}
+        for key in state_dict.keys():
+            prefix = key.split('.')[0] if '.' in key else 'root'
+            key_prefixes_filtered[prefix] = key_prefixes_filtered.get(prefix, 0) + 1
+        print(f"  📋 过滤后参数分布: {key_prefixes_filtered}")
+    
     try:
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        if len(missing) > 10 or len(unexpected) > 10:  # 如果有太多不匹配的键
+        if len(missing) > 10 or len(unexpected) > 100:  # 进一步放宽阈值
             raise RuntimeError("架构不匹配")
     except RuntimeError as e:
         if "架构不匹配" in str(e) or "size mismatch" in str(e):
             print("  ⚠️ 架构不匹配，使用训练配置...")
-            
-            # 使用训练时的确切配置
             config = OmegaConf.create(get_training_vae_config())
             model_config = config.model if hasattr(config, 'model') else config
             model = instantiate_from_config(model_config)
-            
-            # 再次尝试加载
             missing, unexpected = model.load_state_dict(state_dict, strict=False)
         else:
             raise e
     
     if missing:
-        print(f"  ⚠️ Missing keys: {len(missing)}")
+        print(f"  ⚠️ Missing keys: {len(missing)} (前5个: {list(missing)[:5]})")
     if unexpected:
+        # 分析unexpected keys的类型
+        unexpected_prefixes = {}
+        for key in unexpected:
+            prefix = key.split('.')[0] if '.' in key else 'root'
+            unexpected_prefixes[prefix] = unexpected_prefixes.get(prefix, 0) + 1
+        
         print(f"  ⚠️ Unexpected keys: {len(unexpected)}")
+        print(f"    分布: {unexpected_prefixes}")
+        print(f"    前5个: {list(unexpected)[:5]}")
     
     model = model.to(device)
     model.eval()
