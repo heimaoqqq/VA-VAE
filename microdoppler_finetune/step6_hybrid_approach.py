@@ -232,33 +232,41 @@ def cleanup_distributed_training():
 
 def hybrid_dit_train_worker(rank, config_path, use_user_loss, user_loss_weight, world_size):
     """分布式训练worker函数 - Kaggle T4×2优化"""
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    
-    # Kaggle T4×2: 确保正确的GPU可见性
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
-    
-    # 初始化进程组
-    torch.distributed.init_process_group(
-        backend='nccl',
-        init_method='env://',
-        world_size=world_size,
-        rank=rank
-    )
-    
-    # 设置设备
-    torch.cuda.set_device(rank)
-    device = torch.device(f'cuda:{rank}')
-    
-    # 清理GPU缓存
-    torch.cuda.empty_cache()
-    print(f"{'='*60}")
-    
-    # 调用原训练函数但添加分布式支持
-    hybrid_dit_train(config_path, use_user_loss, user_loss_weight, rank, world_size, device)
-    
-    # 清理分布式训练
-    cleanup_distributed_training()
+    try:
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        
+        print(f"[Worker {rank}] 初始化进程...")
+        
+        # 初始化进程组
+        torch.distributed.init_process_group(
+            backend='nccl',
+            init_method='env://',
+            world_size=world_size,
+            rank=rank
+        )
+        
+        # 设置设备
+        torch.cuda.set_device(rank)
+        device = torch.device(f'cuda:{rank}')
+        
+        print(f"[Worker {rank}] 使用设备: {device}")
+        
+        # 清理GPU缓存
+        torch.cuda.empty_cache()
+        print(f"{'='*60}")
+        
+        # 调用训练函数
+        hybrid_dit_train(config_path, use_user_loss, user_loss_weight, rank, world_size, device)
+        
+        # 清理分布式训练
+        cleanup_distributed_training()
+        
+    except Exception as e:
+        print(f"[Worker {rank}] 错误: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml', 
