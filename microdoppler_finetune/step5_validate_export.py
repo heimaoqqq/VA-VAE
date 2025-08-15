@@ -129,7 +129,12 @@ def validate_reconstruction(model, data_root, split_file, num_samples=16, device
     with open(split_file, 'r') as f:
         split_data = json.load(f)
     
-    val_data = split_data['val'][:num_samples]
+    # 处理不同的数据结构格式
+    if isinstance(split_data['val'], list):
+        val_data = split_data['val'][:num_samples]
+    else:
+        # 如果val是字典格式，转换为列表
+        val_data = list(split_data['val'].values())[:num_samples]
     
     # 准备图像
     images = []
@@ -218,7 +223,11 @@ def test_vf_alignment(model, data_root, split_file, device='cuda'):
     with open(split_file, 'r') as f:
         split_data = json.load(f)
     
-    test_samples = split_data['val'][:20]
+    # 处理不同的数据结构格式
+    if isinstance(split_data['val'], list):
+        test_samples = split_data['val'][:20]
+    else:
+        test_samples = list(split_data['val'].values())[:20]
     vf_similarities, reconstruction_errors = [], []
     
     with torch.no_grad():
@@ -269,10 +278,16 @@ def test_user_discrimination(model, data_root, split_file, device='cuda'):
     with open(split_file, 'r') as f:
         split_data = json.load(f)
     
+    # 处理不同的数据结构格式
+    if isinstance(split_data['train'], list):
+        train_samples = split_data['train'][:300]
+    else:
+        train_samples = list(split_data['train'].values())[:300]
+    
     user_features, user_labels, all_features = {}, [], []
     
     with torch.no_grad():
-        for item in tqdm(split_data['train'][:300], desc="提取用户特征"):
+        for item in tqdm(train_samples, desc="提取用户特征"):
             img_path = Path(data_root) / item['path']
             if not img_path.exists():
                 continue
@@ -377,13 +392,15 @@ def extract_latent_statistics(model, data_root, split_file, device='cuda'):
     with open(split_file, 'r') as f:
         split_data = json.load(f)
     
-    train_data = split_data['train']
+    # 处理不同的数据结构格式
+    if isinstance(split_data['train'], list):
+        train_data = split_data['train']
+    else:
+        train_data = list(split_data['train'].values())
     
     model = model.to(device)
     
-    # 收集潜在向量
     all_latents = []
-    user_latents = {}
     
     with torch.no_grad():
         for item in tqdm(train_data, desc="编码图像"):
@@ -391,9 +408,7 @@ def extract_latent_statistics(model, data_root, split_file, device='cuda'):
             if not img_path.exists():
                 continue
             
-            # 加载图像
-            img = Image.open(img_path).convert('RGB')
-            img = img.resize((256, 256), Image.LANCZOS)
+            img = Image.open(img_path).convert('RGB').resize((256, 256), Image.LANCZOS)
             img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
             img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
             
