@@ -86,7 +86,7 @@ try:
     from models.lightningdit import LightningDiT_models
     from tokenizer.vavae import VA_VAE
     from transport import create_transport
-    print("Successfully imported LightningDiT models")
+    print("✅ 成功导入LightningDiT模型")
 except ImportError as e:
     print(f"Error importing LightningDiT models: {e}")
     exit(1)
@@ -98,25 +98,31 @@ from torch.utils.data import Dataset
 import logging
 
 
-class MicroDopplerLatentDataset(Dataset):
-    """微多普勒潜在空间数据集"""
+class MicroDopplerDataset(Dataset):
+    """微多普勒数据集"""
     
-    def __init__(self, data_root, vae_model, split='train', device='cuda'):
-        self.data_root = Path(data_root)
-        self.vae = vae_model
-        self.device = device
-        self.split = split
+    def __init__(self, data_dir, image_size=256, split="train", train_ratio=0.8, vae=None, device=None):
+        self.data_dir = Path(data_dir)
+        self.image_size = image_size
+        self.vae = vae
+        self.device = device  # 添加设备参数
+        
+        self.transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        ])
         
         # 收集所有数据
         self.samples = []
         
         for user_id in range(1, 32):  # ID_1 到 ID_31
-            user_folder = self.data_root / f'ID_{user_id}'
+            user_folder = self.data_dir / f'ID_{user_id}'
             if user_folder.exists():
                 images = list(user_folder.glob('*.jpg')) + list(user_folder.glob('*.png'))
                 
                 # 划分训练/验证集
-                n_train = int(len(images) * 0.8)
+                n_train = int(len(images) * train_ratio)
                 if split == 'train':
                     selected = images[:n_train]
                 else:
@@ -140,18 +146,18 @@ class MicroDopplerLatentDataset(Dataset):
         img = Image.open(sample['path']).convert('RGB')
         
         # 转换为tensor：HWC -> CHW，[0,1] -> [-1,1]
-        img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
-        img_tensor = img_tensor.permute(2, 0, 1)  # HWC -> CHW
-        img_tensor = img_tensor * 2.0 - 1.0  # [0,1] -> [-1,1]
+        img_tensor = self.transform(img)
         
         # VAE编码到潜在空间
-        with torch.no_grad():
-            img_tensor = img_tensor.unsqueeze(0).to(self.device)
-            latent = self.vae.encode_images(img_tensor)
+        if self.vae is not None:
+            # 暂时将VAE模型移动到CPU进行编码，避免分布式设备冲突
+            # 由于VA-VAE内部硬编码了.cuda()，我们需要确保在cuda:0上进行编码
+            img_tensor_cuda = img_tensor.to('cuda:0')
+            latent = self.vae.encode_images(img_tensor_cuda.unsqueeze(0))
             latent = latent.squeeze(0).cpu()  # (32, 16, 16)
         
         return {
-            'latent': latent,
+            'latent': latent if self.vae is not None else img_tensor,
             'class_id': sample['class_id']
         }
 
@@ -243,7 +249,7 @@ def hybrid_dit_train_worker(rank, world_size, config_path, use_user_loss, user_l
     setup_distributed_training(rank, world_size)
     device = torch.device(f'cuda:{rank}')
     
-    print(f"[GPU {rank}] Starting distributed training on {device}")
+    print(f"[GPU {rank}] 在设备 {device} 上启动分布式训练")
     
     # 调用原训练函数但添加分布式支持
     hybrid_dit_train(config_path, use_user_loss, user_loss_weight, rank, world_size, device)
@@ -406,18 +412,20 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     
     # 数据集
     logger.info("=== 准备数据集 ===")
-    train_dataset = MicroDopplerLatentDataset(
-        data_root=config['data']['params']['data_dir'],
-        vae_model=vae,
-        split='train',
-        device=device
+    # 创建数据集，传入VA-VAE和设备用于在线编码
+    train_dataset = MicroDopplerDataset(
+        data_dir=config['data_dir'], 
+        split="train", 
+        train_ratio=config['train_ratio'],
+        vae=vae,
+        device=device  # 传递设备信息
     )
-    
-    val_dataset = MicroDopplerLatentDataset(
-        data_root=config['data']['params']['data_dir'],
-        vae_model=vae,
-        split='val', 
-        device=device
+    val_dataset = MicroDopplerDataset(
+        data_dir=config['data_dir'], 
+        split="val", 
+        train_ratio=config['train_ratio'],
+        vae=vae,
+        device=device  # 传递设备信息
     )
     
     # T4*2优化的batch_size配置
@@ -537,7 +545,7 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         model.train()
         train_losses = {'total': [], 'diffusion': [], 'user': []}
         
-        for batch_idx, batch in enumerate(tqdm(train_loader, desc="Training")):
+        for batch_idx, batch in enumerate(tqdm(train_loader, desc="训练中")):
             latents = batch['latent'].to(device)
             class_ids = batch['class_id'].to(device)
             
@@ -654,11 +662,11 @@ if __name__ == "__main__":
     
     # 检测GPU数量并自动配置分布式训练
     num_gpus = torch.cuda.device_count()
-    print(f"Detected {num_gpus} GPUs")
+    print(f"🔍 检测到 {num_gpus} 个GPU")
     
     if args.distributed and num_gpus >= 2:
-        print("🚀 Starting T4*2 Distributed Training...")
-        print(f"World size: {args.world_size}")
+        print("🚀 启动T4*2分布式训练...")
+        print(f"集群大小: {args.world_size}")
         print("=" * 50)
         
         # 启动T4*2分布式训练
