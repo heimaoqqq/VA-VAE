@@ -85,16 +85,8 @@ def download_vavae_models():
     lightningdit_models_dir = base_path / "LightningDiT" / "models"
     lightningdit_models_dir.mkdir(parents=True, exist_ok=True)
     
-    # VA-VAE和LightningDiT模型配置
+    # 只需要LightningDiT模型（VA-VAE使用微调后的）
     models = {
-        "VA-VAE EMA": {
-            "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/vavae-imagenet256-f16d32-dinov2.pt",
-            "filename": "vavae-ema.pt",  # LightningDiT期望的文件名
-            "size_mb": 2049,
-            "description": "VA-VAE with DINOv2 alignment (EMA version)",
-            "required": True,
-            "dest_dir": lightningdit_models_dir
-        },
         "LightningDiT XL": {
             "url": "https://huggingface.co/hustvl/LightningDiT/resolve/main/lightningdit-xl-imagenet256-64ep.pt",
             "filename": "lightningdit-xl-imagenet256-64ep.pt",
