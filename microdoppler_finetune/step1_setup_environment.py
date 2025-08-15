@@ -119,8 +119,10 @@ def setup_vavae_environment():
     # 安装基础包
     for package in packages:
         try:
-            if "torch" in package and os.path.exists('/kaggle/working'):
-                # Kaggle已预装PyTorch
+            # 只跳过真正的torch核心包，不跳过torchdiffeq等
+            torch_core_packages = ['torch>=', 'torchvision>=', 'pytorch-lightning>=']
+            if any(package.startswith(core) for core in torch_core_packages) and os.path.exists('/kaggle/working'):
+                # Kaggle已预装PyTorch核心包
                 print(f"⏭️ 跳过 {package} (Kaggle预装)")
                 continue
             
