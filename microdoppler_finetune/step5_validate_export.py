@@ -1,263 +1,386 @@
 #!/usr/bin/env python
-"""
-VA-VAE模型综合验证脚本
-集成所有验证功能于一个文件
-"""
+"""VA-VAE模型验证与导出脚本 - 基于官方LightningDiT项目标准"""
 
 import os
 import sys
+import json
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import numpy as np
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from sklearn.metrics import silhouette_score
-from sklearn.manifold import TSNE
-import json
+from typing import Dict, List, Tuple, Optional
 import argparse
 from omegaconf import OmegaConf
 from datetime import datetime
+import torch.nn.functional as F
 
-# 添加LightningDiT路径
-if os.path.exists('/kaggle/working'):
-    sys.path.insert(0, '/kaggle/working/VA-VAE/LightningDiT/vavae')
-    sys.path.insert(0, '/kaggle/working/VA-VAE/LightningDiT')
-else:
-    vavae_path = Path(__file__).parent / 'LightningDiT' / 'vavae'
-    if vavae_path.exists():
-        sys.path.insert(0, str(vavae_path))
-        sys.path.insert(0, str(vavae_path.parent))
+# 设置项目路径
+project_root = Path(__file__).parent.parent
+vavae_path = project_root / 'LightningDiT' / 'vavae'
+if str(vavae_path) not in sys.path:
+    sys.path.insert(0, str(vavae_path))
 
-# 导入模型模块
+# 设置taming路径（如果需要）
+taming_path = project_root / 'taming-transformers'
+if taming_path.exists() and str(taming_path) not in sys.path:
+    sys.path.insert(0, str(taming_path))
+
+# 导入必要的模块
 try:
-    from ldm.models.autoencoder import AutoencoderKL
     from ldm.util import instantiate_from_config
-    print("✅ 成功导入VA-VAE模型模块")
+    from ldm.models.autoencoder import AutoencoderKL
+    from ldm.modules.losses.contperceptual import LPIPSWithDiscriminator
+    print("✅ 成功导入VA-VAE模块")
 except ImportError as e:
     print(f"❌ 导入错误: {e}")
-    print("请确保LightningDiT/vavae项目在正确位置")
+    print(f"请确保在项目根目录下运行，当前路径: {Path.cwd()}")
     sys.exit(1)
 
+# 尝试导入可选模块
+try:
+    from sklearn.metrics import silhouette_score
+    from sklearn.manifold import TSNE
+    from sklearn.decomposition import PCA
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    print("⚠️ scikit-learn未安装，部分分析功能将受限")
 
-def load_model(checkpoint_path, device='cuda'):
-    """加载训练好的VA-VAE模型"""
-    print(f"\n📂 Loading model from: {checkpoint_path}")
+try:
+    from lpips import LPIPS
+    LPIPS_AVAILABLE = True
+except ImportError:
+    LPIPS_AVAILABLE = False
+    print("⚠️ LPIPS未安装，感知损失评估将跳过")
+
+def load_model(checkpoint_path, config_path=None, device='cuda'):
+    """加载VA-VAE模型（符合官方格式）"""
+    print(f"\n📂 加载VA-VAE模型...")
+    print(f"  Checkpoint: {checkpoint_path}")
     
     # 加载checkpoint
-    ckpt = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
-    # 获取配置
-    if 'config' in ckpt:
-        config = ckpt['config']
+    # 获取或创建配置
+    if config_path and Path(config_path).exists():
+        print(f"  Config: {config_path}")
+        config = OmegaConf.load(config_path)
+    elif 'hyper_parameters' in checkpoint:
+        # PyTorch Lightning格式
+        config = checkpoint['hyper_parameters'].get('config', {})
         if isinstance(config, dict):
             config = OmegaConf.create(config)
     else:
-        # 默认配置
+        # 创建默认VA-VAE配置
+        print("  使用默认VA-VAE配置")
         config = OmegaConf.create({
-            'target': 'ldm.models.autoencoder.AutoencoderKL',
-            'params': {
-                'embed_dim': 32,
-                'use_vf': 'dinov2',
-                'ddconfig': {
-                    'double_z': False,
-                    'z_channels': 32,
-                    'resolution': 256,
-                    'in_channels': 3,
-                    'out_ch': 3,
-                    'ch': 128,
-                    'ch_mult': [1, 1, 2, 2, 4],
-                    'num_res_blocks': 2,
-                    'attn_resolutions': [],
-                    'dropout': 0.0
+            'model': {
+                'target': 'ldm.models.autoencoder.AutoencoderKL',
+                'params': {
+                    'embed_dim': 32,
+                    'use_vf': 'dinov2',
+                    'reverse_proj': True,
+                    'ddconfig': {
+                        'double_z': True,
+                        'z_channels': 32,
+                        'resolution': 256,
+                        'in_channels': 3,
+                        'out_ch': 3,
+                        'ch': 128,
+                        'ch_mult': [1, 1, 2, 2, 4],
+                        'num_res_blocks': 2,
+                        'attn_resolutions': [16],
+                        'dropout': 0.0
+                    },
+                    'lossconfig': {
+                        'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
+                        'params': {
+                            'disc_start': 1,
+                            'kl_weight': 1e-6,
+                            'disc_weight': 0.5,
+                            'perceptual_weight': 1.0,
+                            'vf_weight': 0.1,
+                            'distmat_weight': 1.0,
+                            'cos_weight': 1.0
+                        }
+                    }
                 }
             }
         })
     
     # 实例化模型
-    if hasattr(config, 'target'):
-        model = instantiate_from_config(config)
-    else:
-        model = instantiate_from_config(config.model if hasattr(config, 'model') else config)
+    model_config = config.model if hasattr(config, 'model') else config
+    model = instantiate_from_config(model_config)
     
     # 加载权重
-    if 'state_dict' in ckpt:
-        model.load_state_dict(ckpt['state_dict'], strict=False)
+    if 'state_dict' in checkpoint:
+        # 标准PyTorch格式
+        missing, unexpected = model.load_state_dict(checkpoint['state_dict'], strict=False)
     else:
-        model.load_state_dict(ckpt, strict=False)
+        # PyTorch Lightning格式或其他
+        state_dict = checkpoint
+        if isinstance(state_dict, dict) and 'model' in state_dict:
+            state_dict = state_dict['model']
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    
+    if missing:
+        print(f"  ⚠️ Missing keys: {len(missing)}")
+    if unexpected:
+        print(f"  ⚠️ Unexpected keys: {len(unexpected)}")
     
     model = model.to(device)
     model.eval()
     
-    print("✅ Model loaded successfully!")
+    # 检查VA-VAE特性
+    has_vf = hasattr(model, 'vf_model') and model.vf_model is not None
+    has_proj = hasattr(model, 'vf_proj') and model.vf_proj is not None
+    print(f"\n✅ 模型加载成功!")
+    print(f"  VA-VAE特性: VF={'✓' if has_vf else '✗'}, Proj={'✓' if has_proj else '✗'}")
+    
     return model
 
 
-def test_reconstruction(model, data_root, num_samples=30, device='cuda'):
-    """测试重建质量"""
-    print("\n" + "="*50)
-    print("🔍 Testing Reconstruction Quality")
-    print("="*50)
+def load_and_preprocess_image(img_path, device='cuda'):
+    """加载并预处理图像"""
+    try:
+        img = Image.open(img_path).convert('RGB')
+        # 调整到256x256
+        img = img.resize((256, 256), Image.LANCZOS)
+        # 转换为numpy数组
+        img_array = np.array(img).astype(np.float32)
+        # 归一化到[-1, 1]
+        img_array = img_array / 127.5 - 1.0
+        # 转换为tensor [H,W,C] -> [C,H,W]
+        img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)
+        # 添加batch维度
+        img_tensor = img_tensor.unsqueeze(0).to(device)
+        return img_tensor
+    except Exception as e:
+        print(f"  ⚠️ 无法加载图像 {img_path}: {e}")
+        return None
+
+
+def evaluate_reconstruction_quality(model, data_root, num_samples=50, device='cuda'):
+    """评估VA-VAE重建质量（核心指标）"""
+    print("\n" + "="*60)
+    print("📊 评估重建质量 (Reconstruction Quality)")
+    print("="*60)
     
     data_path = Path(data_root)
     mse_scores = []
     psnr_scores = []
     
-    sample_count = 0
-    pbar = tqdm(total=num_samples, desc="Processing images")
-    
+    # 收集所有用户的图像路径
+    all_images = []
     for user_id in range(1, 32):
-        if sample_count >= num_samples:
-            break
-            
-        user_folder = data_path / f"ID_{user_id}"
-        if not user_folder.exists():
-            continue
-            
-        images = list(user_folder.glob("*.jpg"))
-        if images:
-            img_path = images[0]  # 取第一张
-            
-            # 加载和预处理
-            img = Image.open(img_path).convert('RGB').resize((256, 256))
-            img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
-            
-            with torch.no_grad():
-                # 编码-解码
-                posterior = model.encode(img_tensor)
-                z = posterior.sample()
-                rec = model.decode(z)
-                
-                # 计算MSE和PSNR
-                mse = F.mse_loss(rec, img_tensor).item()
-                mse_scores.append(mse)
-                psnr = 10 * np.log10(4.0 / mse)  # 范围[-1, 1]
-                psnr_scores.append(psnr)
-            
-            sample_count += 1
-            pbar.update(1)
+        user_folder = data_path / f'user{user_id}'
+        if user_folder.exists():
+            images = sorted(user_folder.glob('*.png'))[:5]  # 每个用户取5张
+            all_images.extend([(img, user_id) for img in images])
     
-    pbar.close()
+    # 随机采样
+    if len(all_images) > num_samples:
+        import random
+        random.seed(42)
+        all_images = random.sample(all_images, num_samples)
+    
+    lpips_fn = None
+    if LPIPS_AVAILABLE:
+        lpips_fn = LPIPS(net='alex').to(device)
+        lpips_scores = []
+    
+    for img_path, user_id in tqdm(all_images, desc="评估重建"):
+        img = load_and_preprocess_image(img_path, device)
+        if img is None:
+            continue
+        
+        with torch.no_grad():
+            # 编码-解码
+            posterior = model.encode(img)
+            z = posterior.sample()
+            rec = model.decode(z)
+            
+            # 确保在[0,1]范围内
+            img_norm = (img + 1.0) / 2.0
+            rec_norm = (rec + 1.0) / 2.0
+            rec_norm = torch.clamp(rec_norm, 0, 1)
+            
+            # MSE（在[0,1]范围内）
+            mse = F.mse_loss(rec_norm, img_norm).item()
+            mse_scores.append(mse)
+            
+            # PSNR
+            psnr = 20 * np.log10(1.0 / np.sqrt(mse)) if mse > 0 else 100
+            psnr_scores.append(psnr)
+            
+            # LPIPS
+            if lpips_fn is not None:
+                lpips_val = lpips_fn(img, rec).item()
+                lpips_scores.append(lpips_val)
     
     # 统计结果
     avg_mse = np.mean(mse_scores)
     std_mse = np.std(mse_scores)
-    avg_psnr = np.mean(psnr_scores)
-    std_psnr = np.std(psnr_scores)
+    results = {
+        'avg_mse': np.mean(mse_scores) if mse_scores else 0,
+        'std_mse': np.std(mse_scores) if mse_scores else 0,
+        'avg_psnr': np.mean(psnr_scores) if psnr_scores else 0,
+        'std_psnr': np.std(psnr_scores) if psnr_scores else 0,
+        'num_samples': len(mse_scores)
+    }
     
-    print(f"📊 Results:")
-    print(f"  MSE: {avg_mse:.6f} ± {std_mse:.6f}")
-    print(f"  PSNR: {avg_psnr:.2f} ± {std_psnr:.2f} dB")
+    if LPIPS_AVAILABLE and lpips_scores:
+        results['avg_lpips'] = np.mean(lpips_scores)
+        results['std_lpips'] = np.std(lpips_scores)
+    
+    # 生成评估报告
+    print(f"\n📊 重建质量评估结果:")
+    print(f"  MSE: {results['avg_mse']:.6f} ± {results['std_mse']:.6f}")
+    print(f"  PSNR: {results['avg_psnr']:.2f} ± {results['std_psnr']:.2f} dB")
+    if 'avg_lpips' in results:
+        print(f"  LPIPS: {results['avg_lpips']:.4f} ± {results['std_lpips']:.4f}")
+    print(f"  样本数: {results['num_samples']}")
+    
+    # 质量评级（基于PSNR和LPIPS）
+    score = 0
+    if results['avg_psnr'] >= 30:
+        score += 3
+    elif results['avg_psnr'] >= 25:
+        score += 2
+    elif results['avg_psnr'] >= 20:
+        score += 1
+    
+    if 'avg_lpips' in results:
+        if results['avg_lpips'] <= 0.1:
+            score += 2
+        elif results['avg_lpips'] <= 0.2:
+            score += 1
+    
+    if score >= 4:
+        grade = "优秀 ⭐⭐⭐"
+    elif score >= 3:
+        grade = "良好 ⭐⭐"
+    elif score >= 2:
+        grade = "合格 ⭐"
+    else:
+        grade = "需改进 ⚠️"
+    
+    print(f"\n🏆 重建质量评级: {grade}")
+    results['grade'] = grade
+    
+    return results
+
+
+def evaluate_vf_alignment(model, data_root, num_samples=30, device='cuda'):
+    """评估Vision Foundation对齐度（VA-VAE核心创新）"""
+    print("\n" + "="*60)
+    print("🎯 评估VF语义对齐 (Vision Foundation Alignment)")
+    print("="*60)
+    
+    # 检查VF模型
+    if not hasattr(model, 'vf_model') or model.vf_model is None:
+        print("⚠️ 模型未配置VF组件，跳过此评估")
+        return None
+    
+    data_path = Path(data_root)
+    cosine_sims = []
+    feature_dists = []
+    
+    # 收集测试样本
+    test_samples = []
+    for user_id in range(1, 32):
+        user_folder = data_path / f'user{user_id}'
+        if user_folder.exists():
+            images = sorted(user_folder.glob('*.png'))[:2]
+            test_samples.extend(images)
+    
+    if len(test_samples) > num_samples:
+        import random
+        random.seed(42)
+        test_samples = random.sample(test_samples, num_samples)
+    
+    print(f"  评估 {len(test_samples)} 个样本的VF对齐度...")
+    
+    for img_path in tqdm(test_samples, desc="计算VF对齐"):
+        img = load_and_preprocess_image(img_path, device)
+        if img is None:
+            continue
+        
+        with torch.no_grad():
+            # 编码-解码
+            posterior = model.encode(img)
+            z = posterior.sample()
+            rec = model.decode(z)
+            
+            # 调整图像范围到VF模型期望的输入
+            # DINOv2期望[0,1]范围的输入
+            img_vf = (img + 1.0) / 2.0
+            rec_vf = (rec + 1.0) / 2.0
+            rec_vf = torch.clamp(rec_vf, 0, 1)
+            
+            # 提取VF特征
+            if hasattr(model.vf_model, 'forward_features'):
+                # DINOv2风格的模型
+                orig_feat = model.vf_model.forward_features(img_vf)
+                rec_feat = model.vf_model.forward_features(rec_vf)
+            else:
+                # 标准模型
+                orig_feat = model.vf_model(img_vf)
+                rec_feat = model.vf_model(rec_vf)
+            
+            # 如果是多层特征，取最后一层
+            if isinstance(orig_feat, (list, tuple)):
+                orig_feat = orig_feat[-1]
+                rec_feat = rec_feat[-1]
+            
+            # 展平特征
+            orig_feat = orig_feat.flatten(1)
+            rec_feat = rec_feat.flatten(1)
+            
+            # 计算余弦相似度
+            cos_sim = F.cosine_similarity(orig_feat, rec_feat, dim=1).mean().item()
+            cosine_sims.append(cos_sim)
+            
+            # 计算L2距离
+            l2_dist = F.mse_loss(orig_feat, rec_feat).item()
+            feature_dists.append(l2_dist)
+    
+    # 统计结果
+    avg_cos_sim = np.mean(cosine_sims)
+    std_cos_sim = np.std(cosine_sims)
+    avg_feature_dist = np.mean(feature_dists)
+    std_feature_dist = np.std(feature_dists)
+    
+    print(f"\n📊 VF对齐度评估结果:")
+    print(f"  余弦相似度: {avg_cos_sim:.4f} ± {std_cos_sim:.4f}")
+    print(f"  特征距离: {avg_feature_dist:.4f} ± {std_feature_dist:.4f}")
     
     # 评级
-    if avg_mse < 0.01:
-        grade = "Excellent ⭐⭐⭐"
-    elif avg_mse < 0.02:
-        grade = "Good ⭐⭐"
+    if avg_cos_sim >= 0.95:
+        grade = "优秀 ⭐⭐⭐"
+    elif avg_cos_sim >= 0.90:
+        grade = "良好 ⭐⭐"
     else:
-        grade = "Fair ⭐"
-    print(f"  Grade: {grade}")
+        grade = "一般 ⭐"
+    
+    print(f"\n🏆 VF对齐度评级: {grade}")
     
     return {
-        'mse': avg_mse,
-        'mse_std': std_mse,
-        'psnr': avg_psnr,
-        'psnr_std': std_psnr,
+        'avg_cos_sim': avg_cos_sim,
+        'std_cos_sim': std_cos_sim,
+        'avg_feature_dist': avg_feature_dist,
+        'std_feature_dist': std_feature_dist,
         'grade': grade
     }
 
 
-def test_vf_alignment(model, data_root, num_samples=20, device='cuda'):
-    """测试VF对齐"""
-    print("\n" + "="*50)
-    print("🔍 Testing Vision Foundation Alignment")
-    print("="*50)
-    
-    # 检查VF模型
-    if not hasattr(model, 'vf_model') or model.vf_model is None:
-        print("⚠️ No VF model found, skipping test")
-        return None
-    
-    data_path = Path(data_root)
-    similarities = []
-    
-    sample_count = 0
-    pbar = tqdm(total=num_samples, desc="Processing VF alignment")
-    
-    for user_id in range(1, 32):
-        if sample_count >= num_samples:
-            break
-            
-        user_folder = data_path / f"ID_{user_id}"
-        if not user_folder.exists():
-            continue
-            
-        images = list(user_folder.glob("*.jpg"))
-        if images:
-            img_path = images[0]
-            
-            img = Image.open(img_path).convert('RGB').resize((256, 256))
-            img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
-            
-            with torch.no_grad():
-                # 原始图像的VF特征
-                vf_input = F.interpolate(img_tensor, size=(224, 224), mode='bilinear', align_corners=False)
-                vf_input = (vf_input + 1.0) / 2.0
-                orig_features = model.vf_model.forward_features(vf_input)['x_norm_clstoken']
-                
-                # 重建图像
-                posterior = model.encode(img_tensor)
-                z = posterior.sample()
-                rec = model.decode(z)
-                
-                # 重建图像的VF特征
-                rec_vf_input = F.interpolate(rec, size=(224, 224), mode='bilinear', align_corners=False)
-                rec_vf_input = (rec_vf_input + 1.0) / 2.0
-                rec_features = model.vf_model.forward_features(rec_vf_input)['x_norm_clstoken']
-                
-                # 计算余弦相似度
-                cos_sim = F.cosine_similarity(orig_features, rec_features, dim=1).mean().item()
-                similarities.append(cos_sim)
-            
-            sample_count += 1
-            pbar.update(1)
-    
-    pbar.close()
-    
-    if similarities:
-        avg_sim = np.mean(similarities)
-        std_sim = np.std(similarities)
-        
-        print(f"📊 Results:")
-        print(f"  VF Similarity: {avg_sim:.4f} ± {std_sim:.4f}")
-        
-        # 评级
-        if avg_sim > 0.95:
-            grade = "Excellent ⭐⭐⭐"
-        elif avg_sim > 0.90:
-            grade = "Good ⭐⭐"
-        else:
-            grade = "Fair ⭐"
-        print(f"  Grade: {grade}")
-        
-        return {
-            'similarity': avg_sim,
-            'similarity_std': std_sim,
-            'grade': grade
-        }
-    
-    return None
-
-
-def test_user_discrimination(model, data_root, samples_per_user=10, device='cuda'):
-    """测试用户区分能力"""
-    print("\n" + "="*50)
-    print("🔍 Testing User Discrimination")
-    print("="*50)
+def evaluate_user_discrimination(model, data_root, samples_per_user=10, device='cuda'):
+    """评估用户区分能力（微多普勒特定）"""
+    print("\n" + "="*60)
+    print("👥 评估用户区分能力 (User Discrimination)")
+    print("="*60)
     
     data_path = Path(data_root)
     user_features = {}
@@ -265,25 +388,25 @@ def test_user_discrimination(model, data_root, samples_per_user=10, device='cuda
     all_labels = []
     
     # 提取每个用户的特征
-    for user_id in tqdm(range(1, 32), desc="Extracting user features"):
-        user_folder = data_path / f"ID_{user_id}"
+    for user_id in tqdm(range(1, 32), desc="提取用户特征"):
+        user_folder = data_path / f"user{user_id}"
         if not user_folder.exists():
             continue
         
         features = []
-        images = list(user_folder.glob("*.jpg"))[:samples_per_user]
+        images = list(user_folder.glob("*.png"))[:samples_per_user]
         
         for img_path in images:
-            img = Image.open(img_path).convert('RGB').resize((256, 256))
-            img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
+            img_tensor = load_and_preprocess_image(img_path, device)
+            if img_tensor is None:
+                continue
             
             with torch.no_grad():
                 # 获取潜在特征
                 posterior = model.encode(img_tensor)
                 z = posterior.sample()
                 
-                # 全局池化
+                # 全局池化得到特征向量
                 z_pooled = z.mean(dim=[2, 3]).cpu().numpy().flatten()
                 features.append(z_pooled)
                 all_features.append(z_pooled)
@@ -293,15 +416,14 @@ def test_user_discrimination(model, data_root, samples_per_user=10, device='cuda
             user_features[user_id] = np.mean(features, axis=0)
     
     if len(user_features) < 2:
-        print("⚠️ Not enough users for discrimination analysis")
+        print("⚠️ 用户数不足，无法进行区分分析")
         return None
     
-    # 计算Silhouette分数
-    all_features_array = np.array(all_features)
-    all_labels_array = np.array(all_labels)
-    
+    # 计算Silhouette分数（如果sklearn可用）
     silhouette = 0
-    if len(np.unique(all_labels_array)) > 1:
+    if SKLEARN_AVAILABLE and len(np.unique(all_labels)) > 1:
+        all_features_array = np.array(all_features)
+        all_labels_array = np.array(all_labels)
         silhouette = silhouette_score(all_features_array, all_labels_array)
     
     # 计算类间/类内距离比
@@ -318,34 +440,38 @@ def test_user_discrimination(model, data_root, samples_per_user=10, device='cuda
             inter_distances.append(dist)
     
     # 类内距离
-    for user_id in np.unique(all_labels_array):
-        user_mask = all_labels_array == user_id
-        user_feats = all_features_array[user_mask]
-        if len(user_feats) > 1:
-            for i in range(len(user_feats)):
-                for j in range(i+1, len(user_feats)):
-                    dist = np.linalg.norm(user_feats[i] - user_feats[j])
-                    intra_distances.append(dist)
+    if all_features:
+        all_features_array = np.array(all_features)
+        all_labels_array = np.array(all_labels)
+        for user_id in np.unique(all_labels_array):
+            user_mask = all_labels_array == user_id
+            user_feats = all_features_array[user_mask]
+            if len(user_feats) > 1:
+                for i in range(len(user_feats)):
+                    for j in range(i+1, len(user_feats)):
+                        dist = np.linalg.norm(user_feats[i] - user_feats[j])
+                        intra_distances.append(dist)
     
     avg_intra = np.mean(intra_distances) if intra_distances else 0
     avg_inter = np.mean(inter_distances) if inter_distances else 0
     ratio = avg_inter / avg_intra if avg_intra > 0 else 0
     
-    print(f"📊 Results:")
-    print(f"  Silhouette Score: {silhouette:.4f}")
-    print(f"  Intra-class distance: {avg_intra:.4f}")
-    print(f"  Inter-class distance: {avg_inter:.4f}")
-    print(f"  Ratio (inter/intra): {ratio:.4f}")
-    print(f"  Number of users: {len(user_features)}")
+    print(f"📊 结果:")
+    if SKLEARN_AVAILABLE:
+        print(f"  Silhouette分数: {silhouette:.4f}")
+    print(f"  类内距离: {avg_intra:.4f}")
+    print(f"  类间距离: {avg_inter:.4f}")
+    print(f"  类间/类内比: {ratio:.4f}")
+    print(f"  用户数: {len(user_features)}")
     
     # 评级
     if ratio > 2.0:
-        grade = "Excellent ⭐⭐⭐"
+        grade = "优秀 ⭐⭐⭐"
     elif ratio > 1.5:
-        grade = "Good ⭐⭐"
+        grade = "良好 ⭐⭐"
     else:
-        grade = "Fair ⭐"
-    print(f"  Grade: {grade}")
+        grade = "一般 ⭐"
+    print(f"  评级: {grade}")
     
     return {
         'silhouette_score': silhouette,
@@ -357,70 +483,66 @@ def test_user_discrimination(model, data_root, samples_per_user=10, device='cuda
     }
 
 
-def extract_latent_statistics(model, data_root, num_samples=100, device='cuda'):
-    """提取潜在空间统计"""
-    print("\n" + "="*50)
-    print("📊 Extracting Latent Space Statistics")
-    print("="*50)
+def compute_latent_statistics(model, data_root, num_samples=100, device='cuda'):
+    """计算潜在空间统计信息（用于DiT训练）"""
+    print("\n" + "="*60)
+    print("📡 计算潜在空间统计 (Latent Statistics)")
+    print("="*60)
     
     data_path = Path(data_root)
     all_latents = []
     
+    # 收集样本
     sample_count = 0
-    for user_id in tqdm(range(1, 32), desc="Processing latents"):
+    for user_id in range(1, 32):
         if sample_count >= num_samples:
             break
-            
-        user_folder = data_path / f"ID_{user_id}"
+        user_folder = data_path / f'user{user_id}'
         if not user_folder.exists():
             continue
-            
-        images = list(user_folder.glob("*.jpg"))[:5]
         
+        images = sorted(user_folder.glob('*.png'))[:5]
         for img_path in images:
             if sample_count >= num_samples:
                 break
-                
-            img = Image.open(img_path).convert('RGB').resize((256, 256))
-            img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
+            
+            img = load_and_preprocess_image(img_path, device)
+            if img is None:
+                continue
             
             with torch.no_grad():
-                posterior = model.encode(img_tensor)
+                posterior = model.encode(img)
                 z = posterior.sample()
-                all_latents.append(z.cpu().numpy())
-            
-            sample_count += 1
+                all_latents.append(z.cpu())
+                sample_count += 1
     
-    # 计算统计
-    all_latents = np.concatenate(all_latents, axis=0)
-    mean = np.mean(all_latents)
-    std = np.std(all_latents)
+    if not all_latents:
+        print("  ⚠️ 无法收集潜在特征")
+        return None
     
-    print(f"  Latent mean: {mean:.6f}")
-    print(f"  Latent std: {std:.6f}")
-    print(f"  Latent shape: {all_latents.shape}")
+    # 计算统计信息
+    all_latents = torch.cat(all_latents, dim=0)
+    mean = all_latents.mean(dim=0)
+    std = all_latents.std(dim=0)
     
-    # 评估
-    if abs(mean) < 0.1 and 0.8 < std < 1.2:
-        status = "✅ Well-normalized"
-    else:
-        status = "⚠️ Needs regularization"
-    print(f"  Status: {status}")
+    print(f"  潜在空间维度: {list(mean.shape)}")
+    print(f"  均值范围: [{mean.min():.4f}, {mean.max():.4f}]")
+    print(f"  标准差范围: [{std.min():.4f}, {std.max():.4f}]")
+    print(f"  样本数: {len(all_latents)}")
     
     return {
-        'mean': float(mean),
-        'std': float(std),
-        'shape': list(all_latents.shape),
-        'status': status
+        'mean': mean,
+        'std': std,
+        'shape': list(mean.shape),
+        'num_samples': len(all_latents)
     }
 
 
-def export_encoder_decoder(model, checkpoint_path):
-    """导出编码器和解码器"""
-    print("\n" + "="*50)
-    print("💾 Exporting Encoder and Decoder")
-    print("="*50)
+def export_encoder_decoder(model, checkpoint_path, output_dir):
+    """导出编码器和解码器用于DiT训练"""
+    print("\n" + "="*60)
+    print("💾 导出编码器和解码器 (Export for DiT)")
+    print("="*60)
     
     # 导出编码器
     encoder_path = checkpoint_path.replace('.pt', '_encoder.pt')
@@ -435,7 +557,7 @@ def export_encoder_decoder(model, checkpoint_path):
         }
     }
     torch.save(encoder_state, encoder_path)
-    print(f"✅ Encoder exported to: {encoder_path}")
+    print(f"✅ 编码器已导出: {encoder_path}")
     
     # 导出解码器
     decoder_path = checkpoint_path.replace('.pt', '_decoder.pt')
@@ -445,98 +567,96 @@ def export_encoder_decoder(model, checkpoint_path):
         'embed_dim': model.embed_dim if hasattr(model, 'embed_dim') else 32
     }
     torch.save(decoder_state, decoder_path)
-    print(f"✅ Decoder exported to: {decoder_path}")
+    print(f"✅ 解码器已导出: {decoder_path}")
     
     return encoder_path, decoder_path
 
 
-def generate_report(results, checkpoint_path):
-    """生成综合报告"""
+def generate_report(results):
+    """生成综合验证报告"""
     print("\n" + "="*60)
-    print("📋 COMPREHENSIVE VALIDATION REPORT")
+    print("📋 综合验证报告 (Validation Report)")
     print("="*60)
     
     # 重建质量
     if 'reconstruction' in results:
         rec = results['reconstruction']
-        print(f"\n1️⃣ Reconstruction Quality:")
-        print(f"   MSE: {rec['mse']:.6f} ± {rec['mse_std']:.6f}")
-        print(f"   PSNR: {rec['psnr']:.2f} ± {rec['psnr_std']:.2f} dB")
-        print(f"   {rec['grade']}")
+        print(f"\n1️⃣ 重建质量 (Reconstruction):")
+        print(f"   MSE: {rec.get('avg_mse', 0):.6f} ± {rec.get('std_mse', 0):.6f}")
+        print(f"   PSNR: {rec.get('avg_psnr', 0):.2f} ± {rec.get('std_psnr', 0):.2f} dB")
+        if 'avg_lpips' in rec:
+            print(f"   LPIPS: {rec['avg_lpips']:.4f} ± {rec['std_lpips']:.4f}")
+        print(f"   评级: {rec.get('grade', 'N/A')}")
     
     # VF对齐
     if 'vf_alignment' in results and results['vf_alignment']:
         vf = results['vf_alignment']
-        print(f"\n2️⃣ Vision Foundation Alignment:")
-        print(f"   Similarity: {vf['similarity']:.4f} ± {vf['similarity_std']:.4f}")
-        print(f"   {vf['grade']}")
+        print(f"\n2️⃣ Vision Foundation对齐:")
+        print(f"   余弦相似度: {vf.get('avg_cos_sim', 0):.4f} ± {vf.get('std_cos_sim', 0):.4f}")
+        print(f"   L2距离: {vf.get('avg_feature_dist', 0):.6f} ± {vf.get('std_feature_dist', 0):.6f}")
+        print(f"   评级: {vf.get('grade', 'N/A')}")
     
     # 用户区分
     if 'user_discrimination' in results and results['user_discrimination']:
         disc = results['user_discrimination']
-        print(f"\n3️⃣ User Discrimination:")
-        print(f"   Silhouette Score: {disc['silhouette_score']:.4f}")
-        print(f"   Inter/Intra Ratio: {disc['ratio']:.4f}")
-        print(f"   {disc['grade']}")
-    
-    # 潜在统计
-    if 'latent_statistics' in results:
-        lat = results['latent_statistics']
-        print(f"\n4️⃣ Latent Space Statistics:")
-        print(f"   Mean: {lat['mean']:.6f}, Std: {lat['std']:.6f}")
-        print(f"   {lat['status']}")
+        print(f"\n3️⃣ 用户区分能力 (User Discrimination):")
+        if SKLEARN_AVAILABLE and 'silhouette_score' in disc:
+            print(f"   Silhouette分数: {disc['silhouette_score']:.4f}")
+        print(f"   类间距离: {disc.get('inter_distance', 0):.4f}")
+        print(f"   类内距离: {disc.get('intra_distance', 0):.4f}")
+        print(f"   类间/类内比: {disc.get('ratio', 0):.4f}")
+        print(f"   评级: {disc.get('grade', 'N/A')}")
     
     # 总体评估
     print("\n" + "="*60)
-    print("🎯 OVERALL ASSESSMENT")
+    print("🎯 总体评估")
     print("="*60)
     
     rec_ok = results.get('reconstruction', {}).get('mse', 1.0) < 0.02
     disc_ok = results.get('user_discrimination', {}).get('ratio', 0) > 1.5
     
     if rec_ok and disc_ok:
-        print("✅ Model is ready for DiT training!")
-        print("   Both reconstruction and user discrimination meet requirements")
+        print("✅ 模型已准备好进行DiT训练!")
+        print("   重建质量和用户区分能力均达标")
     elif rec_ok:
-        print("⚠️ Model has good reconstruction but weak user discrimination")
-        print("   Consider training with stronger user contrastive loss")
+        print("⚠️ 模型重建质量良好但用户区分能力较弱")
+        print("   建议增强用户对比损失进行训练")
     elif disc_ok:
-        print("⚠️ Model has good user discrimination but poor reconstruction")
-        print("   Consider adjusting reconstruction loss weights")
+        print("⚠️ 模型用户区分能力良好但重建质量较差")
+        print("   建议调整重建损失权重")
     else:
-        print("❌ Model needs more training")
-        print("   Both metrics need improvement")
+        print("❌ 模型需要更多训练")
+        print("   各项指标均需提升")
     
     # 保存JSON报告
+    from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = f"validation_report_{timestamp}.json"
     with open(report_path, 'w') as f:
         json.dump(results, f, indent=2)
-    print(f"\n📝 Report saved to: {report_path}")
+    print(f"\n📝 报告已保存: {report_path}")
     
     return results
 
 
 def main():
-    parser = argparse.ArgumentParser(description='VA-VAE Model Validation')
+    parser = argparse.ArgumentParser(description='VA-VAE模型验证与导出')
     parser.add_argument('--checkpoint', type=str, required=True,
-                       help='Path to model checkpoint')
+                       help='模型checkpoint路径')
     parser.add_argument('--data_root', type=str, default='/kaggle/input/dataset',
-                       help='Path to dataset')
+                       help='数据集路径')
     parser.add_argument('--device', type=str, default='cuda',
-                       help='Device to use (cuda/cpu)')
+                       help='设备 (cuda/cpu)')
     parser.add_argument('--test_reconstruction', action='store_true', default=True,
-                       help='Test reconstruction quality')
+                       help='测试重建质量')
     parser.add_argument('--test_vf', action='store_true',
-                       help='Test VF alignment')
+                       help='测试VF对齐')
     parser.add_argument('--test_discrimination', action='store_true',
-                       help='Test user discrimination')
-    parser.add_argument('--test_latents', action='store_true',
-                       help='Extract latent statistics')
+                       help='测试用户区分')
     parser.add_argument('--export_models', action='store_true',
-                       help='Export encoder/decoder for DiT')
+                       help='导出编码器/解码器')
     parser.add_argument('--full_test', action='store_true',
-                       help='Run all tests')
+                       help='运行所有测试')
     
     args = parser.parse_args()
     
@@ -544,7 +664,6 @@ def main():
     if args.full_test:
         args.test_vf = True
         args.test_discrimination = True
-        args.test_latents = True
         args.export_models = True
     
     # 加载模型
@@ -571,13 +690,7 @@ def main():
             model, args.data_root, device=args.device
         )
     
-    # 4. 潜在空间统计
-    if args.test_latents:
-        results['latent_statistics'] = extract_latent_statistics(
-            model, args.data_root, device=args.device
-        )
-    
-    # 5. 导出模型
+    # 4. 导出模型
     if args.export_models:
         encoder_path, decoder_path = export_encoder_decoder(model, args.checkpoint)
         results['exported_models'] = {
@@ -586,16 +699,252 @@ def main():
         }
     
     # 生成报告
-    generate_report(results, args.checkpoint)
+    generate_report(results)
     
     # 使用提示
     if not args.full_test:
-        print("\n💡 Tips:")
-        print("  • Use --full_test to run all validation tests")
-        print("  • Use --test_vf to test VF alignment")
-        print("  • Use --test_discrimination to test user discrimination")
-        print("  • Use --export_models to export for DiT training")
+        print("\n💡 提示:")
+        print("  • 使用 --full_test 运行所有验证测试")
+        print("  • 使用 --test_vf 测试VF对齐")
+        print("  • 使用 --test_discrimination 测试用户区分")
+        print("  • 使用 --export_models 导出用于DiT训练")
 
 
 if __name__ == '__main__':
     main()
+
+
+def extract_latent_statistics(model, dataset_root, split_file, device='cuda'):
+    """提取潜在空间统计信息"""
+    print("\n📈 提取潜在空间统计...")
+    
+    model = model.to(device)
+    
+    with open(split_file, 'r') as f:
+        split_data = json.load(f)
+    
+    # 使用训练集数据
+    if isinstance(split_data['train'], list):
+        train_data = split_data['train']
+    else:
+        train_data = list(split_data['train'].values())
+    
+    all_latents = []
+    
+    with torch.no_grad():
+        processed_count = 0
+        
+        for user_paths in tqdm(train_data, desc="编码图像"):
+            if processed_count >= 500:
+                break
+                
+            if isinstance(user_paths, list):
+                selected_paths = user_paths[:min(5, len(user_paths))]  # 每用户最多5张
+            else:
+                selected_paths = [user_paths]
+            
+            for img_path_str in selected_paths:
+                if processed_count >= 500:
+                    break
+                    
+                img_path = Path(img_path_str)
+                if not img_path.exists():
+                    continue
+                
+                img = Image.open(img_path).convert('RGB').resize((256, 256))
+                img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
+                img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
+                
+                posterior = model.encode(img_tensor)
+                z = posterior.sample()
+                
+                all_latents.append(z.cpu())
+                processed_count += 1
+    
+    # 计算统计
+    all_latents = torch.cat(all_latents, dim=0)
+    mean = all_latents.mean(dim=[0, 2, 3])
+    std = all_latents.std(dim=[0, 2, 3])
+    
+    stats = {
+        'global_mean': mean.numpy().tolist(),
+        'global_std': std.numpy().tolist(),
+        'num_samples': len(all_latents),
+        'latent_dim': all_latents.shape[1],
+        'spatial_size': [all_latents.shape[2], all_latents.shape[3]]
+    }
+    
+    stats_path = 'latent_statistics.json'
+    with open(stats_path, 'w') as f:
+        json.dump(stats, f, indent=2)
+    
+    print(f"✅ 潜在空间统计已保存至: {stats_path}")
+    print(f"   潜在维度: {stats['latent_dim']}")
+    print(f"   空间尺寸: {stats['spatial_size']}")
+    print(f"   样本数量: {stats['num_samples']}")
+    
+    return stats
+
+
+def export_encoder_for_dit(model, checkpoint_path, output_path=None):
+    """导出编码器供DiT训练使用"""
+    
+    print("\n🎯 导出编码器供DiT训练...")
+    
+    if output_path is None:
+        checkpoint_name = Path(checkpoint_path).stem
+        output_path = f"encoder_decoder_{checkpoint_name}.pt"
+    
+    # 提取编码器和解码器状态
+    state_dict = model.state_dict()
+    encoder_decoder_state = {k: v for k, v in state_dict.items() 
+                             if 'encoder' in k or 'decoder' in k or 'quant' in k}
+    
+    # 保存配置信息
+    config_info = {
+        'embed_dim': getattr(model, 'embed_dim', 32),
+        'z_channels': getattr(model, 'z_channels', 32),
+        'use_vf': getattr(model, 'use_vf', 'dinov2'),
+        'reverse_proj': getattr(model, 'reverse_proj', True),
+        'resolution': 256,
+        'type': 'vavae_encoder_decoder'
+    }
+    
+    checkpoint = {
+        'state_dict': encoder_decoder_state,
+        'config': config_info
+    }
+    
+    torch.save(checkpoint, output_path)
+    print(f"✅ 编码器已导出至: {output_path}")
+    
+    # 检查文件大小
+    file_size = Path(output_path).stat().st_size / (1024 * 1024)
+    print(f"   文件大小: {file_size:.2f} MB")
+    
+    return output_path
+
+
+# 以下函数已被前面的main()函数替代，这里是扩展功能
+def validate_reconstruction_extended(model, data_root, split_file=None, device='cuda'):
+    """扩展的重建验证功能"""
+    print("\n" + "="*60)
+    print("🔍 执行扩展重建质量验证")
+    print("="*60)
+    
+    # 如果没有split_file，使用所有用户数据
+    user_dirs = sorted([d for d in Path(data_root).iterdir() if d.is_dir() and d.name.startswith('user')])
+    if not user_dirs:
+        print("❌ 未找到用户数据目录")
+        return None, None
+    
+    # 对每个用户计算指标
+    all_mse = []
+    all_psnr = []
+    
+    for user_dir in user_dirs[:5]:  # 测试前5个用户
+        print(f"\n📊 测试用户: {user_dir.name}")
+        img_files = list(user_dir.glob('*.png')) + list(user_dir.glob('*.jpg'))
+        
+        if not img_files:
+            continue
+            
+        # 随机选择3张图片
+        selected = np.random.choice(img_files, min(3, len(img_files)), replace=False)
+        
+        for img_path in selected:
+            img = load_and_preprocess_image(str(img_path), device)
+            
+            # 编码和解码
+            with torch.no_grad():
+                posterior = model.encode(img)
+                z = posterior.sample()
+                rec = model.decode(z)
+            
+            # 计算指标
+            mse = F.mse_loss(rec, img).item()
+            psnr = 10 * torch.log10(4.0 / torch.tensor(mse)).item()
+            
+            all_mse.append(mse)
+            all_psnr.append(psnr)
+            
+            print(f"   {img_path.name}: MSE={mse:.6f}, PSNR={psnr:.2f}dB")
+    
+    # 计算平均值
+    avg_mse = np.mean(all_mse) if all_mse else 0
+    avg_psnr = np.mean(all_psnr) if all_psnr else 0
+    
+    print(f"\n📈 总体结果:")
+    print(f"   平均MSE: {avg_mse:.6f}")
+    print(f"   平均PSNR: {avg_psnr:.2f} dB")
+    
+    return avg_mse, avg_psnr
+    
+def export_encoder_for_dit_extended(model, checkpoint_path, output_path):
+    """导出编码器供DiT训练使用 - 扩展版本"""
+    print("\n" + "="*60)
+    print("💾 导出VA-VAE编码器 (用于DiT训练)")
+    print("="*60)
+    
+    # 提取编码器相关权重
+    state_dict = model.state_dict()
+    encoder_state = {}
+    
+    for key, value in state_dict.items():
+        if 'encoder' in key or 'quant_conv' in key:
+            encoder_state[key] = value
+            print(f"   ✓ 导出: {key} [{list(value.shape)}]")
+    
+    # 保存配置信息
+    config_info = {
+        'model_type': 'VA-VAE',
+        'embed_dim': getattr(model, 'embed_dim', 32),
+        'z_channels': getattr(model, 'z_channels', 32),
+        'use_vf': True,
+        'resolution': 256,
+        'checkpoint_source': checkpoint_path
+    }
+    
+    # 打包保存
+    checkpoint = {
+        'state_dict': encoder_state,
+        'config': config_info,
+        'export_time': datetime.now().isoformat()
+    }
+    
+    torch.save(checkpoint, output_path)
+    print(f"\n✅ 编码器已导出至: {output_path}")
+    
+    # 文件信息
+    file_size = Path(output_path).stat().st_size / (1024 * 1024)
+    print(f"   文件大小: {file_size:.2f} MB")
+    print(f"   包含 {len(encoder_state)} 个参数组")
+    
+    return output_path
+    
+# 注意：主执行逻辑已在前面的main()函数中实现
+# 这里可以添加额外的辅助函数
+        
+def print_usage_instructions():
+    """打印使用说明"""
+    print("\n" + "="*60)
+    print("📚 VA-VAE验证工具使用说明")
+    print("="*60)
+    print("\n基础用法:")
+    print("  python step5_validate_export.py --checkpoint <path> [options]")
+    print("\n常用选项:")
+    print("  --checkpoint PATH       : 模型checkpoint路径 (必需)")
+    print("  --data_root PATH       : 数据集路径 (默认: /kaggle/input/dataset)")
+    print("  --full_test            : 运行所有测试")
+    print("  --test_reconstruction  : 测试重建质量")
+    print("  --test_vf              : 测试VF对齐")
+    print("  --test_discrimination  : 测试用户区分")
+    print("  --export_models        : 导出编码器/解码器")
+    print("\n示例:")
+    print("  # 运行完整测试")
+    print("  python step5_validate_export.py --checkpoint model.pt --full_test")
+    print("  \n  # 只测试重建质量")
+    print("  python step5_validate_export.py --checkpoint model.pt --test_reconstruction")
+    print("="*60)
+
+# 脚本结束
