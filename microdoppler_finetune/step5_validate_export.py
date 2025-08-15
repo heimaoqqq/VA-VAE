@@ -162,7 +162,12 @@ def load_and_preprocess_image(img_path, device='cuda'):
         return None
 
 
-def evaluate_reconstruction_quality(model, data_root, num_samples=50, device='cuda'):
+def test_reconstruction(model, data_root, split_file=None, device='cuda'):
+    """测试重建质量（简化版）"""
+    return evaluate_reconstruction_quality(model, data_root, split_file, device=device)
+
+
+def evaluate_reconstruction_quality(model, data_root, split_file=None, num_samples=50, device='cuda'):
     """评估VA-VAE重建质量（核心指标）"""
     print("\n" + "="*60)
     print("📊 评估重建质量 (Reconstruction Quality)")
@@ -172,13 +177,23 @@ def evaluate_reconstruction_quality(model, data_root, num_samples=50, device='cu
     mse_scores = []
     psnr_scores = []
     
-    # 收集所有用户的图像路径
+    # 加载数据划分
     all_images = []
-    for user_id in range(1, 32):
-        user_folder = data_path / f'user{user_id}'
-        if user_folder.exists():
-            images = sorted(user_folder.glob('*.png'))[:5]  # 每个用户取5张
-            all_images.extend([(img, user_id) for img in images])
+    if split_file and os.path.exists(split_file):
+        with open(split_file, 'r') as f:
+            split_data = json.load(f)
+        # 使用验证集数据
+        for user_id, user_data in split_data.items():
+            val_images = user_data.get('val', [])
+            for img_path in val_images[:5]:  # 每个用户取5张
+                all_images.append((img_path, int(user_id.replace('user', ''))))
+    else:
+        # 兼容旧版：直接从文件夹读取
+        for user_id in range(1, 32):
+            user_folder = data_path / f'user{user_id}'
+            if user_folder.exists():
+                images = sorted(user_folder.glob('*.jpg'))[:5]
+                all_images.extend([(str(img), user_id) for img in images])
     
     # 随机采样
     if len(all_images) > num_samples:
@@ -271,6 +286,11 @@ def evaluate_reconstruction_quality(model, data_root, num_samples=50, device='cu
     results['grade'] = grade
     
     return results
+
+
+def test_vf_alignment(model, data_root, split_file=None, num_samples=50, device='cuda'):
+    """评估Vision Foundation对齐度（VA-VAE核心创新）"""
+    return evaluate_vf_alignment(model, data_root, split_file, num_samples, device)
 
 
 def evaluate_vf_alignment(model, data_root, num_samples=30, device='cuda'):
@@ -374,6 +394,11 @@ def evaluate_vf_alignment(model, data_root, num_samples=30, device='cuda'):
         'std_feature_dist': std_feature_dist,
         'grade': grade
     }
+
+
+def test_user_discrimination(model, data_root, split_file=None, num_users=10, samples_per_user=10, device='cuda'):
+    """评估用户区分能力（微多普勒特定）"""
+    return evaluate_user_discrimination(model, data_root, split_file, num_users, samples_per_user, device)
 
 
 def evaluate_user_discrimination(model, data_root, samples_per_user=10, device='cuda'):
@@ -645,6 +670,8 @@ def main():
                        help='模型checkpoint路径')
     parser.add_argument('--data_root', type=str, default='/kaggle/input/dataset',
                        help='数据集路径')
+    parser.add_argument('--split_file', type=str, default='/kaggle/working/data_split/dataset_split.json',
+                       help='数据划分文件路径')
     parser.add_argument('--device', type=str, default='cuda',
                        help='设备 (cuda/cpu)')
     parser.add_argument('--test_reconstruction', action='store_true', default=True,
@@ -657,11 +684,13 @@ def main():
                        help='导出编码器/解码器')
     parser.add_argument('--full_test', action='store_true',
                        help='运行所有测试')
+    parser.add_argument('--comprehensive', action='store_true',
+                       help='运行所有测试（同--full_test）')
     
     args = parser.parse_args()
     
-    # 如果指定full_test，启用所有测试
-    if args.full_test:
+    # 如果指定full_test或comprehensive，启用所有测试
+    if args.full_test or args.comprehensive:
         args.test_vf = True
         args.test_discrimination = True
         args.export_models = True
@@ -675,19 +704,19 @@ def main():
     # 1. 重建质量测试（默认开启）
     if args.test_reconstruction:
         results['reconstruction'] = test_reconstruction(
-            model, args.data_root, device=args.device
+            model, args.data_root, args.split_file, device=args.device
         )
     
     # 2. VF对齐测试
     if args.test_vf:
         results['vf_alignment'] = test_vf_alignment(
-            model, args.data_root, device=args.device
+            model, args.data_root, args.split_file, device=args.device
         )
     
     # 3. 用户区分测试
     if args.test_discrimination:
         results['user_discrimination'] = test_user_discrimination(
-            model, args.data_root, device=args.device
+            model, args.data_root, args.split_file, device=args.device
         )
     
     # 4. 导出模型
