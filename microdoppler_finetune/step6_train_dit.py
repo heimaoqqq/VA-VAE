@@ -292,8 +292,9 @@ def train_dit(rank=0, world_size=1):
         logger.info("=== 准备数据集 ===")
     
     # 首先尝试生成潜空间（如果需要）
+    # 修改为正确的数据集路径 - 与step3_prepare_dataset.py一致
     data_dir = Path("/kaggle/input/dataset")
-    latents_file = data_dir / 'latents_microdoppler.npz'
+    latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'  # 保存到可写目录
     
     # 只在主进程中预计算潜空间，避免多进程冲突
     if not latents_file.exists() and is_main_process():
@@ -542,23 +543,42 @@ def encode_dataset_to_latents(vae, data_dir, device):
     """预计算数据集的潜空间表示"""
     logger.info("Encoding dataset to latent space...")
     
-    data_path = data_dir / 'processed_microdoppler'
+    # 数据集直接在data_dir下，不需要processed_microdoppler子目录
+    data_path = data_dir
     latents_list = []
     user_ids_list = []
     
-    for user_dir in sorted(data_path.glob('ID_*')):
+    # 首先检查目录是否存在
+    if not data_path.exists():
+        logger.error(f"数据目录不存在: {data_path}")
+        logger.info("请先运行 step3_prepare_dataset.py 准备数据集")
+        raise FileNotFoundError(f"Data directory not found: {data_path}")
+    
+    # 列出所有用户目录
+    user_dirs = list(data_path.glob('ID_*'))
+    if not user_dirs:
+        logger.error(f"未找到用户目录 (ID_*) 在: {data_path}")
+        logger.info(f"当前目录内容: {list(data_path.iterdir())[:5]}...")
+        raise FileNotFoundError(f"No user directories found in {data_path}")
+    
+    for user_dir in sorted(user_dirs):
         user_id = int(user_dir.name.split('_')[1]) - 1
         
-        for img_path in tqdm(list(user_dir.glob('*.png')), desc=f"Encoding {user_dir.name}"):
+        # 修改为正确的文件扩展名 - 数据集是jpg格式
+        img_files = list(user_dir.glob('*.jpg'))
+        if not img_files:
+            logger.warning(f"用户目录 {user_dir.name} 中没有JPG文件")
+            continue
+            
+        for img_path in tqdm(img_files, desc=f"Encoding {user_dir.name}"):
             # 加载图像
             image = Image.open(img_path).convert('RGB')
             image = torch.from_numpy(np.array(image)).float() / 127.5 - 1.0
             image = image.permute(2, 0, 1).unsqueeze(0).to(device)
             
-            # 编码到潜空间
+            # 编码到潜空间 - 使用VA_VAE的encode_images方法
             with torch.no_grad():
-                posterior = vae.encode(image)
-                latent = posterior.sample() if hasattr(posterior, 'sample') else posterior
+                latent = vae.encode_images(image)
             
             latents_list.append(latent.cpu().numpy())
             user_ids_list.append(user_id)
@@ -567,7 +587,8 @@ def encode_dataset_to_latents(vae, data_dir, device):
     latents = np.concatenate(latents_list, axis=0)
     user_ids = np.array(user_ids_list)
     
-    save_path = data_dir / 'latents_microdoppler.npz'
+    # 保存到可写目录
+    save_path = Path("/kaggle/working") / 'latents_microdoppler.npz'
     np.savez(save_path, latents=latents, user_ids=user_ids)
     logger.info(f"Saved {len(latents)} latent samples to {save_path}")
 
