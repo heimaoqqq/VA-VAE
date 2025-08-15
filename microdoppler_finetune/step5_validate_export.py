@@ -229,9 +229,52 @@ def load_model(checkpoint_path, config_path=None, device='cuda'):
     model = model.to(device)
     model.eval()
     
-    # 检查VA-VAE特性
-    has_vf = hasattr(model, 'vf_model') and model.vf_model is not None
-    has_proj = hasattr(model, 'vf_proj') and model.vf_proj is not None
+    # 检查VA-VAE特性 - 更全面的检测
+    has_vf = False
+    has_proj = False
+    
+    # 检查各种可能的位置
+    if hasattr(model, 'vf_model') and model.vf_model is not None:
+        has_vf = True
+    elif hasattr(model, 'aux_model') and model.aux_model is not None:
+        has_vf = True
+    elif hasattr(model, 'loss') and hasattr(model.loss, 'aux_model') and model.loss.aux_model is not None:
+        has_vf = True
+        
+    if hasattr(model, 'vf_proj') and model.vf_proj is not None:
+        has_proj = True
+    elif hasattr(model, 'aux_proj') and model.aux_proj is not None:
+        has_proj = True
+    elif hasattr(model, 'loss') and hasattr(model.loss, 'aux_proj') and model.loss.aux_proj is not None:
+        has_proj = True
+    
+    # 调试：显示模型的实际属性
+    model_attrs = [attr for attr in dir(model) if not attr.startswith('_') and ('vf' in attr.lower() or 'aux' in attr.lower() or 'dinov2' in attr.lower())]
+    print(f"  🔍 检测到的VF相关属性: {model_attrs}")
+    
+    # 更详细的检查 - VA-VAE的VF组件通常在loss模块中
+    if hasattr(model, 'loss'):
+        loss_attrs = [attr for attr in dir(model.loss) if 'vf' in attr.lower() or 'aux' in attr.lower() or 'dinov2' in attr.lower()]
+        print(f"  🔍 Loss模块VF属性: {loss_attrs}")
+        
+        # 检查aux_model (DINOv2)
+        if hasattr(model.loss, 'aux_model'):
+            print(f"  ✓ 发现model.loss.aux_model: {type(model.loss.aux_model)}")
+            has_vf = True
+            
+        # 检查aux_proj (反向投影)
+        if hasattr(model.loss, 'aux_proj'):
+            print(f"  ✓ 发现model.loss.aux_proj: {type(model.loss.aux_proj)}")
+            has_proj = True
+            
+        # 检查其他可能的VF相关属性
+        for attr in ['vf_model', 'dinov2_model', 'auxiliary_model']:
+            if hasattr(model.loss, attr):
+                val = getattr(model.loss, attr)
+                if val is not None:
+                    print(f"  ✓ 发现model.loss.{attr}: {type(val)}")
+                    has_vf = True
+    
     print(f"\n✅ 模型加载成功!")
     print(f"  VA-VAE特性: VF={'✓' if has_vf else '✗'}, Proj={'✓' if has_proj else '✗'}")
     
@@ -278,20 +321,44 @@ def evaluate_reconstruction_quality(model, data_root, split_file=None, num_sampl
     # 加载数据划分
     all_images = []
     if split_file and os.path.exists(split_file):
+        print(f"  📂 使用数据分割文件: {split_file}")
         with open(split_file, 'r') as f:
             split_data = json.load(f)
-        # 使用验证集数据
-        for user_id, user_data in split_data.items():
-            val_images = user_data.get('val', [])
-            for img_path in val_images[:5]:  # 每个用户取5张
-                all_images.append((img_path, int(user_id.replace('user', ''))))
+        
+        # 检查split_file的结构
+        print(f"  📊 Split文件结构: {list(split_data.keys())[:5]}")
+        
+        # 支持两种格式：新格式(val列表) 和 旧格式(用户字典)
+        if 'val' in split_data:  # 新格式：{"train": [...], "val": [...], "test": [...]}
+            val_images = split_data['val'][:num_samples]
+            for img_path in val_images:
+                # 从路径推断用户ID
+                user_id = 1  # 默认
+                if 'user' in img_path:
+                    try:
+                        user_id = int(img_path.split('user')[1].split('/')[0])
+                    except:
+                        pass
+                full_path = os.path.join(data_root, img_path)
+                if os.path.exists(full_path):
+                    all_images.append((full_path, user_id))
+        else:  # 旧格式：{"user1": {"val": [...]}, ...}
+            for user_id, user_data in split_data.items():
+                val_images = user_data.get('val', [])
+                for img_path in val_images[:5]:  # 每个用户取5张
+                    full_path = os.path.join(data_root, img_path)
+                    if os.path.exists(full_path):
+                        all_images.append((full_path, int(user_id.replace('user', ''))))
     else:
         # 兼容旧版：直接从文件夹读取
+        print(f"  📂 直接扫描数据目录: {data_root}")
         for user_id in range(1, 32):
             user_folder = data_path / f'user{user_id}'
             if user_folder.exists():
                 images = sorted(user_folder.glob('*.jpg'))[:5]
                 all_images.extend([(str(img), user_id) for img in images])
+    
+    print(f"  📊 找到 {len(all_images)} 个图片文件")
     
     # 随机采样
     if len(all_images) > num_samples:
@@ -391,7 +458,7 @@ def test_vf_alignment(model, data_root, split_file=None, num_samples=50, device=
     return evaluate_vf_alignment(model, data_root, split_file, num_samples, device)
 
 
-def evaluate_vf_alignment(model, data_root, num_samples=30, device='cuda'):
+def evaluate_vf_alignment(model, data_root, split_file=None, num_samples=30, device='cuda'):
     """评估Vision Foundation对齐度（VA-VAE核心创新）"""
     print("\n" + "="*60)
     print("🎯 评估VF语义对齐 (Vision Foundation Alignment)")
@@ -961,41 +1028,55 @@ def validate_reconstruction_extended(model, data_root, split_file=None, device='
     
     # 如果没有split_file，使用所有用户数据
     user_dirs = sorted([d for d in Path(data_root).iterdir() if d.is_dir() and d.name.startswith('user')])
-    if not user_dirs:
-        print("❌ 未找到用户数据目录")
-        return None, None
+    # 加载数据集 - 支持split_file和直接目录扫描
+    image_files = []
     
-    # 对每个用户计算指标
+    if split_file and os.path.exists(split_file):
+        print(f"  📂 使用数据分割文件: {split_file}")
+        with open(split_file, 'r') as f:
+            split_data = json.load(f)
+        # 使用验证集进行测试
+        val_files = split_data.get('val', [])
+        image_files = [os.path.join(data_root, f) for f in val_files if os.path.exists(os.path.join(data_root, f))]
+    else:
+        print(f"  📂 扫描数据目录: {data_root}")
+        if not os.path.exists(data_root):
+            print(f"❌ 数据目录不存在: {data_root}")
+            return None, None
+        
+        # 递归扫描图片文件
+        for ext in ['*.jpg', '*.jpeg', '*.png']:
+            image_files.extend(glob.glob(os.path.join(data_root, '**', ext), recursive=True))
+    
+    if len(image_files) == 0:
+        print(f"❌ 未找到图片文件")
+        return {'similarity': 0.0, 'alignment_score': 0.0}
+    
+    # 随机选择样本
+    num_samples = 100
+    selected_files = random.sample(image_files, min(num_samples, len(image_files)))
+    print(f"  📊 将测试 {len(selected_files)} 个样本")
+        
     all_mse = []
     all_psnr = []
     
-    for user_dir in user_dirs[:5]:  # 测试前5个用户
-        print(f"\n📊 测试用户: {user_dir.name}")
-        img_files = list(user_dir.glob('*.png')) + list(user_dir.glob('*.jpg'))
+    for img_path in selected_files:
+        img = load_and_preprocess_image(str(img_path), device)
         
-        if not img_files:
-            continue
-            
-        # 随机选择3张图片
-        selected = np.random.choice(img_files, min(3, len(img_files)), replace=False)
+        # 编码和解码
+        with torch.no_grad():
+            posterior = model.encode(img)
+            z = posterior.sample()
+            rec = model.decode(z)
         
-        for img_path in selected:
-            img = load_and_preprocess_image(str(img_path), device)
-            
-            # 编码和解码
-            with torch.no_grad():
-                posterior = model.encode(img)
-                z = posterior.sample()
-                rec = model.decode(z)
-            
-            # 计算指标
-            mse = F.mse_loss(rec, img).item()
-            psnr = 10 * torch.log10(4.0 / torch.tensor(mse)).item()
-            
-            all_mse.append(mse)
-            all_psnr.append(psnr)
-            
-            print(f"   {img_path.name}: MSE={mse:.6f}, PSNR={psnr:.2f}dB")
+        # 计算指标
+        mse = F.mse_loss(rec, img).item()
+        psnr = 10 * torch.log10(4.0 / torch.tensor(mse)).item()
+        
+        all_mse.append(mse)
+        all_psnr.append(psnr)
+        
+        print(f"   {Path(img_path).name}: MSE={mse:.6f}, PSNR={psnr:.2f}dB")
     
     # 计算平均值
     avg_mse = np.mean(all_mse) if all_mse else 0
