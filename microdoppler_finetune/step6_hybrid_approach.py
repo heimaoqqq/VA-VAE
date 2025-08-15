@@ -50,7 +50,7 @@ if 'fairscale' not in sys.modules:
 
 try:
     from models.lightningdit import LightningDiT_models
-    from tokenizer.vavae_models import VA_VAE
+    from tokenizer.vavae import VA_VAE
     from transport import create_transport
     print("Successfully imported LightningDiT models")
 except ImportError as e:
