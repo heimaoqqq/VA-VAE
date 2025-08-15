@@ -281,6 +281,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     - 可选：轻量级用户区分损失
     """
     
+    # 导入torch._dynamo（需要在函数开头，避免局部变量作用域错误）
+    import torch._dynamo
+    
     # 加载配置 - 直接构建正确的绝对路径
     if not os.path.isabs(config_path):
         # 相对于当前脚本文件的路径，向上一级到VA-VAE根目录
@@ -389,7 +392,6 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
             torch.cuda.empty_cache()
             
             # 禁用torch.compile - T4内存不足
-            import torch._dynamo
             torch._dynamo.config.suppress_errors = True
             torch._dynamo.disable()
             logger.warning("⚠️ T4内存限制：已禁用torch.compile以节省内存")
