@@ -206,13 +206,28 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     - 可选：轻量级用户区分损失
     """
     
-    # 加载配置 - 使用绝对路径解析
+    # 加载配置 - 直接构建正确的绝对路径
     if not os.path.isabs(config_path):
-        # 相对于当前脚本文件的路径
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(script_dir, config_path)
+        # 相对于当前脚本文件的路径，向上一级到VA-VAE根目录
+        script_dir = os.path.dirname(os.path.abspath(__file__))  # /kaggle/working/VA-VAE/microdoppler_finetune
+        va_vae_root = os.path.dirname(script_dir)  # /kaggle/working/VA-VAE
+        config_path = os.path.join(va_vae_root, 'configs', 'microdoppler_finetune.yaml')
     
+    print(f"Script directory: {os.path.dirname(os.path.abspath(__file__))}")
+    print(f"VA-VAE root: {os.path.dirname(os.path.dirname(os.path.abspath(__file__)))}")
     print(f"Loading config from: {config_path}")
+    
+    # 检查文件是否存在
+    if not os.path.exists(config_path):
+        # 如果不存在，尝试另一个可能的路径
+        alt_config_path = '/kaggle/working/VA-VAE/configs/microdoppler_finetune.yaml'
+        print(f"Config file not found at {config_path}")
+        print(f"Trying alternative path: {alt_config_path}")
+        if os.path.exists(alt_config_path):
+            config_path = alt_config_path
+        else:
+            raise FileNotFoundError(f"Config file not found at either {config_path} or {alt_config_path}")
+    
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
