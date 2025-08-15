@@ -112,6 +112,12 @@ def setup_vavae_environment():
         "torchdiffeq",   # ODE求解器
         "torchsde",      # SDE求解器
         "scipy",         # 科学计算
+        # LightningDiT模型依赖
+        "fairscale",     # 模型并行化
+        "einops",        # 张量操作
+        "safetensors",   # 安全模型存储
+        "pytorch_fid",   # FID计算
+        "tensorboard",   # 训练监控
         # 注意：不要包含clip-by-openai，有依赖冲突
         # 注意：不要包含taming，使用克隆方式
     ]
