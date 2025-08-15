@@ -85,21 +85,23 @@ except ImportError:
     print("⚠️ LPIPS未安装，感知损失评估将跳过")
 
 def get_training_vae_config():
-    """返回与step4_train_vavae.py中使用的确切VAE配置"""
-    # 从训练脚本的实际配置
+    """返回与checkpoint实际使用的VAE配置"""
+    # 根据错误信息推断的确切配置
+    # quant_conv: [64, 64] -> embed_dim = 32
+    # post_quant_conv: [32, 32] -> z_channels = 32
     return {
         'target': 'ldm.models.autoencoder.AutoencoderKL',
         'params': {
-            'embed_dim': 4,
+            'embed_dim': 32,  # 不是4，是32！
             'monitor': 'val/rec_loss',
             'ddconfig': {
                 'double_z': True, 
-                'z_channels': 32,  # 训练时使用的32
+                'z_channels': 32,
                 'resolution': 256,
                 'in_channels': 3, 
                 'out_ch': 3, 
                 'ch': 128,
-                'ch_mult': [1, 1, 2, 2, 4],  # 训练时使用的配置
+                'ch_mult': [1, 1, 2, 2, 4],
                 'num_res_blocks': 2,
                 'attn_resolutions': [],
                 'dropout': 0.0
@@ -119,8 +121,8 @@ def get_training_vae_config():
     }
 
 def infer_vae_config_from_checkpoint(checkpoint):
-    """使用训练时的确切配置"""
-    print("使用训练时的VAE配置: z_channels=32, ch_mult=[1,1,2,2,4]")
+    """使用checkpoint实际配置"""
+    print("使用checkpoint实际配置: embed_dim=32, z_channels=32, ch_mult=[1,1,2,2,4]")
     return get_training_vae_config()
 
 def load_model(checkpoint_path, config_path=None, device='cuda'):
