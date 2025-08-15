@@ -86,7 +86,6 @@ try:
     from models.lightningdit import LightningDiT_models
     from tokenizer.vavae import VA_VAE
     from transport import create_transport
-    from transport.losses import OFMLoss  # 添加OFM损失函数导入
     print("✅ 成功导入LightningDiT模型")
 except ImportError as e:
     print(f"Error importing LightningDiT models: {e}")
@@ -421,9 +420,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     ema = deepcopy(model).to(device)
     requires_grad(ema, False)
     
-    # OFM损失函数 - 遵循官方LightningDiT流匹配损失配置
-    loss_fn = OFMLoss(
-        flow_model=model,
+    # 创建Transport对象 - 遵循官方LightningDiT流匹配损失配置
+    transport = create_transport(
+        path_type='Linear',
         prediction="velocity",  # 官方标准：速度预测
         loss_weight=None,
         train_eps=None,
@@ -585,24 +584,32 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
                     latents = vae.encode_images(images_cuda0)
                     latents = latents.to(device)  # 移回当前设备
             
-            # 标准流匹配训练 - 遵循LightningDiT官方实现
+            # 标准流匹配训练 - 使用官方Transport API
             with torch.cuda.amp.autocast(enabled=use_amp):
-                t = torch.rand(latents.shape[0], device=device)
-                x_1 = torch.randn_like(latents)
-                x_t = t.view(-1, 1, 1, 1) * x_1 + (1 - t.view(-1, 1, 1, 1)) * latents
-                target = x_1 - latents
+                model_kwargs = dict(y=class_ids)
+                loss_dict = transport.training_losses(model, latents, model_kwargs)
                 
-                model_output = model(x_t, t * 1000, class_ids)
-                diffusion_loss = F.mse_loss(model_output, target)
+                # 处理cos_loss（如果存在）
+                if 'cos_loss' in loss_dict:
+                    diffusion_loss = loss_dict["loss"].mean()
+                    cos_loss = loss_dict["cos_loss"].mean()
+                    diffusion_loss = diffusion_loss + cos_loss
+                else:
+                    diffusion_loss = loss_dict["loss"].mean()
             
             # 可选的用户区分损失
             total_loss = diffusion_loss
             user_loss_value = 0.0
             
             if use_user_loss and user_loss_fn is not None:
-                # 使用模型的中间特征计算用户区分损失
-                # 这里简化为使用模型输出作为特征
-                user_loss_value = user_loss_fn(model_output, class_ids)
+                # 获取模型特征用于用户区分
+                # 需要单独前向传播获取中间特征
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    t = torch.rand(latents.shape[0], device=device)
+                    x_1 = torch.randn_like(latents)
+                    x_t = t.view(-1, 1, 1, 1) * x_1 + (1 - t.view(-1, 1, 1, 1)) * latents
+                    model_features = model(x_t, t * 1000, class_ids)
+                    user_loss_value = user_loss_fn(model_features, class_ids)
                 total_loss = diffusion_loss + user_loss_value
             
             # 反向传播 - 支持混合精度
