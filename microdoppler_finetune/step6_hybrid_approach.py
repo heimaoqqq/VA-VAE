@@ -682,12 +682,12 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
             train_losses['diffusion'].append(diffusion_loss.item())
             train_losses['user'].append(user_loss_value.item() if isinstance(user_loss_value, torch.Tensor) else user_loss_value)
             
-            if batch_idx % 50 == 0:
+            if i % 50 == 0:
                 if use_user_loss:
-                    logger.info(f"  Batch {batch_idx}: Total={total_loss.item():.4f} "
+                    logger.info(f"  Batch {i}: Total={total_loss.item():.4f} "
                               f"(Diff={diffusion_loss.item():.4f}, User={user_loss_value:.4f})")
                 else:
-                    logger.info(f"  Batch {batch_idx}: Loss={diffusion_loss.item():.4f}")
+                    logger.info(f"  Batch {i}: Loss={total_loss.item():.4f}")
         
         # 训练统计
         avg_total = np.mean(train_losses['total'])
