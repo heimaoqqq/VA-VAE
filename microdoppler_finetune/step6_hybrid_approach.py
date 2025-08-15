@@ -246,14 +246,39 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     
     # 初始化VA-VAE
     logger.info("=== 初始化VA-VAE ===")
-    vae = VA_VAE("../LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
-    
     vae_checkpoint_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
-    if os.path.exists(vae_checkpoint_path):
-        logger.info(f"Loading VA-VAE checkpoint: {vae_checkpoint_path}")
-        vae.load_from_checkpoint(vae_checkpoint_path)
-    else:
-        logger.info("⚠️ VA-VAE checkpoint not found")
+    
+    if not os.path.exists(vae_checkpoint_path):
+        raise FileNotFoundError(f"VA-VAE checkpoint not found: {vae_checkpoint_path}")
+    
+    logger.info(f"Loading VA-VAE from: {vae_checkpoint_path}")
+    
+    # 修复VA-VAE配置路径
+    vae_config_path = "../LightningDiT/tokenizer/configs/vavae_f16d32.yaml"
+    if not os.path.isabs(vae_config_path):
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        va_vae_root = os.path.dirname(script_dir)
+        vae_config_path = os.path.join(va_vae_root, 'LightningDiT', 'tokenizer', 'configs', 'vavae_f16d32.yaml')
+    
+    # 修复配置中的checkpoint路径
+    import tempfile
+    from omegaconf import OmegaConf
+    
+    # 加载并修改配置
+    vae_config = OmegaConf.load(vae_config_path)
+    vae_config.ckpt_path = vae_checkpoint_path
+    
+    # 创建临时配置文件
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp_config:
+        OmegaConf.save(vae_config, tmp_config.name)
+        tmp_config_path = tmp_config.name
+    
+    try:
+        # 使用修复后的配置初始化VA-VAE
+        vae = VA_VAE(tmp_config_path)
+    finally:
+        # 清理临时文件
+        os.unlink(tmp_config_path)
     
     vae.to(device)
     vae.eval()
