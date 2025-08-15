@@ -24,13 +24,11 @@ from PIL import Image
 import warnings
 warnings.filterwarnings('ignore')
 
-# 设置路径
-va_vae_root = Path("/kaggle/working/VA-VAE")
-lightning_root = Path("/kaggle/working/LightningDiT")
-
-# 添加必要的Python路径
-sys.path.insert(0, str(lightning_root))  # LightningDiT根目录
-sys.path.insert(0, str(va_vae_root))     # VA-VAE根目录
+# 设置路径 - 使用相对路径（参考step4）
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root / 'LightningDiT' / 'vavae'))
+sys.path.insert(0, str(project_root / 'LightningDiT'))
+sys.path.insert(0, str(project_root))
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
