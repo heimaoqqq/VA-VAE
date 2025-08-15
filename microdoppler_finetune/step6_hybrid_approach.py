@@ -20,14 +20,92 @@ from PIL import Image
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT'))
 
 try:
-    from models import LightningDiT_models
+    from models.lightningdit import LightningDiT_models
     from tokenizer.vavae_models import VA_VAE
     from transport import create_transport
-except ImportError:
-    print("Warning: Could not import LightningDiT models.")
+except ImportError as e:
+    print(f"Warning: Could not import LightningDiT models: {e}")
+    print("Please ensure LightningDiT is in the correct path and dependencies are installed")
     exit(1)
 
-from step6_standard_dit_training import MicroDopplerLatentDataset, create_logger
+# 直接在此文件中定义，避免导入依赖问题
+# from step6_standard_dit_training import MicroDopplerLatentDataset, create_logger
+
+from torch.utils.data import Dataset
+import logging
+
+
+class MicroDopplerLatentDataset(Dataset):
+    """微多普勒潜在空间数据集"""
+    
+    def __init__(self, data_root, vae_model, split='train', device='cuda'):
+        self.data_root = Path(data_root)
+        self.vae = vae_model
+        self.device = device
+        self.split = split
+        
+        # 收集所有数据
+        self.samples = []
+        
+        for user_id in range(1, 32):  # ID_1 到 ID_31
+            user_folder = self.data_root / f'ID_{user_id}'
+            if user_folder.exists():
+                images = list(user_folder.glob('*.jpg')) + list(user_folder.glob('*.png'))
+                
+                # 划分训练/验证集
+                n_train = int(len(images) * 0.8)
+                if split == 'train':
+                    selected = images[:n_train]
+                else:
+                    selected = images[n_train:]
+                
+                for img_path in selected:
+                    self.samples.append({
+                        'path': str(img_path),
+                        'class_id': user_id - 1,  # 0-30，作为类别ID
+                    })
+        
+        print(f"Loaded {len(self.samples)} samples for {split} split")
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        
+        # 加载图像
+        img = Image.open(sample['path']).convert('RGB')
+        
+        # 转换为tensor：HWC -> CHW，[0,1] -> [-1,1]
+        img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
+        img_tensor = img_tensor.permute(2, 0, 1)  # HWC -> CHW
+        img_tensor = img_tensor * 2.0 - 1.0  # [0,1] -> [-1,1]
+        
+        # VAE编码到潜在空间
+        with torch.no_grad():
+            img_tensor = img_tensor.unsqueeze(0).to(self.device)
+            posterior = self.vae.encode(img_tensor)
+            latent = posterior.sample().squeeze(0).cpu()  # (32, 16, 16)
+        
+        return {
+            'latent': latent,
+            'class_id': sample['class_id']
+        }
+
+
+def create_logger(logging_dir):
+    """创建日志记录器"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='[\033[34m%(asctime)s\033[0m] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(f"{logging_dir}/log.txt")
+        ]
+    )
+    logger = logging.getLogger(__name__)
+    return logger
 
 
 class UserDiscriminationLoss(torch.nn.Module):
