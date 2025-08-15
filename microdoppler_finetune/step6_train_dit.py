@@ -89,36 +89,73 @@ from tokenizer.vavae import VA_VAE
 class MicroDopplerLatentDataset(Dataset):
     """微调后的潜空间数据集，包含用户条件"""
     
-    def __init__(self, data_dir, split='train', val_ratio=0.2):
+    def __init__(self, data_dir, split='train', val_ratio=0.2, latent_norm=True):
         self.data_dir = Path(data_dir)
         self.split = split
+        self.latent_norm = latent_norm
         
-        # 加载潜空间数据和标签
-        latents_file = self.data_dir / 'latents_microdoppler.npz'
+        # 加载潜空间数据和标签 - 从可写目录加载
+        latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
+        stats_file = Path("/kaggle/working") / 'latents_stats.pt'
+        
+        # 优先使用官方统计，否则使用自己计算的
+        if stats_file.exists():
+            stats = torch.load(stats_file)
+            self.latent_mean = stats['mean'].float()
+            self.latent_std = stats['std'].float()
+            logger.info(f"加载潜空间统计信息: mean={self.latent_mean.shape}, std={self.latent_std.shape}")
+        else:
+            self.latent_mean = None
+            self.latent_std = None
+            
         if latents_file.exists():
             data = np.load(latents_file)
             self.latents = torch.from_numpy(data['latents']).float()
             self.user_ids = torch.from_numpy(data['user_ids']).long()
-            logger.info(f"Loaded {len(self.latents)} latent samples")
+            
+            # 如果没有统计信息，从数据中计算
+            if self.latent_mean is None:
+                self.latent_mean = self.latents.mean(dim=[0, 2, 3], keepdim=True)
+                self.latent_std = self.latents.std(dim=[0, 2, 3], keepdim=True)
+                logger.info("从数据计算潜空间统计信息")
+            
+            logger.info(f"Loaded {len(self.latents)} latent samples from {latents_file}")
+            
+            # 调试信息
+            if len(self.latents) == 0:
+                logger.error("潜空间文件存在但为空！")
+                raise ValueError("Empty latents file")
         else:
             # 如果预计算的潜空间不存在，实时编码
-            logger.warning("Pre-computed latents not found, will encode on-the-fly")
+            logger.warning(f"Pre-computed latents not found at {latents_file}")
             self.latents = None
             self.load_images()
         
         # 分割训练/验证集
-        n_samples = len(self.user_ids) if self.latents is not None else len(self.image_paths)
-        indices = np.arange(n_samples)
-        np.random.seed(42)
-        np.random.shuffle(indices)
-        
-        n_val = int(n_samples * val_ratio)
-        if split == 'train':
-            self.indices = indices[n_val:]
+        if self.latents is not None:
+            n_samples = len(self.latents)
+        elif hasattr(self, 'image_paths'):
+            n_samples = len(self.image_paths)
         else:
-            self.indices = indices[:n_val]
+            logger.error("没有数据可用于创建数据集")
+            n_samples = 0
+            
+        if n_samples == 0:
+            logger.error(f"数据集为空！latents={self.latents is not None}, "
+                        f"has_image_paths={hasattr(self, 'image_paths')}")
+            self.indices = np.array([])
+        else:
+            indices = np.arange(n_samples)
+            np.random.seed(42)
+            np.random.shuffle(indices)
+            
+            n_val = int(n_samples * val_ratio)
+            if split == 'train':
+                self.indices = indices[n_val:]
+            else:
+                self.indices = indices[:n_val]
         
-        logger.info(f"{split} dataset: {len(self.indices)} samples")
+        logger.info(f"{split} dataset: {len(self.indices)} samples (total: {n_samples})")
     
     def load_images(self):
         """加载原始图像路径"""
@@ -143,6 +180,10 @@ class MicroDopplerLatentDataset(Dataset):
         if self.latents is not None:
             latent = self.latents[real_idx]
             user_id = self.user_ids[real_idx]
+            
+            # 潜空间归一化
+            if self.latent_norm and self.latent_mean is not None:
+                latent = (latent - self.latent_mean) / self.latent_std
         else:
             # 实时编码（需要VAE模型）
             img_path = self.image_paths[real_idx]
@@ -152,10 +193,7 @@ class MicroDopplerLatentDataset(Dataset):
             latent = image  # 这里需要VAE编码，暂时返回原图
             user_id = self.user_ids[real_idx]
         
-        return {
-            'latent': latent,
-            'user_id': user_id
-        }
+        return latent, user_id
 
 
 # ==================== 训练函数 ====================
@@ -300,10 +338,15 @@ def train_dit(rank=0, world_size=1):
     if not latents_file.exists() and is_main_process():
         logger.info("预计算潜空间表示...")
         encode_dataset_to_latents(vae, data_dir, device)
+        logger.info("潜空间编码完成，等待文件写入...")
+        # 确保文件已写入磁盘
+        import time
+        time.sleep(2)
     
     # 同步所有进程，确保潜空间数据已生成
     if world_size > 1:
         dist.barrier()
+        logger.info(f"Rank {rank} 同步完成")
     
     # 创建数据采样器（分布式）
     train_dataset = MicroDopplerLatentDataset(data_dir, split='train')
@@ -391,8 +434,8 @@ def train_dit(rank=0, world_size=1):
         # 只在主进程显示进度条
         pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]', disable=not is_main_process())
         for batch in pbar:
-            latents = batch['latent'].to(device)
-            user_ids = batch['user_id'].to(device)
+            latents = batch[0].to(device)
+            user_ids = batch[1].to(device)
             
             # 采样时间步
             t = torch.randint(0, transport.num_timesteps, (latents.shape[0],), device=device)
@@ -441,8 +484,8 @@ def train_dit(rank=0, world_size=1):
         with torch.no_grad():
             val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Val]', disable=not is_main_process())
             for batch in val_pbar:
-                latents = batch['latent'].to(device)
-                user_ids = batch['user_id'].to(device)
+                latents = batch[0].to(device)
+                user_ids = batch[1].to(device)
                 
                 t = torch.randint(0, transport.num_timesteps, (latents.shape[0],), device=device)
                 
@@ -539,39 +582,28 @@ def train_dit(rank=0, world_size=1):
         cleanup()
 
 
-def encode_dataset_to_latents(vae, data_dir, device):
-    """预计算数据集的潜空间表示"""
-    logger.info("Encoding dataset to latent space...")
+def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
+    """预计算并保存整个数据集的潜空间表示"""
+    logger.info("编码数据集到潜空间...")
     
-    # 数据集直接在data_dir下，不需要processed_microdoppler子目录
-    data_path = data_dir
     latents_list = []
     user_ids_list = []
     
-    # 首先检查目录是否存在
-    if not data_path.exists():
-        logger.error(f"数据目录不存在: {data_path}")
-        logger.info("请先运行 step3_prepare_dataset.py 准备数据集")
-        raise FileNotFoundError(f"Data directory not found: {data_path}")
-    
-    # 列出所有用户目录
-    user_dirs = list(data_path.glob('ID_*'))
-    if not user_dirs:
-        logger.error(f"未找到用户目录 (ID_*) 在: {data_path}")
-        logger.info(f"当前目录内容: {list(data_path.iterdir())[:5]}...")
-        raise FileNotFoundError(f"No user directories found in {data_path}")
-    
-    for user_dir in sorted(user_dirs):
-        user_id = int(user_dir.name.split('_')[1]) - 1
+    # 遍历所有用户文件夹
+    for user_dir in sorted(data_dir.glob('ID_*')):
+        user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
         
-        # 修改为正确的文件扩展名 - 数据集是jpg格式
-        img_files = list(user_dir.glob('*.jpg'))
-        if not img_files:
-            logger.warning(f"用户目录 {user_dir.name} 中没有JPG文件")
+        # 收集该用户的所有图像（修正为.jpg格式）
+        image_files = sorted(list(user_dir.glob('*.jpg')))
+        
+        if not image_files:
+            logger.warning(f"用户 {user_dir.name} 没有找到.jpg图像文件")
             continue
             
-        for img_path in tqdm(img_files, desc=f"Encoding {user_dir.name}"):
-            # 加载图像
+        logger.info(f"编码用户 {user_dir.name}: {len(image_files)} 张图像")
+        
+        for img_path in image_files:
+            # 加载和预处理图像
             image = Image.open(img_path).convert('RGB')
             image = torch.from_numpy(np.array(image)).float() / 127.5 - 1.0
             image = image.permute(2, 0, 1).unsqueeze(0).to(device)
@@ -583,14 +615,37 @@ def encode_dataset_to_latents(vae, data_dir, device):
             latents_list.append(latent.cpu().numpy())
             user_ids_list.append(user_id)
     
+    # 检查是否有数据
+    if not latents_list:
+        logger.error("没有收集到任何潜空间数据！")
+        raise ValueError("No latent data collected")
+    
     # 保存潜空间数据
     latents = np.concatenate(latents_list, axis=0)
     user_ids = np.array(user_ids_list)
     
+    logger.info(f"准备保存 {len(latents)} 个潜空间样本")
+    logger.info(f"潜空间形状: {latents.shape}")
+    logger.info(f"用户ID数量: {len(user_ids)}, 唯一用户: {len(np.unique(user_ids))}")
+    
+    # 计算潜空间统计信息（用于归一化）
+    mean = latents.mean(axis=(0, 2, 3), keepdims=True)  # [1, C, 1, 1]
+    std = latents.std(axis=(0, 2, 3), keepdims=True)
+    
     # 保存到可写目录
     save_path = Path("/kaggle/working") / 'latents_microdoppler.npz'
-    np.savez(save_path, latents=latents, user_ids=user_ids)
-    logger.info(f"Saved {len(latents)} latent samples to {save_path}")
+    stats_save_path = Path("/kaggle/working") / 'latents_stats.pt'
+    
+    np.savez(save_path, latents=latents, user_ids=user_ids, mean=mean, std=std)
+    torch.save({'mean': torch.from_numpy(mean), 'std': torch.from_numpy(std)}, stats_save_path)
+    
+    logger.info(f"成功保存潜空间数据到 {save_path}")
+    logger.info(f"成功保存统计信息到 {stats_save_path}")
+    logger.info(f"潜空间均值形状: {mean.shape}, 标准差形状: {std.shape}")
+    
+    # 验证保存
+    test_data = np.load(save_path)
+    logger.info(f"验证: 加载了 {len(test_data['latents'])} 个样本")
 
 
 def generate_samples(model, vae, transport, device, epoch):
@@ -641,28 +696,30 @@ def main():
     world_size = torch.cuda.device_count()
     logger.info(f"Detected {world_size} GPU(s)")
     
-    # 显示GPU信息
-    for i in range(world_size):
-        gpu_props = torch.cuda.get_device_properties(i)
-        logger.info(f"  GPU {i}: {gpu_props.name} ({gpu_props.total_memory / 1e9:.1f} GB)")
-    
+    # Kaggle双GPU特殊配置
     if world_size > 1:
-        logger.info(f"Starting distributed training with {world_size} GPUs")
-        # Kaggle环境优化：使用spawn方法启动多进程
+        # Kaggle T4x2需要特殊的环境变量
+        os.environ['NCCL_DEBUG'] = 'WARN'
+        os.environ['NCCL_IB_DISABLE'] = '1'
+        os.environ['NCCL_P2P_DISABLE'] = '1'
+        os.environ['NCCL_SOCKET_IFNAME'] = 'lo'
+        
+        # 使用较短的超时时间快速失败
+        os.environ['NCCL_TIMEOUT'] = '10'
+        
+        logger.info(f"Using {world_size} GPUs with Kaggle optimizations")
         try:
-            mp.spawn(
-                train_dit, 
-                args=(world_size,), 
-                nprocs=world_size, 
-                join=True
-            )
+            mp.spawn(train_dit, 
+                    args=(world_size,),
+                    nprocs=world_size,
+                    join=True)
         except Exception as e:
-            logger.error(f"Distributed training failed: {e}")
-            logger.info("Falling back to single GPU training...")
-            train_dit(rank=0, world_size=1)
+            logger.error(f"多GPU训练失败: {e}")
+            logger.info("回退到单GPU训练...")
+            train_dit(0, 1)
     else:
-        logger.info("Starting single GPU training")
-        train_dit(rank=0, world_size=1)
+        logger.info("Using single GPU")
+        train_dit(0, 1)
 
 if __name__ == "__main__":
     main()
