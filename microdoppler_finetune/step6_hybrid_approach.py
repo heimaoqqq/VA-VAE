@@ -129,8 +129,8 @@ class MicroDopplerLatentDataset(Dataset):
         # VAE编码到潜在空间
         with torch.no_grad():
             img_tensor = img_tensor.unsqueeze(0).to(self.device)
-            posterior = self.vae.encode(img_tensor)
-            latent = posterior.sample().squeeze(0).cpu()  # (32, 16, 16)
+            latent = self.vae.encode_images(img_tensor)
+            latent = latent.squeeze(0).cpu()  # (32, 16, 16)
         
         return {
             'latent': latent,
