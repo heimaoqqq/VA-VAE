@@ -86,6 +86,7 @@ try:
     from models.lightningdit import LightningDiT_models
     from tokenizer.vavae import VA_VAE
     from transport import create_transport
+    from transport.losses import OFMLoss  # 添加OFM损失函数导入
     print("✅ 成功导入LightningDiT模型")
 except ImportError as e:
     print(f"Error importing LightningDiT models: {e}")
@@ -394,8 +395,8 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     model.to(device)
     
     # 混合精度训练配置 - T4优化
-    use_amp = config['trainer'].get('precision', '16-mixed') == '16-mixed'
-    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    use_amp = True  # T4 GPU支持FP16
+    scaler = torch.amp.GradScaler('cuda') if use_amp else None  # 修复废弃警告
     
     # 分布式模型包装 - 符合官方DDP最佳实践
     if is_distributed:
