@@ -672,7 +672,7 @@ def evaluate_user_discrimination(model, data_root, split_file=None, num_users=10
             continue
         
         features = []
-        images = list(user_folder.glob("*.png"))[:samples_per_user]
+        images = list(user_folder.glob("*.jpg"))[:samples_per_user]
         
         for img_path in images:
             img_tensor = load_and_preprocess_image(img_path, device)
@@ -981,8 +981,8 @@ def main():
     
     # 4. 导出模型
     if args.export_models:
-        # 设置导出目录
-        export_dir = Path(args.checkpoint).parent / 'exported_models'
+        # 设置导出目录 - 使用可写的工作目录
+        export_dir = Path('/kaggle/working/exported_models')
         encoder_path, decoder_path = export_encoder_decoder(model, args.checkpoint, str(export_dir))
         results['exported_models'] = {
             'encoder': encoder_path,
