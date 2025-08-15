@@ -649,12 +649,12 @@ def evaluate_vf_alignment(model, data_root, split_file=None, num_samples=30, dev
     }
 
 
-def test_user_discrimination(model, data_root, split_file=None, num_users=10, samples_per_user=10, device='cuda'):
+def test_user_discrimination(model, data_root, split_file=None, num_users=31, samples_per_user=100, device='cuda'):
     """评估用户区分能力（微多普勒特定）"""
     return evaluate_user_discrimination(model, data_root, split_file, num_users, samples_per_user, device)
 
 
-def evaluate_user_discrimination(model, data_root, split_file=None, num_users=10, samples_per_user=10, device='cuda', use_original_dataset=True):
+def evaluate_user_discrimination(model, data_root, split_file=None, num_users=31, samples_per_user=100, device='cuda', use_original_dataset=True):
     """评估用户区分能力（微多普勒特定）"""
     print("\n" + "="*60)
     print("👥 评估用户区分能力 (User Discrimination)")
