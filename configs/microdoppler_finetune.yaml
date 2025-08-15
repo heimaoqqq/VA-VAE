@@ -15,7 +15,7 @@ data:
   target: MicroDopplerDataModule
   params:
     data_dir: "/kaggle/input/dataset"  # 实际数据路径
-    batch_size: 8              # T4×2内存优化：避免OOM错误
+    batch_size: 2              # T4×2内存优化：避免OOM错误
     num_workers: 4             # 优化：避免CPU过载，保持高效并行
     image_size: 256
     val_split: 0.2             # 验证集比例，可调整为0.15-0.25
