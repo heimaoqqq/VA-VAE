@@ -371,8 +371,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     logger.info("=== 初始化LightningDiT ===")
     num_classes = config['model']['params']['num_users']  # 31个用户
     
-    # 使用官方LightningDiT模型工厂
+    # 使用官方LightningDiT模型工厂 - 匹配VA-VAE f16d32输出尺寸
     model = LightningDiT_models["LightningDiT-XL/1"](
+        input_size=16,   # VA-VAE f16d32输出16x16 latents
         num_classes=num_classes,
         in_channels=32,  # VA-VAE潜空间通道数
     )
@@ -583,9 +584,11 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
                     images_cuda0 = images.to('cuda:0')
                     latents = vae.encode_images(images_cuda0)
                     latents = latents.to(device)  # 移回当前设备
+                
+                # VA-VAE f16d32输出16x16，无需上采样
             
-            # 标准流匹配训练 - 使用官方Transport API
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            # 标准流匹配训练 - 使用官方Transport API  
+            with torch.amp.autocast('cuda', enabled=use_amp):
                 model_kwargs = dict(y=class_ids)
                 loss_dict = transport.training_losses(model, latents, model_kwargs)
                 
