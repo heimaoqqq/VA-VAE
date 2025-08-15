@@ -313,16 +313,10 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     
     # 加载VA-VAE - 始终在cuda:0上以避免分布式设备冲突
     logger.info("=== 加载VA-VAE编码器 ===")
-    vae_device = torch.device('cuda:0')  # VA-VAE始终在cuda:0
-    vae = VA_VAE(
-        vae_path=os.path.join(va_vae_root, 'LightningDiT/models/vavae-ema.pt'),
-        device=vae_device
-    )
-    vae_config_path = "../LightningDiT/tokenizer/configs/vavae_f16d32.yaml"
-    if not os.path.isabs(vae_config_path):
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        va_vae_root = os.path.dirname(script_dir)
-        vae_config_path = os.path.join(va_vae_root, 'LightningDiT', 'tokenizer', 'configs', 'vavae_f16d32.yaml')
+    
+    # 准备VA-VAE配置文件路径
+    vae_config_path = os.path.join(va_vae_root, 'LightningDiT', 'tokenizer', 'configs', 'vavae_f16d32.yaml')
+    vae_checkpoint_path = os.path.join(va_vae_root, 'LightningDiT', 'models', 'vavae-ema.pt')
     
     # 修复配置中的checkpoint路径
     import tempfile
@@ -337,49 +331,58 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         OmegaConf.save(vae_config, tmp_config.name)
         tmp_config_path = tmp_config.name
     
-    try:
-        # 使用修复后的配置初始化VA-VAE
-        vae = VA_VAE(tmp_config_path)
-    finally:
-        # 清理临时文件
-        os.unlink(tmp_config_path)
+    # 初始化VA-VAE - 按照官方方式
+    vae = VA_VAE(tmp_config_path, img_size=256, fp16=True)
+    vae.model.eval()  # VA-VAE内部已经调用了.cuda()，不需要额外的.to(device)
     
-    vae.model.to(device)
-    vae.model.eval()
+    # 加载DiT模型 - 遵循官方LightningDiT项目结构
+    logger.info("=== 加载LightningDiT模型 ===")
+    pretrained_path = os.path.join(va_vae_root, 'LightningDiT', 'models', 'lightningdit-xl-imagenet256-64ep.pt')
     
-    # 初始化DiT - 标准方式
+    if not os.path.exists(pretrained_path):
+        logger.warning(f"预训练模型不存在: {pretrained_path}")
+        logger.warning("请确保已下载LightningDiT预训练权重")
+    
+    # 初始化DiT - 遵循官方LightningDiT标准
     logger.info("=== 初始化LightningDiT ===")
+    num_classes = config['model']['params']['num_users']  # 31个用户
+    
+    # 使用官方LightningDiT模型工厂
     model = LightningDiT_models["LightningDiT-XL/1"](
-        input_size=16,
-        num_classes=31,
-        use_qknorm=False,
-        use_swiglu=True,
-        use_rope=True,
-        use_rmsnorm=True,
-        wo_shift=False,
-        in_channels=32,
+        num_classes=num_classes,
+        in_channels=32,  # VA-VAE潜空间通道数
     )
     
     # 加载预训练权重
-    pretrained_path = "models/lightningdit-xl-imagenet256-64ep.pt"
     if os.path.exists(pretrained_path):
-        logger.info(f"Loading pretrained weights: {pretrained_path}")
+        logger.info(f"加载预训练权重: {pretrained_path}")
         checkpoint = torch.load(pretrained_path, map_location='cpu')
         state_dict = checkpoint.get('model', checkpoint)
+        # 清理state_dict键名
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        logger.info(f"Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+        if is_main_process:
+            logger.info(f"缺失键: {len(missing)}, 意外键: {len(unexpected)}")
+    else:
+        logger.warning(f"预训练权重文件不存在: {pretrained_path}")
+        logger.warning("将使用随机初始化权重进行训练")
     
     model.to(device)
     
-    # 启用FP16混合精度训练 - T4优化
-    model = model.half()  # 转换为FP16
+    # 混合精度训练配置 - T4优化
+    use_amp = config['trainer'].get('precision', '16-mixed') == '16-mixed'
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
     
-    # DDP包装模型 - T4*2分布式训练
+    # 分布式模型包装 - 符合官方DDP最佳实践
     if is_distributed:
-        model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
-        if is_main_process:
-            logger.info(f"Model wrapped with DDP on rank {rank}")
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[rank],
+            output_device=rank,
+            find_unused_parameters=False  # 提升性能
+        )
+    if is_main_process:
+        logger.info(f"Model wrapped with DDP on rank {rank}")
     
     # 可选的用户区分损失
     user_loss_fn = UserDiscriminationLoss(weight=user_loss_weight) if use_user_loss else None
@@ -393,15 +396,15 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     ema = deepcopy(model).to(device)
     requires_grad(ema, False)
     
-    # Transport
-    transport = create_transport(
-        path_type="Linear",
-        prediction="velocity", 
+    # OFM损失函数 - 遵循官方LightningDiT流匹配损失配置
+    loss_fn = OFMLoss(
+        flow_model=model,
+        prediction="velocity",  # 官方标准：速度预测
         loss_weight=None,
         train_eps=None,
         sample_eps=None,
-        use_cosine_loss=True,
-        use_lognorm=True,
+        use_cosine_loss=True,  # 官方推荐设置
+        use_lognorm=True,  # 官方推荐设置
     )
     
     # 数据集
@@ -519,13 +522,13 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         persistent_workers=(num_workers > 0)
     )
     
-    # 优化器 - 按原项目标准设置
-    lr = 2e-4  # 原项目标准学习率，比config中7e-6更合适全参数训练
+    # 优化器 - 遵循官方LightningDiT配置
+    lr = 1e-4  # 官方微调学习率
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=lr,
-        weight_decay=0,  # 原项目标准：weight_decay=0
-        betas=(0.9, 0.95)  # 原项目标准beta2=0.95
+        weight_decay=0,  # 官方标准：weight_decay=0
+        betas=(0.9, 0.95)  # 官方标准beta2=0.95
     )
     logger.info(f"Optimizer: AdamW, lr={lr}, beta2=0.95, weight_decay=0")
     
@@ -557,14 +560,15 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
                     latents = vae.encode_images(images_cuda0)
                     latents = latents.to(device)  # 移回当前设备
             
-            # 标准扩散训练
-            t = torch.rand(latents.shape[0], device=device)
-            x_1 = torch.randn_like(latents)
-            x_t = t.view(-1, 1, 1, 1) * x_1 + (1 - t.view(-1, 1, 1, 1)) * latents
-            target = x_1 - latents
-            
-            model_output = model(x_t, t * 1000, class_ids)
-            diffusion_loss = F.mse_loss(model_output, target)
+            # 标准流匹配训练 - 遵循LightningDiT官方实现
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                t = torch.rand(latents.shape[0], device=device)
+                x_1 = torch.randn_like(latents)
+                x_t = t.view(-1, 1, 1, 1) * x_1 + (1 - t.view(-1, 1, 1, 1)) * latents
+                target = x_1 - latents
+                
+                model_output = model(x_t, t * 1000, class_ids)
+                diffusion_loss = F.mse_loss(model_output, target)
             
             # 可选的用户区分损失
             total_loss = diffusion_loss
@@ -576,11 +580,22 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
                 user_loss_value = user_loss_fn(model_output, class_ids)
                 total_loss = diffusion_loss + user_loss_value
             
-            # 反向传播
+            # 反向传播 - 支持混合精度
             optimizer.zero_grad()
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            if use_amp:
+                scaler.scale(total_loss).backward()
+                scaler.unscale_(optimizer)
+                # 梯度裁剪
+                if config['trainer']['gradient_clip_val'] > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config['trainer']['gradient_clip_val'])
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                total_loss.backward()
+                # 梯度裁剪
+                if config['trainer']['gradient_clip_val'] > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), config['trainer']['gradient_clip_val'])
+                optimizer.step()
             
             # EMA更新
             with torch.no_grad():
