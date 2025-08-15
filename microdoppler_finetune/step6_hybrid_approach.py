@@ -280,8 +280,8 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         # 清理临时文件
         os.unlink(tmp_config_path)
     
-    vae.to(device)
-    vae.eval()
+    vae.model.to(device)
+    vae.model.eval()
     
     # 初始化DiT - 标准方式
     logger.info("=== 初始化LightningDiT ===")
