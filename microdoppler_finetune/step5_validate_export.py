@@ -822,8 +822,15 @@ def export_encoder_decoder(model, checkpoint_path, output_dir):
     print("💾 导出编码器和解码器 (Export for DiT)")
     print("="*60)
     
+    # 创建输出目录
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # 构造输出文件路径
+    checkpoint_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
+    encoder_path = os.path.join(output_dir, f"{checkpoint_name}_encoder.pt")
+    decoder_path = os.path.join(output_dir, f"{checkpoint_name}_decoder.pt")
+    
     # 导出编码器
-    encoder_path = checkpoint_path.replace('.pt', '_encoder.pt')
     encoder_state = {
         'encoder': model.encoder.state_dict(),
         'quant_conv': model.quant_conv.state_dict() if hasattr(model, 'quant_conv') else None,
@@ -838,14 +845,14 @@ def export_encoder_decoder(model, checkpoint_path, output_dir):
     print(f"✅ 编码器已导出: {encoder_path}")
     
     # 导出解码器
-    decoder_path = checkpoint_path.replace('.pt', '_decoder.pt')
     decoder_state = {
         'decoder': model.decoder.state_dict(),
         'post_quant_conv': model.post_quant_conv.state_dict() if hasattr(model, 'post_quant_conv') else None,
         'embed_dim': model.embed_dim if hasattr(model, 'embed_dim') else 32
     }
     torch.save(decoder_state, decoder_path)
-    print(f"✅ 解码器已导出: {decoder_path}")
+    print(f"\n📁 导出目录: {output_dir}")
+    print("\n🎉 VA-VAE验证与导出完成!")
     
     return encoder_path, decoder_path
 
