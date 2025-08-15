@@ -230,26 +230,28 @@ def cleanup_distributed_training():
         dist.destroy_process_group()
 
 
-def hybrid_dit_train_worker(rank, world_size, config_path, use_user_loss=False, user_loss_weight=0.1):
-    """分布式训练worker函数"""
-    
-    # 初始化分布式环境
+def hybrid_dit_train_worker(rank, config_path, use_user_loss, user_loss_weight, world_size, device):
+    """分布式训练worker函数 - Kaggle T4×2优化"""
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group('nccl', rank=rank, world_size=world_size)
     
-    # 设置当前进程的GPU - 直接设置，让CUDA自动处理
+    # Kaggle T4×2: 确保正确的GPU可见性
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
+    
+    # 初始化进程组
+    torch.distributed.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        world_size=world_size,
+        rank=rank
+    )
+    
+    # 设置设备
     torch.cuda.set_device(rank)
     device = torch.device(f'cuda:{rank}')
     
-    # 添加GPU诊断信息
-    print(f"\n{'='*60}")
-    print(f"Worker {rank}/{world_size-1} initialized")
-    print(f"  Process ID: {os.getpid()}")
-    print(f"  Device: {device}")
-    print(f"  GPU Name: {torch.cuda.get_device_name(rank)}")
-    print(f"  GPU Memory: {torch.cuda.get_device_properties(rank).total_memory / 1024**3:.1f} GB")
-    print(f"  Initial Memory Allocated: {torch.cuda.memory_allocated(rank) / 1024**2:.1f} MB")
+    # 清理GPU缓存
+    torch.cuda.empty_cache()
     print(f"{'='*60}")
     
     # 调用原训练函数但添加分布式支持
@@ -362,6 +364,20 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     
     # 加载DiT模型 - 遵循官方LightningDiT项目结构
     logger.info("=== 加载LightningDiT模型 ===")
+    
+    # T4内存优化配置
+    if torch.cuda.is_available():
+        gpu_memory_gb = torch.cuda.get_device_properties(device).total_memory / 1024**3
+        logger.info(f"[GPU {rank}] 可用显存: {gpu_memory_gb:.1f}GB")
+        
+        # T4 GPU特殊优化
+        if gpu_memory_gb < 16:
+            # 设置CUDA内存分配策略以减少碎片
+            os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+            # 清理缓存
+            torch.cuda.empty_cache()
+            logger.info("🔧 T4内存优化：启用expandable_segments减少碎片")
+    
     pretrained_path = os.path.join(va_vae_root, 'LightningDiT', 'models', 'lightningdit-xl-imagenet256-64ep.pt')
     
     if not os.path.exists(pretrained_path):
@@ -404,7 +420,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     # 改用torch.utils.checkpoint
     logger.info("📊 T4内存优化配置：")
     logger.info(f"  - 混合精度训练: {use_amp}")
-    logger.info(f"  - 梯度累积步数: {config['trainer'].get('accumulate_grad_batches', 1)}")
+    # 梯度累积参数 - 平衡内存和效率
+    accumulate_grad_batches = config['trainer'].get('accumulate_grad_batches', 2)  # 累积2步，有效batch_size=4*2=8
+    logger.info(f"  - 梯度累积步数: {accumulate_grad_batches}")
     logger.info(f"  - 梯度裁剪: {config['trainer'].get('gradient_clip_val', 1.0)}")
     
     # 分布式模型包装 - 符合官方DDP最佳实践
@@ -463,12 +481,14 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     base_batch_size = config['data']['params']['batch_size']  # 从配置文件读取
     batch_size = base_batch_size // world_size  # 分布式训练时每个GPU的batch_size
     
-    # T4 GPU内存限制，进一步减小batch size如果需要
+    # T4 GPU内存限制，智能调整batch size
     if torch.cuda.is_available():
         gpu_memory_gb = torch.cuda.get_device_properties(device).total_memory / 1024**3
-        if gpu_memory_gb < 16 and batch_size > 2:  # T4只有15GB
-            batch_size = min(batch_size, 2)
-            logger.warning(f"T4 GPU内存限制，调整batch_size为{batch_size}")
+        if gpu_memory_gb < 16:  # T4只有15GB
+            # Kaggle T4×2配置：每GPU 2个样本，总共4个
+            batch_size = 2  # 经测试T4可以处理batch_size=2
+            logger.info(f"T4 GPU配置({gpu_memory_gb:.1f}GB)，每GPU batch_size={batch_size}")
+            logger.info(f"总有效batch_size = {batch_size * world_size} = {batch_size * world_size}")
     
     # 强制验证batch_size配置
     logger.info(f"[GPU {rank}] Batch size configuration:")
@@ -613,14 +633,30 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
                 logger.info(f"[GPU {rank}] Actual batch size: {actual_batch_size} (expected: {batch_size})")
                 if actual_batch_size != batch_size:
                     logger.warning(f"[GPU {rank}] ⚠️ Batch size mismatch! Got {actual_batch_size}, expected {batch_size}")       
-            # VA-VAE编码 - 每个GPU独立处理自己的批次
+            # VA-VAE编码 - 优化内存使用
             with torch.no_grad():
-                # VA-VAE在cuda:0上，需要处理设备转移
+                # 批处理编码以减少内存峰值
                 if device.index != 0:
-                    # 非cuda:0设备：转移数据到cuda:0进行编码
-                    images_cuda0 = real_images.to('cuda:0')
-                    latents = vae.encode_images(images_cuda0)
-                    latents = latents.to(device)  # 转回当前设备
+                    # 非cuda:0设备：分批编码以减少内存压力
+                    batch_size_encode = real_images.shape[0]
+                    if batch_size_encode > 1:
+                        # 分两批编码
+                        half = batch_size_encode // 2
+                        images1 = real_images[:half].to('cuda:0')
+                        latents1 = vae.encode_images(images1)
+                        images1 = None  # 立即释放
+                        torch.cuda.empty_cache()
+                        
+                        images2 = real_images[half:].to('cuda:0')
+                        latents2 = vae.encode_images(images2)
+                        images2 = None
+                        torch.cuda.empty_cache()
+                        
+                        latents = torch.cat([latents1, latents2], dim=0).to(device)
+                    else:
+                        images_cuda0 = real_images.to('cuda:0')
+                        latents = vae.encode_images(images_cuda0)
+                        latents = latents.to(device)
                 else:
                     # cuda:0设备：直接编码
                     latents = vae.encode_images(real_images)  # [B, 32, 16, 16]
