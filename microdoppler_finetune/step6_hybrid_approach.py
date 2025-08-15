@@ -2,19 +2,37 @@
 """
 混合策略：标准DiT训练 + 可选的用户区分增强
 兼顾原项目思想和任务特定需求
+优化for Kaggle T4*2 GPU分布式训练
 """
 
 import os
 import sys
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-import yaml
-import argparse
-import numpy as np
-from pathlib import Path
+from torch.utils.data import Dataset, DataLoader, random_split
+import torchvision.transforms as transforms
+from torch.optim.lr_scheduler import CosineAnnealingLR
+
+# T4*2 GPU优化配置 - 启用Triton编译器和TensorCore
+torch.backends.cuda.matmul.allow_tf32 = True  # T4 TensorCore优化
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.benchmark = True  # 优化固定输入大小
+
+# Kaggle T4*2 分布式训练支持
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
+
 from datetime import datetime
 from tqdm import tqdm
 from PIL import Image
+import yaml
+import numpy as np
+import argparse
+import logging
+from pathlib import Path
 
 # 添加LightningDiT到路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT'))
@@ -198,8 +216,45 @@ class UserDiscriminationLoss(torch.nn.Module):
         return pos_loss * self.weight
 
 
+# Kaggle T4*2 分布式训练辅助函数
+def setup_distributed_training(rank, world_size):
+    """初始化分布式训练进程组"""
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        world_size=world_size,
+        rank=rank
+    )
+    torch.cuda.set_device(rank)
+
+
+def cleanup_distributed_training():
+    """清理分布式训练"""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def hybrid_dit_train_worker(rank, world_size, config_path, use_user_loss, user_loss_weight):
+    """T4*2分布式训练工作进程"""
+    
+    # 初始化分布式训练
+    setup_distributed_training(rank, world_size)
+    device = torch.device(f'cuda:{rank}')
+    
+    print(f"[GPU {rank}] Starting distributed training on {device}")
+    
+    # 调用原训练函数但添加分布式支持
+    hybrid_dit_train(config_path, use_user_loss, user_loss_weight, rank, world_size, device)
+    
+    # 清理分布式训练
+    cleanup_distributed_training()
+
+
 def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml', 
-                     use_user_loss=True, user_loss_weight=0.1):
+                     use_user_loss=True, user_loss_weight=0.1, 
+                     rank=0, world_size=1, device=None):
     """
     混合训练策略：
     - 主体：标准LightningDiT训练
@@ -231,9 +286,18 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    print(f"User discrimination loss: {'ON' if use_user_loss else 'OFF'}")
+    # 设备配置 - 支持分布式训练
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    is_distributed = world_size > 1
+    is_main_process = rank == 0
+    
+    if is_main_process:
+        print(f"Using device: {device}")
+        print(f"Distributed training: {'ON' if is_distributed else 'OFF'}")
+        print(f"World size: {world_size}, Rank: {rank}")
+        print(f"User discrimination loss: {'ON' if use_user_loss else 'OFF'}")
     
     # 创建实验目录
     exp_name = f"hybrid_dit_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -308,6 +372,15 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     
     model.to(device)
     
+    # 启用FP16混合精度训练 - T4优化
+    model = model.half()  # 转换为FP16
+    
+    # DDP包装模型 - T4*2分布式训练
+    if is_distributed:
+        model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=True)
+        if is_main_process:
+            logger.info(f"Model wrapped with DDP on rank {rank}")
+    
     # 可选的用户区分损失
     user_loss_fn = UserDiscriminationLoss(weight=user_loss_weight) if use_user_loss else None
     
@@ -347,11 +420,30 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         device=device
     )
     
-    batch_size = 8  # 降低batch_size适应数据量少的情况
-    logger.info(f"Using batch_size={batch_size} (reduced for small dataset)")
+    # T4*2优化的batch_size配置
+    base_batch_size = 16  # T4支持更大batch_size
+    batch_size = base_batch_size // world_size  # 分布式训练时每个GPU的batch_size
+    
+    if is_main_process:
+        logger.info(f"Total batch_size: {base_batch_size}, Per-GPU batch_size: {batch_size}")
+    
+    # 分布式采样器配置
+    train_sampler = DistributedSampler(
+        train_dataset, 
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True
+    ) if is_distributed else None
+    
+    val_sampler = DistributedSampler(
+        val_dataset,
+        num_replicas=world_size, 
+        rank=rank,
+        shuffle=False
+    ) if is_distributed else None
     
     # 特殊采样：确保每个batch包含多个用户（对比损失需要）
-    if use_user_loss:
+    if use_user_loss and not is_distributed:
         from torch.utils.data.sampler import BatchSampler, RandomSampler
         
         # 创建平衡采样器
@@ -407,8 +499,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=batch_size,
-            shuffle=True,
-            num_workers=0,
+            sampler=train_sampler,
+            shuffle=(train_sampler is None),  # 分布式时用sampler，否则shuffle
+            num_workers=4,  # T4*2有更多CPU核心
             pin_memory=True,
             drop_last=True
         )
@@ -416,8 +509,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     val_loader = torch.utils.data.DataLoader(
         val_dataset,
         batch_size=batch_size,
+        sampler=val_sampler,
         shuffle=False,
-        num_workers=0,
+        num_workers=4,
         pin_memory=True
     )
     
@@ -534,24 +628,52 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
                 logger.info(f"✅ Saved best model (val_loss={avg_val_loss:.4f})")
         
         # 定期保存
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 10 == 0 and is_main_process:
             torch.save({
-                'model': model.state_dict(),
+                'model': model.module.state_dict() if is_distributed else model.state_dict(),
                 'ema': ema.state_dict(),
                 'optimizer': optimizer.state_dict(),
                 'epoch': epoch,
                 'config': config
             }, exp_dir / f'checkpoint_epoch_{epoch+1}.pt')
     
-    logger.info(f"✅ 训练完成！最佳验证损失: {best_val_loss:.4f}")
+    if is_main_process:
+        logger.info(f"✅ 训练完成！最佳验证损失: {best_val_loss:.4f}")
+    
     return exp_dir
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='../configs/microdoppler_finetune.yaml')
-    parser.add_argument('--use_user_loss', action='store_true', help='Enable user discrimination loss')
-    parser.add_argument('--user_loss_weight', type=float, default=0.1, help='Weight for user loss')
+    parser = argparse.ArgumentParser(description="Hybrid DiT Training for Micro-Doppler")
+    parser.add_argument("--config", type=str, default="../configs/microdoppler_finetune.yaml")
+    parser.add_argument("--use_user_loss", action="store_true", help="Enable user discrimination loss")
+    parser.add_argument("--user_loss_weight", type=float, default=0.1, help="Weight for user loss")
+    parser.add_argument("--distributed", action="store_true", help="Enable T4*2 distributed training")
+    parser.add_argument("--world_size", type=int, default=2, help="Number of GPUs for distributed training")
     args = parser.parse_args()
     
-    hybrid_dit_train(args.config, args.use_user_loss, args.user_loss_weight)
+    # 检测GPU数量并自动配置分布式训练
+    num_gpus = torch.cuda.device_count()
+    print(f"Detected {num_gpus} GPUs")
+    
+    if args.distributed and num_gpus >= 2:
+        print("🚀 Starting T4*2 Distributed Training...")
+        print(f"World size: {args.world_size}")
+        print("=" * 50)
+        
+        # 启动T4*2分布式训练
+        mp.spawn(
+            hybrid_dit_train_worker,
+            args=(args.world_size, args.config, args.use_user_loss, args.user_loss_weight),
+            nprocs=args.world_size,
+            join=True
+        )
+    else:
+        # 单GPU训练
+        if args.distributed:
+            print("⚠️ Distributed training requested but insufficient GPUs available")
+            print("Falling back to single GPU training...")
+        else:
+            print("🎯 Starting Single GPU Training...")
+        
+        hybrid_dit_train(args.config, args.use_user_loss, args.user_loss_weight)
