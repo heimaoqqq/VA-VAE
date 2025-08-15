@@ -593,15 +593,15 @@ def evaluate_vf_alignment(model, data_root, split_file=None, num_samples=30, dev
             rec_vf = (rec + 1.0) / 2.0
             rec_vf = torch.clamp(rec_vf, 0, 1)
             
-            # 提取VF特征
-            if hasattr(model.vf_model, 'forward_features'):
+            # 提取VF特征 - 使用正确的foundation_model属性
+            if hasattr(model.foundation_model, 'forward_features'):
                 # DINOv2风格的模型
-                orig_feat = model.vf_model.forward_features(img_vf)
-                rec_feat = model.vf_model.forward_features(rec_vf)
+                orig_feat = model.foundation_model.forward_features(img_vf)
+                rec_feat = model.foundation_model.forward_features(rec_vf)
             else:
                 # 标准模型
-                orig_feat = model.vf_model(img_vf)
-                rec_feat = model.vf_model(rec_vf)
+                orig_feat = model.foundation_model(img_vf)
+                rec_feat = model.foundation_model(rec_vf)
             
             # 如果是多层特征，取最后一层
             if isinstance(orig_feat, (list, tuple)):
