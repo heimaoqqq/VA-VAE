@@ -205,8 +205,8 @@ def train_dit(rank=0, world_size=1):
         logger.warning(f"⚠️ VA-VAE checkpoint not found at {vae_checkpoint}")
         logger.warning("Using randomly initialized weights")
     
-    vae.to(device)
-    vae.eval()
+    # VA-VAE的model已经在初始化时调用了.cuda()，不需要.to(device)
+    # vae.model已经是eval模式
     
     # ===== 2. 初始化LightningDiT-B模型 =====
     logger.info("=== 初始化LightningDiT-B ===")
