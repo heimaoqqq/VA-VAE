@@ -30,10 +30,26 @@ class MockFairscaleModule:
     def __call__(self, *args, **kwargs):
         return None
 
-# Mock fairscale模块
+# Mock缺失的依赖模块
 import sys
+import types
+
+# Mock torchdiffeq
+def mock_odeint(func, y0, t, **kwargs):
+    """简单的欧拉法mock实现"""
+    result = [y0]
+    for i in range(1, len(t)):
+        dt = t[i] - t[i-1]
+        dy = func(t[i-1], result[-1])
+        result.append(result[-1] + dt * dy)
+    return torch.stack(result)
+
+if 'torchdiffeq' not in sys.modules:
+    torchdiffeq_mock = types.ModuleType('torchdiffeq')
+    torchdiffeq_mock.odeint = mock_odeint
+    sys.modules['torchdiffeq'] = torchdiffeq_mock
+
 if 'fairscale' not in sys.modules:
-    import types
     fairscale_mock = types.ModuleType('fairscale')
     fairscale_mock.nn = types.ModuleType('nn')
     fairscale_mock.nn.model_parallel = types.ModuleType('model_parallel')
