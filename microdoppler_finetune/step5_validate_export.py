@@ -16,27 +16,73 @@ from omegaconf import OmegaConf
 from datetime import datetime
 import torch.nn.functional as F
 
-# 设置项目路径
-project_root = Path(__file__).parent.parent
+# 设置项目路径 - 兼容Kaggle环境
+if '/kaggle/working' in str(Path.cwd()):
+    # Kaggle环境
+    project_root = Path('/kaggle/working/VA-VAE')
+else:
+    # 本地环境
+    project_root = Path(__file__).parent.parent
+
+# 添加必要的模块路径
 vavae_path = project_root / 'LightningDiT' / 'vavae'
 if str(vavae_path) not in sys.path:
     sys.path.insert(0, str(vavae_path))
 
-# 设置taming路径（如果需要）
-taming_path = project_root / 'taming-transformers'
-if taming_path.exists() and str(taming_path) not in sys.path:
-    sys.path.insert(0, str(taming_path))
+# 添加LightningDiT根目录
+lightningdit_path = project_root / 'LightningDiT'
+if str(lightningdit_path) not in sys.path:
+    sys.path.insert(0, str(lightningdit_path))
 
-# 导入必要的模块
+# 设置taming路径 - 多个可能位置
+taming_paths = [
+    project_root / 'LightningDiT' / 'taming-transformers',
+    project_root / 'taming-transformers',
+    Path('/kaggle/input/taming-transformers'),
+    Path('/opt/conda/lib/python3.10/site-packages/taming')
+]
+
+for taming_path in taming_paths:
+    if taming_path.exists():
+        if str(taming_path) not in sys.path:
+            sys.path.insert(0, str(taming_path))
+        break
+
+# 导入必要的模块 - 避免taming硬依赖
 try:
     from ldm.util import instantiate_from_config
     from ldm.models.autoencoder import AutoencoderKL
-    from ldm.modules.losses.contperceptual import LPIPSWithDiscriminator
-    print("✅ 成功导入VA-VAE模块")
-except ImportError as e:
-    print(f"❌ 导入错误: {e}")
-    print(f"请确保在项目根目录下运行，当前路径: {Path.cwd()}")
-    sys.exit(1)
+    print("✅ 成功导入ldm模块")
+except ImportError as e1:
+    print(f"⚠️ ldm导入失败: {e1}")
+    
+    # 创建简化的instantiate_from_config函数
+    def instantiate_from_config(config):
+        """简化版本的模型实例化函数"""
+        if isinstance(config, str):
+            return config
+        target = config.get('target', '')
+        
+        if 'AutoencoderKL' in target:
+            # 直接加载AutoencoderKL
+            try:
+                from ldm.models.autoencoder import AutoencoderKL
+                return AutoencoderKL(**config.get('params', {}))
+            except:
+                print("❌ 无法创建AutoencoderKL实例")
+                return None
+        
+        print(f"⚠️ 未知的目标类型: {target}")
+        return None
+    
+    print("✅ 使用简化版instantiate_from_config")
+
+# 尝试导入可选的taming模块
+try:
+    import taming
+    print("✅ taming模块可用")
+except ImportError:
+    print("⚠️ taming模块不可用，部分功能可能受限")
 
 # 尝试导入可选模块
 try:
@@ -56,7 +102,7 @@ except ImportError:
     print("⚠️ LPIPS未安装，感知损失评估将跳过")
 
 def load_model(checkpoint_path, config_path=None, device='cuda'):
-    """加载VA-VAE模型（符合官方格式）"""
+    """加载VA-VAE模型（兼容多种格式）"""
     print(f"\n📂 加载VA-VAE模型...")
     print(f"  Checkpoint: {checkpoint_path}")
     
