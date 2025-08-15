@@ -21,6 +21,44 @@ from sklearn.metrics import silhouette_score
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / 'LightningDiT' / 'vavae'))
 sys.path.insert(0, str(project_root / 'LightningDiT'))
+sys.path.insert(0, str(project_root))  # 添加根目录
+
+# 关键：在导入ldm之前设置taming路径！
+def setup_taming_path():
+    """设置taming路径，必须在导入ldm之前调用"""
+    # 按优先级检查taming位置
+    taming_locations = [
+        Path('/kaggle/working/taming-transformers'),  # Kaggle标准位置
+        Path('/kaggle/working/.taming_path'),  # 路径文件
+        Path.cwd().parent / 'taming-transformers',  # 项目根目录
+        Path.cwd() / '.taming_path'  # 当前目录路径文件
+    ]
+    
+    for location in taming_locations:
+        if location.name == '.taming_path' and location.exists():
+            # 读取路径文件
+            try:
+                with open(location, 'r') as f:
+                    taming_path = f.read().strip()
+                if Path(taming_path).exists() and taming_path not in sys.path:
+                    sys.path.insert(0, taming_path)
+                    print(f"📂 已加载taming路径: {taming_path}")
+                    return True
+            except Exception as e:
+                continue
+        elif location.name == 'taming-transformers' and location.exists():
+            # 直接路径
+            taming_path = str(location.absolute())
+            if taming_path not in sys.path:
+                sys.path.insert(0, taming_path)
+                print(f"📂 发现并加载taming: {taming_path}")
+                return True
+    
+    # 静默失败，因为可能已经通过其他方式加载
+    return False
+
+# 设置taming路径（必须在导入ldm之前）
+setup_taming_path()
 
 from omegaconf import OmegaConf
 from ldm.util import instantiate_from_config
