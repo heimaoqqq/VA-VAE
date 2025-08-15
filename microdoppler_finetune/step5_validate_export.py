@@ -859,7 +859,8 @@ def generate_report(results):
     print("="*60)
     
     rec_ok = results.get('reconstruction', {}).get('mse', 1.0) < 0.02
-    disc_ok = results.get('user_discrimination', {}).get('ratio', 0) > 1.5
+    user_disc = results.get('user_discrimination')
+    disc_ok = user_disc is not None and user_disc.get('ratio', 0) > 1.5
     
     if rec_ok and disc_ok:
         print("✅ 模型已准备好进行DiT训练!")
