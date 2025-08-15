@@ -21,6 +21,7 @@ from tqdm import tqdm
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 from PIL import Image
+from omegaconf import OmegaConf
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -177,29 +178,32 @@ def train_dit(rank=0, world_size=1):
     
     # ===== 1. 初始化VA-VAE（仅用于编码） =====
     logger.info("=== 初始化VA-VAE编码器 ===")
-    # VA-VAE需要配置文件路径
-    vae_config_path = project_root / 'LightningDiT' / 'configs' / 'lightningdit_xl_vavae_f16d32.yaml'
+    # 创建临时配置文件，指向我们的checkpoint
+    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+    
+    # 加载原始配置并修改checkpoint路径
+    vae_config_path = project_root / 'LightningDiT' / 'tokenizer' / 'configs' / 'vavae_f16d32.yaml'
+    vae_config = OmegaConf.load(str(vae_config_path))
+    vae_config.ckpt_path = vae_checkpoint  # 设置checkpoint路径
+    
+    # 保存修改后的配置到临时文件
+    temp_config_path = project_root / 'temp_vavae_config.yaml'
+    OmegaConf.save(vae_config, str(temp_config_path))
+    
+    # 使用修改后的配置初始化VA-VAE
     vae = VA_VAE(
-        config=str(vae_config_path),
+        config=str(temp_config_path),
         img_size=256,
-        horizon_flip=0.0,  # 训练时不需要水平翻转
+        horizon_flip=0.0,  # 训练时不需要水平翻转（数据增强对微多普勒时频图效果很差）
         fp16=True
     )
     
-    # 加载微调后的VA-VAE权重
-    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+    # VA-VAE已经通过配置文件加载了checkpoint
     if os.path.exists(vae_checkpoint):
-        logger.info(f"Loading VA-VAE checkpoint: {vae_checkpoint}")
-        checkpoint = torch.load(vae_checkpoint, map_location='cpu')
-        
-        # 处理权重键名
-        state_dict = checkpoint.get('state_dict', checkpoint)
-        state_dict = {k.replace('vae.', ''): v for k, v in state_dict.items() if k.startswith('vae.')}
-        
-        vae.load_state_dict(state_dict, strict=False)
-        logger.info("✓ VA-VAE loaded successfully")
+        logger.info("✓ VA-VAE loaded successfully with checkpoint")
     else:
-        logger.warning("⚠️ VA-VAE checkpoint not found")
+        logger.warning(f"⚠️ VA-VAE checkpoint not found at {vae_checkpoint}")
+        logger.warning("Using randomly initialized weights")
     
     vae.to(device)
     vae.eval()
