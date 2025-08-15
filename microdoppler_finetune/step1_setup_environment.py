@@ -118,6 +118,7 @@ def setup_vavae_environment():
         "safetensors",   # 安全模型存储
         "pytorch_fid",   # FID计算
         "tensorboard",   # 训练监控
+        "omegaconf",     # 配置管理
         # 注意：不要包含clip-by-openai，有依赖冲突
         # 注意：不要包含taming，使用克隆方式
     ]
