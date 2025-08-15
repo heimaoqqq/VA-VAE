@@ -103,38 +103,29 @@ class MicroDopplerDataset(Dataset):
     
     def __init__(self, data_dir, image_size=256, split="train", train_ratio=0.8, vae=None, device=None):
         self.data_dir = Path(data_dir)
-        self.image_size = image_size
-        self.vae = vae
-        self.device = device  # 添加设备参数
-        
-        self.transform = transforms.Compose([
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-        
-        # 收集所有数据
+        self.split = split
         self.samples = []
         
-        for user_id in range(1, 32):  # ID_1 到 ID_31
-            user_folder = self.data_dir / f'ID_{user_id}'
-            if user_folder.exists():
-                images = list(user_folder.glob('*.jpg')) + list(user_folder.glob('*.png'))
+        # 获取所有用户的图片
+        for user_dir in sorted(self.data_dir.iterdir()):
+            if user_dir.is_dir() and user_dir.name.startswith("ID_"):
+                user_id = int(user_dir.name.split("_")[1]) - 1  # 0-based indexing
+                images = list(user_dir.glob("*.png"))
                 
-                # 划分训练/验证集
+                # 分割训练/验证集
                 n_train = int(len(images) * train_ratio)
-                if split == 'train':
+                if split == "train":
                     selected = images[:n_train]
                 else:
                     selected = images[n_train:]
                 
                 for img_path in selected:
                     self.samples.append({
-                        'path': str(img_path),
-                        'class_id': user_id - 1,  # 0-30，作为类别ID
+                        "path": img_path,
+                        "class_id": user_id  # 0-based用户ID
                     })
         
-        print(f"Loaded {len(self.samples)} samples for {split} split")
+        print(f"{split}集: {len(self.samples)}个样本")
     
     def __len__(self):
         return len(self.samples)
@@ -142,24 +133,15 @@ class MicroDopplerDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.samples[idx]
         
-        # 加载图像
-        img = Image.open(sample['path']).convert('RGB')
+        # 加载并预处理图片
+        img = Image.open(sample["path"]).convert("RGB")
+        img = transforms.ToTensor()(img)  # [3, H, W], 范围[0,1]
+        img = (img * 2.0) - 1.0  # 转换到[-1, 1]
         
-        # 转换为tensor：HWC -> CHW，[0,1] -> [-1,1]
-        img_tensor = self.transform(img)
-        
-        # VAE编码到潜在空间
-        if self.vae is not None:
-            # 预编码策略：始终在主设备上进行VAE编码
-            with torch.cuda.device(0):  # 强制使用cuda:0
-                img_tensor_cuda = img_tensor.cuda(0)
-                with torch.no_grad():
-                    latent = self.vae.encode_images(img_tensor_cuda.unsqueeze(0))
-                latent = latent.squeeze(0).cpu()  # (32, 16, 16)
-        
+        # 返回原图，VAE编码将在主进程GPU上进行
         return {
-            'latent': latent if self.vae is not None else img_tensor,
-            'class_id': sample['class_id']
+            "image": img,
+            "class_id": sample["class_id"]
         }
 
 
@@ -248,11 +230,16 @@ def cleanup_distributed_training():
         dist.destroy_process_group()
 
 
-def hybrid_dit_train_worker(rank, world_size, config_path, use_user_loss, user_loss_weight):
-    """T4*2分布式训练工作进程"""
+def hybrid_dit_train_worker(rank, world_size, config_path, use_user_loss=False, user_loss_weight=0.1):
+    """分布式训练worker进程 - Kaggle T4x2优化"""
+    # Kaggle T4x2标准环境变量设置
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '29500'
+    os.environ['NCCL_DEBUG'] = 'WARN'
+    os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'OFF'
     
-    # 初始化分布式训练
-    setup_distributed_training(rank, world_size)
+    # 设置当前进程使用的GPU
+    torch.cuda.set_device(rank)
     device = torch.device(f'cuda:{rank}')
     
     print(f"[GPU {rank}] 在设备 {device} 上启动分布式训练")
@@ -419,7 +406,7 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     
     # 数据集
     logger.info("=== 准备数据集 ===")
-    # 创建数据集，传入VA-VAE和设备用于在线编码
+    # 创建数据集 - 不在Dataset中进行VAE编码，支持多进程加载
     data_dir = config['data']['params']['data_dir']
     val_split = config['data']['params']['val_split']
     train_ratio = 1.0 - val_split
@@ -427,16 +414,12 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     train_dataset = MicroDopplerDataset(
         data_dir=data_dir, 
         split="train", 
-        train_ratio=train_ratio,
-        vae=vae,
-        device=device  # 传递设备信息
+        train_ratio=train_ratio
     )
     val_dataset = MicroDopplerDataset(
         data_dir=data_dir, 
         split="val", 
-        train_ratio=train_ratio,
-        vae=vae,
-        device=device  # 传递设备信息
+        train_ratio=train_ratio
     )
     
     # T4*2优化的batch_size配置
@@ -514,15 +497,16 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
             pin_memory=True
         )
     else:
-        # 标准随机采样 - 数据加载器禁用多进程避免VA-VAE设备冲突
+        # 标准随机采样 - 恢复多进程数据加载
+        num_workers = config['data']['params'].get('num_workers', 4)
         train_loader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=batch_size,
             sampler=train_sampler,
-            shuffle=False,  # 分布式采样器时不能shuffle
-            num_workers=0,  # 禁用多进程，避免VA-VAE在子进程中的设备冲突
+            shuffle=(train_sampler is None),  # 没有sampler时才shuffle
+            num_workers=num_workers // world_size if is_distributed else num_workers,
             pin_memory=True,
-            persistent_workers=False
+            persistent_workers=(num_workers > 0)
         )
     
     val_loader = torch.utils.data.DataLoader(
@@ -530,9 +514,9 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         batch_size=batch_size,
         sampler=val_sampler,
         shuffle=False,
-        num_workers=0,  # 禁用多进程
+        num_workers=num_workers // world_size if is_distributed else num_workers,
         pin_memory=True,
-        persistent_workers=False
+        persistent_workers=(num_workers > 0)
     )
     
     # 优化器 - 按原项目标准设置
@@ -558,8 +542,20 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         train_losses = {'total': [], 'diffusion': [], 'user': []}
         
         for batch_idx, batch in enumerate(tqdm(train_loader, desc="训练中")):
-            latents = batch['latent'].to(device)
+            # 获取图像并进行VAE编码
+            images = batch['image'].to(device)  # [B, 3, 256, 256]
             class_ids = batch['class_id'].to(device)
+            
+            # VA-VAE编码 - 在主进程GPU上执行
+            with torch.no_grad():
+                if rank == 0 or not is_distributed:
+                    # rank 0或单GPU模式：直接编码
+                    latents = vae.encode_images(images)  # [B, 32, 16, 16]
+                else:
+                    # 其他rank：需要将数据发到cuda:0编码后再返回
+                    images_cuda0 = images.to('cuda:0')
+                    latents = vae.encode_images(images_cuda0)
+                    latents = latents.to(device)  # 移回当前设备
             
             # 标准扩散训练
             t = torch.rand(latents.shape[0], device=device)
@@ -617,8 +613,17 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
             
             with torch.no_grad():
                 for batch in tqdm(val_loader, desc="Validation"):
-                    latents = batch['latent'].to(device)
+                    # 获取图像并进行VAE编码
+                    images = batch['image'].to(device)
                     class_ids = batch['class_id'].to(device)
+                    
+                    # VA-VAE编码
+                    if rank == 0 or not is_distributed:
+                        latents = vae.encode_images(images)
+                    else:
+                        images_cuda0 = images.to('cuda:0')
+                        latents = vae.encode_images(images_cuda0)
+                        latents = latents.to(device)
                     
                     t = torch.rand(latents.shape[0], device=device)
                     x_1 = torch.randn_like(latents)
@@ -677,9 +682,16 @@ if __name__ == "__main__":
     print(f"🔍 检测到 {num_gpus} 个GPU")
     
     if args.distributed and num_gpus >= 2:
-        print("🚀 启动T4*2分布式训练...")
-        print(f"集群大小: {args.world_size}")
+        print("🚀 启动Kaggle T4x2分布式训练...")
+        print(f"📊 GPU配置:")
+        for i in range(num_gpus):
+            props = torch.cuda.get_device_properties(i)
+            print(f"   GPU {i}: {props.name} ({props.total_memory / 1024**3:.1f}GB)")
+        print(f"🌐 进程数: {args.world_size}")
         print("=" * 50)
+        
+        # 设置必要的环境变量
+        os.environ['CUDA_VISIBLE_DEVICES'] = ','.join(str(i) for i in range(num_gpus))
         
         # 启动T4*2分布式训练
         mp.spawn(
