@@ -654,7 +654,7 @@ def test_user_discrimination(model, data_root, split_file=None, num_users=10, sa
     return evaluate_user_discrimination(model, data_root, split_file, num_users, samples_per_user, device)
 
 
-def evaluate_user_discrimination(model, data_root, split_file=None, num_users=10, samples_per_user=10, device='cuda'):
+def evaluate_user_discrimination(model, data_root, split_file=None, num_users=10, samples_per_user=10, device='cuda', use_original_dataset=True):
     """评估用户区分能力（微多普勒特定）"""
     print("\n" + "="*60)
     print("👥 评估用户区分能力 (User Discrimination)")
@@ -665,20 +665,44 @@ def evaluate_user_discrimination(model, data_root, split_file=None, num_users=10
     all_features = []
     all_labels = []
     
-    # 提取每个用户的特征
+    # 提取每个用户的特征 - 使用原始数据集的ID_x命名
+    processed_users = 0
+    print(f"  📂 使用原始数据集路径: {data_root}")
+    
     for user_id in tqdm(range(1, 32), desc="提取用户特征"):
-        user_folder = data_path / f"user{user_id}"
+        # 使用原始数据集的命名格式 ID_1, ID_2, ...
+        user_folder = data_path / f"ID_{user_id}"
         if not user_folder.exists():
+            print(f"  ⚠️ 文件夹不存在: {user_folder}")
             continue
         
         features = []
         images = list(user_folder.glob("*.jpg"))[:samples_per_user]
         
+        # 调试信息：检查找到的图片数
+        if len(images) == 0:
+            # 尝试其他格式
+            png_images = list(user_folder.glob("*.png"))
+            jpeg_images = list(user_folder.glob("*.jpeg"))
+            if png_images:
+                images = png_images[:samples_per_user]
+                print(f"  📷 ID_{user_id}: 找到 {len(png_images)} 个PNG文件")
+            elif jpeg_images:
+                images = jpeg_images[:samples_per_user]
+                print(f"  📷 ID_{user_id}: 找到 {len(jpeg_images)} 个JPEG文件")
+            else:
+                print(f"  ⚠️ ID_{user_id}: 未找到任何图像文件")
+                continue
+        else:
+            print(f"  📷 ID_{user_id}: 找到 {len(images)} 个JPG文件")
+        
+        valid_images = 0
         for img_path in images:
             img_tensor = load_and_preprocess_image(img_path, device)
             if img_tensor is None:
                 continue
             
+            valid_images += 1
             with torch.no_grad():
                 # 获取潜在特征
                 posterior = model.encode(img_tensor)
@@ -692,6 +716,11 @@ def evaluate_user_discrimination(model, data_root, split_file=None, num_users=10
         
         if features:
             user_features[user_id] = np.mean(features, axis=0)
+            processed_users += 1
+        else:
+            print(f"  ⚠️ ID_{user_id}: {len(images)}张图片但无有效特征")
+    
+    print(f"  📊 成功处理 {processed_users} 个用户的特征")
     
     if len(user_features) < 2:
         print("⚠️ 用户数不足，无法进行区分分析")
