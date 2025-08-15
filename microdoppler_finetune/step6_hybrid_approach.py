@@ -238,11 +238,20 @@ def hybrid_dit_train_worker(rank, world_size, config_path, use_user_loss=False, 
     os.environ['NCCL_DEBUG'] = 'WARN'
     os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'OFF'
     
+    # 初始化分布式进程组
+    dist.init_process_group(
+        backend='nccl',
+        init_method='env://',
+        world_size=world_size,
+        rank=rank
+    )
+    
     # 设置当前进程使用的GPU
     torch.cuda.set_device(rank)
     device = torch.device(f'cuda:{rank}')
     
     print(f"[GPU {rank}] 在设备 {device} 上启动分布式训练")
+    print(f"[GPU {rank}] 进程组初始化成功")
     
     # 调用原训练函数但添加分布式支持
     hybrid_dit_train(config_path, use_user_loss, user_loss_weight, rank, world_size, device)
