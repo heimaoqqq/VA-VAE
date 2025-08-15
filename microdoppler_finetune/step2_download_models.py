@@ -70,36 +70,46 @@ def verify_model_checksum(file_path: Path, expected_hash: str = None):
 
 def download_vavae_models():
     """下载VA-VAE预训练模型"""
-    print("📥 下载VA-VAE预训练模型")
+    print("📥 下载VA-VAE和LightningDiT预训练模型")
     print("="*60)
     
     # 检测环境
     if os.path.exists('/kaggle/working'):
-        base_path = Path('/kaggle/working')
+        base_path = Path('/kaggle/working/VA-VAE')
         print("📍 Kaggle环境检测")
     else:
         base_path = Path.cwd()
         print("📍 本地环境检测")
     
-    # 创建模型目录
-    models_dir = base_path / "models"
-    models_dir.mkdir(exist_ok=True)
+    # 创建LightningDiT模型目录
+    lightningdit_models_dir = base_path / "LightningDiT" / "models"
+    lightningdit_models_dir.mkdir(parents=True, exist_ok=True)
     
-    # VA-VAE模型配置
+    # VA-VAE和LightningDiT模型配置
     models = {
-        "VA-VAE f16d32 DINOv2": {
+        "VA-VAE EMA": {
             "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/vavae-imagenet256-f16d32-dinov2.pt",
-            "filename": "vavae-imagenet256-f16d32-dinov2.pt",
+            "filename": "vavae-ema.pt",  # LightningDiT期望的文件名
             "size_mb": 2049,
-            "description": "VA-VAE with DINOv2 alignment (32-dim latent)",
-            "required": True
+            "description": "VA-VAE with DINOv2 alignment (EMA version)",
+            "required": True,
+            "dest_dir": lightningdit_models_dir
+        },
+        "LightningDiT XL": {
+            "url": "https://huggingface.co/hustvl/LightningDiT/resolve/main/lightningdit-xl-imagenet256-64ep.pt",
+            "filename": "lightningdit-xl-imagenet256-64ep.pt",
+            "size_mb": 700,
+            "description": "LightningDiT-XL预训练权重 (ImageNet 256x256)",
+            "required": True,
+            "dest_dir": lightningdit_models_dir
         },
         "Latent Statistics": {
             "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/latents_stats.pt",
             "filename": "latents_stats.pt",
             "size_mb": 0.001,
             "description": "潜在空间统计信息（用于采样）",
-            "required": False
+            "required": False,
+            "dest_dir": lightningdit_models_dir
         }
     }
     
@@ -132,9 +142,12 @@ def download_vavae_models():
             print(f"\n⏭️ 跳过 {name} (需要手动提供)")
             continue
         
-        dest_path = models_dir / info['filename']
+        # 使用每个模型指定的目标目录
+        dest_dir = info.get('dest_dir', models_dir)
+        dest_path = dest_dir / info['filename']
         
         print(f"\n📦 处理: {name}")
+        print(f"   目标路径: {dest_path}")
         if download_file(info['url'], dest_path):
             if verify_model_checksum(dest_path):
                 success_count += 1
@@ -150,8 +163,9 @@ def download_vavae_models():
     # 创建模型配置文件
     print("\n📝 创建模型配置...")
     model_config = {
-        "vavae_checkpoint": str(models_dir / "vavae-imagenet256-f16d32-dinov2.pt"),
-        "latent_stats": str(models_dir / "latents_stats.pt") if (models_dir / "latents_stats.pt").exists() else None,
+        "vavae_checkpoint": str(lightningdit_models_dir / "vavae-ema.pt"),
+        "lightningdit_checkpoint": str(lightningdit_models_dir / "lightningdit-xl-imagenet256-64ep.pt"),
+        "latent_stats": str(lightningdit_models_dir / "latents_stats.pt") if (lightningdit_models_dir / "latents_stats.pt").exists() else None,
         "model_type": "VA-VAE",
         "latent_dim": 32,
         "vfm_type": "dinov2",
@@ -159,7 +173,7 @@ def download_vavae_models():
     }
     
     import json
-    config_path = base_path / "models" / "model_config.json"
+    config_path = base_path / "model_config.json"
     with open(config_path, 'w') as f:
         json.dump(model_config, f, indent=2)
     print(f"✅ 配置已保存到: {config_path}")
@@ -178,7 +192,7 @@ def download_vavae_models():
     print("1. 运行 python step3_prepare_dataset.py 准备数据集")
     print("2. 运行 python step4_train_stage1.py 开始第一阶段训练")
     
-    return models_dir
+    return lightningdit_models_dir
 
 def check_kaggle_models():
     """检查Kaggle输入目录中的预训练模型"""
