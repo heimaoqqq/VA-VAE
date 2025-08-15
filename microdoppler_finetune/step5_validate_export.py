@@ -906,10 +906,25 @@ def generate_report(results):
     
     # 保存JSON报告
     from datetime import datetime
+    
+    def convert_to_serializable(obj):
+        """Convert numpy types to Python native types for JSON serialization"""
+        if isinstance(obj, dict):
+            return {key: convert_to_serializable(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_serializable(item) for item in obj]
+        elif hasattr(obj, 'item'):  # numpy scalar
+            return obj.item()
+        elif hasattr(obj, 'tolist'):  # numpy array
+            return obj.tolist()
+        else:
+            return obj
+    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = f"validation_report_{timestamp}.json"
+    serializable_results = convert_to_serializable(results)
     with open(report_path, 'w') as f:
-        json.dump(results, f, indent=2)
+        json.dump(serializable_results, f, indent=2)
     print(f"\n📝 报告已保存: {report_path}")
     
     return results
