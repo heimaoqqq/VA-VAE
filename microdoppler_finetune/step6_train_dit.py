@@ -98,12 +98,12 @@ class MicroDopplerLatentDataset(Dataset):
         latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
         stats_file = Path("/kaggle/working") / 'latents_stats.pt'
         
-        # 优先使用官方统计，否则使用自己计算的
+        # 加载微多普勒数据集自己的统计信息（不使用官方ImageNet统计）
         if stats_file.exists():
             stats = torch.load(stats_file)
             self.latent_mean = stats['mean'].float()
             self.latent_std = stats['std'].float()
-            logger.info(f"加载潜空间统计信息: mean={self.latent_mean.shape}, std={self.latent_std.shape}")
+            logger.info(f"加载微多普勒潜空间统计: mean={self.latent_mean.shape}, std={self.latent_std.shape}")
         else:
             self.latent_mean = None
             self.latent_std = None
