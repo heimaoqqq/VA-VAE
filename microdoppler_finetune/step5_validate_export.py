@@ -37,30 +37,32 @@ def load_model(checkpoint_path, config_path=None):
     else:
         # 使用默认配置
         config = OmegaConf.create({
-            'target': 'ldm.models.autoencoder.AutoencoderKL',
-            'params': {
-                'embed_dim': 32,
-                'use_vf': 'dinov2',
-                'reverse_proj': True,
-                'ddconfig': {
-                    'double_z': True,
-                    'z_channels': 32,
-                    'resolution': 256,
-                    'in_channels': 3,
-                    'out_ch': 3,
-                    'ch': 128,
-                    'ch_mult': [1, 1, 2, 2, 4],
-                    'num_res_blocks': 2,
-                    'attn_resolutions': [16],
-                    'dropout': 0.0
-                },
-                'lossconfig': {
-                    'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
-                    'params': {
-                        'disc_start': 1,
-                        'vf_weight': 0.1,
-                        'distmat_weight': 1.0,
-                        'cos_weight': 1.0
+            'model': {
+                'target': 'ldm.models.autoencoder.AutoencoderKL',
+                'params': {
+                    'embed_dim': 32,
+                    'use_vf': 'dinov2',
+                    'reverse_proj': True,
+                    'ddconfig': {
+                        'double_z': True,
+                        'z_channels': 32,
+                        'resolution': 256,
+                        'in_channels': 3,
+                        'out_ch': 3,
+                        'ch': 128,
+                        'ch_mult': [1, 1, 2, 2, 4],
+                        'num_res_blocks': 2,
+                        'attn_resolutions': [16],
+                        'dropout': 0.0
+                    },
+                    'lossconfig': {
+                        'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
+                        'params': {
+                            'disc_start': 1,
+                            'vf_weight': 0.1,
+                            'distmat_weight': 1.0,
+                            'cos_weight': 1.0
+                        }
                     }
                 }
             }
@@ -456,10 +458,10 @@ def main():
                        default='checkpoints/stage3/config.yaml',
                        help='模型配置文件')
     parser.add_argument('--data_root', type=str,
-                       default='/kaggle/input/micro-doppler-data',
+                       default='/kaggle/input/dataset',
                        help='数据集根目录')
     parser.add_argument('--split_file', type=str,
-                       default='dataset_split.json',
+                       default='/kaggle/working/data_split/dataset_split.json',
                        help='数据划分文件')
     
     # 功能选择
