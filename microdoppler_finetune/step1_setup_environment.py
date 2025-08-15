@@ -108,6 +108,10 @@ def setup_vavae_environment():
         "accelerate>=0.20.0",
         "lpips>=0.1.4",  # 感知损失
         "timm>=0.9.0",   # Vision Transformer模型
+        # LightningDiT transport模块依赖
+        "torchdiffeq",   # ODE求解器
+        "torchsde",      # SDE求解器
+        "scipy",         # 科学计算
         # 注意：不要包含clip-by-openai，有依赖冲突
         # 注意：不要包含taming，使用克隆方式
     ]
