@@ -148,24 +148,39 @@ def validate_reconstruction(model, data_root, split_file, num_samples=16, device
     model = model.to(device)
     
     with torch.no_grad():
-        for item in tqdm(val_data, desc="处理图像"):
-            # 加载图像
-            img_path = Path(data_root) / item['path']
-            if not img_path.exists():
-                continue
+        processed_count = 0
+        for user_paths in tqdm(val_data, desc="处理用户"):
+            # 每个user_paths是一个用户的图片路径列表
+            if isinstance(user_paths, list):
+                # 从每个用户选择几张图片
+                selected_paths = user_paths[:min(2, len(user_paths))]  # 每用户最多2张
+            else:
+                selected_paths = [user_paths]  # 如果是单个路径
                 
-            img = Image.open(img_path).convert('RGB')
-            img = img.resize((256, 256), Image.LANCZOS)
-            
-            # 转换为tensor
-            img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
-            
-            # 重建
-            reconstructed, _, _, _ = model(img_tensor)
-            
-            images.append(img_tensor.cpu())
-            reconstructions.append(reconstructed.cpu())
+            for img_path_str in selected_paths:
+                if processed_count >= num_samples:
+                    break
+                    
+                img_path = Path(img_path_str)
+                if not img_path.exists():
+                    continue
+                    
+                img = Image.open(img_path).convert('RGB')
+                img = img.resize((256, 256), Image.LANCZOS)
+                
+                # 转换为tensor
+                img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
+                img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
+                
+                # 重建
+                reconstructed, _, _, _ = model(img_tensor)
+                
+                images.append(img_tensor.cpu())
+                reconstructions.append(reconstructed.cpu())
+                processed_count += 1
+                
+            if processed_count >= num_samples:
+                break
     
     # 计算指标
     images_cat = torch.cat(images, dim=0)
@@ -236,26 +251,40 @@ def test_vf_alignment(model, data_root, split_file, device='cuda'):
     vf_similarities, reconstruction_errors = [], []
     
     with torch.no_grad():
-        for item in tqdm(test_samples, desc="VF对齐测试"):
-            img_path = Path(data_root) / item['path']
-            if not img_path.exists():
-                continue
+        processed_count = 0
+        for user_paths in tqdm(test_samples, desc="VF对齐测试"):
+            if isinstance(user_paths, list):
+                selected_paths = user_paths[:min(2, len(user_paths))]
+            else:
+                selected_paths = [user_paths]
                 
-            img = Image.open(img_path).convert('RGB').resize((256, 256))
-            img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
-            
-            reconstructed, posterior, aux_feature, z = model(img_tensor)
-            
-            if aux_feature is not None and hasattr(model, 'foundation_model'):
-                with torch.no_grad():
-                    recon_vf = model.foundation_model(reconstructed)
+            for img_path_str in selected_paths:
+                if processed_count >= 20:
+                    break
                     
-                similarity = torch.cosine_similarity(
-                    aux_feature.flatten(), recon_vf.flatten(), dim=0).item()
+                img_path = Path(img_path_str)
+                if not img_path.exists():
+                    continue
+                    
+                img = Image.open(img_path).convert('RGB').resize((256, 256))
+                img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
+                img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
                 
-                vf_similarities.append(similarity)
-                reconstruction_errors.append(torch.mean((img_tensor - reconstructed) ** 2).item())
+                reconstructed, posterior, aux_feature, z = model(img_tensor)
+                
+                if aux_feature is not None and hasattr(model, 'foundation_model'):
+                    with torch.no_grad():
+                        recon_vf = model.foundation_model(reconstructed)
+                        
+                    similarity = torch.cosine_similarity(
+                        aux_feature.flatten(), recon_vf.flatten(), dim=0).item()
+                    
+                    vf_similarities.append(similarity)
+                    reconstruction_errors.append(torch.mean((img_tensor - reconstructed) ** 2).item())
+                    processed_count += 1
+                    
+            if processed_count >= 20:
+                break
     
     avg_vf_similarity = np.mean(vf_similarities)
     
@@ -292,25 +321,39 @@ def test_user_discrimination(model, data_root, split_file, device='cuda'):
     user_features, user_labels, all_features = {}, [], []
     
     with torch.no_grad():
-        for item in tqdm(train_samples, desc="提取用户特征"):
-            img_path = Path(data_root) / item['path']
-            if not img_path.exists():
-                continue
+        processed_count = 0
+        for user_idx, user_paths in enumerate(tqdm(train_samples, desc="提取用户特征")):
+            if processed_count >= 300:
+                break
                 
-            user_id = item['user_id']
+            user_id = f"user_{user_idx}"  # 从索引生成用户ID
             
-            img = Image.open(img_path).convert('RGB').resize((256, 256))
-            img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
-            
-            posterior = model.encode(img_tensor)
-            z = posterior.sample().cpu().numpy().flatten()
-            
-            if user_id not in user_features:
-                user_features[user_id] = []
-            user_features[user_id].append(z)
-            all_features.append(z)
-            user_labels.append(user_id)
+            if isinstance(user_paths, list):
+                selected_paths = user_paths[:min(10, len(user_paths))]  # 每用户最多10张
+            else:
+                selected_paths = [user_paths]
+                
+            for img_path_str in selected_paths:
+                if processed_count >= 300:
+                    break
+                    
+                img_path = Path(img_path_str)
+                if not img_path.exists():
+                    continue
+                    
+                img = Image.open(img_path).convert('RGB').resize((256, 256))
+                img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
+                img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
+                
+                posterior = model.encode(img_tensor)
+                z = posterior.sample().cpu().numpy().flatten()
+                
+                if user_id not in user_features:
+                    user_features[user_id] = []
+                user_features[user_id].append(z)
+                all_features.append(z)
+                user_labels.append(user_id)
+                processed_count += 1
     
     all_features = np.array(all_features)
     
@@ -408,37 +451,39 @@ def extract_latent_statistics(model, data_root, split_file, device='cuda'):
     all_latents = []
     
     with torch.no_grad():
-        for item in tqdm(train_data, desc="编码图像"):
-            img_path = Path(data_root) / item['path']
-            if not img_path.exists():
-                continue
-            
-            img = Image.open(img_path).convert('RGB').resize((256, 256), Image.LANCZOS)
-            img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
-            
-            # 编码
-            posterior = model.encode(img_tensor)
-            z = posterior.sample()
-            
-            all_latents.append(z.cpu())
-            
-            # 按用户分组
-            user_id = item['user_id']
-            if user_id not in user_latents:
-                user_latents[user_id] = []
-            user_latents[user_id].append(z.cpu())
+        processed_count = 0
+        for user_paths in tqdm(train_data, desc="编码图像"):
+            if isinstance(user_paths, list):
+                selected_paths = user_paths[:min(5, len(user_paths))]  # 每用户最多5张
+            else:
+                selected_paths = [user_paths]
+                
+            for img_path_str in selected_paths:
+                if processed_count >= 500:  # 总共最多500张图
+                    break
+                    
+                img_path = Path(img_path_str)
+                if not img_path.exists():
+                    continue
+                
+                img = Image.open(img_path).convert('RGB').resize((256, 256), Image.LANCZOS)
+                img_array = np.array(img).astype(np.float32) / 127.5 - 1.0
+                img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).to(device)
+                
+                # 编码
+                posterior = model.encode(img_tensor)
+                z = posterior.sample()
+                
+                all_latents.append(z.cpu())
+                processed_count += 1
+                
+            if processed_count >= 500:
+                break
     
     # 计算全局统计
     all_latents = torch.cat(all_latents, dim=0)
     mean = all_latents.mean(dim=[0, 2, 3])  # [C]
     std = all_latents.std(dim=[0, 2, 3])    # [C]
-    
-    # 计算用户间差异
-    user_means = {}
-    for user_id, latents in user_latents.items():
-        user_latents_cat = torch.cat(latents, dim=0)
-        user_means[user_id] = user_latents_cat.mean(dim=[0, 2, 3])
     
     # 保存统计信息
     stats = {
