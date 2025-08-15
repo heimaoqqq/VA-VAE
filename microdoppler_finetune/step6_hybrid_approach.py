@@ -230,7 +230,7 @@ def cleanup_distributed_training():
         dist.destroy_process_group()
 
 
-def hybrid_dit_train_worker(rank, config_path, use_user_loss, user_loss_weight, world_size, device):
+def hybrid_dit_train_worker(rank, config_path, use_user_loss, user_loss_weight, world_size):
     """分布式训练worker函数 - Kaggle T4×2优化"""
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
@@ -822,7 +822,7 @@ if __name__ == "__main__":
         # 启动T4*2分布式训练
         mp.spawn(
             hybrid_dit_train_worker,
-            args=(args.world_size, args.config, args.use_user_loss, args.user_loss_weight),
+            args=(args.config, args.use_user_loss, args.user_loss_weight, args.world_size),
             nprocs=args.world_size,
             join=True
         )
