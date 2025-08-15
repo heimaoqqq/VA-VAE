@@ -536,13 +536,38 @@ def evaluate_vf_alignment(model, data_root, split_file=None, num_samples=30, dev
     cosine_sims = []
     feature_dists = []
     
-    # 收集测试样本
+    # 收集测试样本 - 支持split_file和直接扫描
     test_samples = []
-    for user_id in range(1, 32):
-        user_folder = data_path / f'user{user_id}'
-        if user_folder.exists():
-            images = sorted(user_folder.glob('*.png'))[:2]
-            test_samples.extend(images)
+    
+    if split_file and os.path.exists(split_file):
+        print(f"  📂 使用split文件: {split_file}")
+        with open(split_file, 'r') as f:
+            split_data = json.load(f)
+        
+        if 'val' in split_data:
+            val_data = split_data['val']
+            if isinstance(val_data, dict):
+                # 格式: {"user1": [files], "user2": [files]}
+                for user_files in val_data.values():
+                    if isinstance(user_files, list):
+                        for file_path in user_files[:2]:  # 每个用户2张
+                            full_path = os.path.join(data_root, str(file_path))
+                            if os.path.exists(full_path):
+                                test_samples.append(Path(full_path))
+            elif isinstance(val_data, list):
+                # 格式: ["user1/file1.jpg", ...]
+                for file_path in val_data[:num_samples]:
+                    full_path = os.path.join(data_root, str(file_path))
+                    if os.path.exists(full_path):
+                        test_samples.append(Path(full_path))
+    else:
+        # 直接扫描目录 - 修复文件扩展名
+        for user_id in range(1, 32):
+            user_folder = data_path / f'user{user_id}'
+            if user_folder.exists():
+                # 搜索jpg而不是png
+                images = sorted(user_folder.glob('*.jpg'))[:2]
+                test_samples.extend(images)
     
     if len(test_samples) > num_samples:
         import random
@@ -949,7 +974,9 @@ def main():
     
     # 4. 导出模型
     if args.export_models:
-        encoder_path, decoder_path = export_encoder_decoder(model, args.checkpoint)
+        # 设置导出目录
+        export_dir = Path(args.checkpoint).parent / 'exported_models'
+        encoder_path, decoder_path = export_encoder_decoder(model, args.checkpoint, str(export_dir))
         results['exported_models'] = {
             'encoder': encoder_path,
             'decoder': decoder_path
