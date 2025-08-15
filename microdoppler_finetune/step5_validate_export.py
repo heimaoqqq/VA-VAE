@@ -3,10 +3,55 @@
 
 import os
 import sys
+from pathlib import Path
+
+# 添加LightningDiT路径 - 必须在所有导入之前
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root / 'LightningDiT' / 'vavae'))
+sys.path.insert(0, str(project_root / 'LightningDiT'))
+sys.path.insert(0, str(project_root))
+
+# 关键：在导入ldm之前设置taming路径！
+def setup_taming_path():
+    """设置taming路径，必须在导入ldm之前调用"""
+    # 按优先级检查taming位置
+    taming_locations = [
+        Path('/kaggle/working/taming-transformers'),  # Kaggle标准位置
+        Path('/kaggle/working/.taming_path'),  # 路径文件
+        Path.cwd().parent / 'taming-transformers',  # 项目根目录
+        Path.cwd() / '.taming_path'  # 当前目录路径文件
+    ]
+    
+    for location in taming_locations:
+        if location.name == '.taming_path' and location.exists():
+            # 读取路径文件
+            try:
+                with open(location, 'r') as f:
+                    taming_path = f.read().strip()
+                if Path(taming_path).exists() and taming_path not in sys.path:
+                    sys.path.insert(0, taming_path)
+                    print(f"📂 已加载taming路径: {taming_path}")
+                    return True
+            except Exception as e:
+                continue
+        elif location.name == 'taming-transformers' and location.exists():
+            # 直接路径
+            taming_path = str(location.absolute())
+            if taming_path not in sys.path:
+                sys.path.insert(0, taming_path)
+                print(f"📂 发现并加载taming: {taming_path}")
+                return True
+    
+    # 静默失败，因为可能已经通过其他方式加载
+    return False
+
+# 在任何导入ldm之前设置taming路径
+setup_taming_path()
+
+# 现在安全导入其他模块
 import json
 import torch
 import numpy as np
-from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 import matplotlib.pyplot as plt
@@ -16,73 +61,11 @@ from omegaconf import OmegaConf
 from datetime import datetime
 import torch.nn.functional as F
 
-# 设置项目路径 - 兼容Kaggle环境
-if '/kaggle/working' in str(Path.cwd()):
-    # Kaggle环境
-    project_root = Path('/kaggle/working/VA-VAE')
-else:
-    # 本地环境
-    project_root = Path(__file__).parent.parent
-
-# 添加必要的模块路径
-vavae_path = project_root / 'LightningDiT' / 'vavae'
-if str(vavae_path) not in sys.path:
-    sys.path.insert(0, str(vavae_path))
-
-# 添加LightningDiT根目录
-lightningdit_path = project_root / 'LightningDiT'
-if str(lightningdit_path) not in sys.path:
-    sys.path.insert(0, str(lightningdit_path))
-
-# 设置taming路径 - 多个可能位置
-taming_paths = [
-    project_root / 'LightningDiT' / 'taming-transformers',
-    project_root / 'taming-transformers',
-    Path('/kaggle/input/taming-transformers'),
-    Path('/opt/conda/lib/python3.10/site-packages/taming')
-]
-
-for taming_path in taming_paths:
-    if taming_path.exists():
-        if str(taming_path) not in sys.path:
-            sys.path.insert(0, str(taming_path))
-        break
-
-# 导入必要的模块 - 避免taming硬依赖
-try:
-    from ldm.util import instantiate_from_config
-    from ldm.models.autoencoder import AutoencoderKL
-    print("✅ 成功导入ldm模块")
-except ImportError as e1:
-    print(f"⚠️ ldm导入失败: {e1}")
-    
-    # 创建简化的instantiate_from_config函数
-    def instantiate_from_config(config):
-        """简化版本的模型实例化函数"""
-        if isinstance(config, str):
-            return config
-        target = config.get('target', '')
-        
-        if 'AutoencoderKL' in target:
-            # 直接加载AutoencoderKL
-            try:
-                from ldm.models.autoencoder import AutoencoderKL
-                return AutoencoderKL(**config.get('params', {}))
-            except:
-                print("❌ 无法创建AutoencoderKL实例")
-                return None
-        
-        print(f"⚠️ 未知的目标类型: {target}")
-        return None
-    
-    print("✅ 使用简化版instantiate_from_config")
-
-# 尝试导入可选的taming模块
-try:
-    import taming
-    print("✅ taming模块可用")
-except ImportError:
-    print("⚠️ taming模块不可用，部分功能可能受限")
+# 导入必要的模块
+from omegaconf import OmegaConf
+from ldm.util import instantiate_from_config
+from ldm.models.autoencoder import AutoencoderKL
+print("✅ 成功导入VA-VAE模块")
 
 # 尝试导入可选模块
 try:
@@ -102,7 +85,7 @@ except ImportError:
     print("⚠️ LPIPS未安装，感知损失评估将跳过")
 
 def load_model(checkpoint_path, config_path=None, device='cuda'):
-    """加载VA-VAE模型（兼容多种格式）"""
+    """加载VA-VAE模型（符合官方格式）"""
     print(f"\n📂 加载VA-VAE模型...")
     print(f"  Checkpoint: {checkpoint_path}")
     
@@ -113,44 +96,38 @@ def load_model(checkpoint_path, config_path=None, device='cuda'):
     if config_path and Path(config_path).exists():
         print(f"  Config: {config_path}")
         config = OmegaConf.load(config_path)
-    elif 'hyper_parameters' in checkpoint:
-        # PyTorch Lightning格式
-        config = checkpoint['hyper_parameters'].get('config', {})
-        if isinstance(config, dict):
-            config = OmegaConf.create(config)
+    elif 'config' in checkpoint:
+        config = OmegaConf.create(checkpoint['config'])
+        print("  使用checkpoint中的配置")
     else:
-        # 创建默认VA-VAE配置
+        # 使用默认VA-VAE配置
         print("  使用默认VA-VAE配置")
         config = OmegaConf.create({
-            'model': {
-                'target': 'ldm.models.autoencoder.AutoencoderKL',
-                'params': {
-                    'embed_dim': 32,
-                    'use_vf': 'dinov2',
-                    'reverse_proj': True,
-                    'ddconfig': {
-                        'double_z': True,
-                        'z_channels': 32,
-                        'resolution': 256,
-                        'in_channels': 3,
-                        'out_ch': 3,
-                        'ch': 128,
-                        'ch_mult': [1, 1, 2, 2, 4],
-                        'num_res_blocks': 2,
-                        'attn_resolutions': [16],
-                        'dropout': 0.0
-                    },
-                    'lossconfig': {
-                        'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
-                        'params': {
-                            'disc_start': 1,
-                            'kl_weight': 1e-6,
-                            'disc_weight': 0.5,
-                            'perceptual_weight': 1.0,
-                            'vf_weight': 0.1,
-                            'distmat_weight': 1.0,
-                            'cos_weight': 1.0
-                        }
+            'target': 'ldm.models.autoencoder.AutoencoderKL',
+            'params': {
+                'embed_dim': 4,
+                'monitor': 'val/rec_loss',
+                'ddconfig': {
+                    'double_z': True,
+                    'z_channels': 4,
+                    'resolution': 256,
+                    'in_channels': 3,
+                    'out_ch': 3,
+                    'ch': 128,
+                    'ch_mult': [1, 2, 4, 4],
+                    'num_res_blocks': 2,
+                    'attn_resolutions': [],
+                    'dropout': 0.0
+                },
+                'lossconfig': {
+                    'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
+                    'params': {
+                        'disc_start': 50001,
+                        'kl_weight': 1e-6,
+                        'disc_weight': 0.5,
+                        'perceptual_weight': 1.0,
+                        'vf_weight': 0.1,
+                        'adaptive_vf': False
                     }
                 }
             }
@@ -160,16 +137,9 @@ def load_model(checkpoint_path, config_path=None, device='cuda'):
     model_config = config.model if hasattr(config, 'model') else config
     model = instantiate_from_config(model_config)
     
-    # 加载权重
-    if 'state_dict' in checkpoint:
-        # 标准PyTorch格式
-        missing, unexpected = model.load_state_dict(checkpoint['state_dict'], strict=False)
-    else:
-        # PyTorch Lightning格式或其他
-        state_dict = checkpoint
-        if isinstance(state_dict, dict) and 'model' in state_dict:
-            state_dict = state_dict['model']
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    # 加载state_dict
+    state_dict = checkpoint.get('state_dict', checkpoint)
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
     
     if missing:
         print(f"  ⚠️ Missing keys: {len(missing)}")
@@ -530,8 +500,8 @@ def evaluate_user_discrimination(model, data_root, samples_per_user=10, device='
     print(f"📊 结果:")
     if SKLEARN_AVAILABLE:
         print(f"  Silhouette分数: {silhouette:.4f}")
-    print(f"  类内距离: {avg_intra:.4f}")
     print(f"  类间距离: {avg_inter:.4f}")
+    print(f"  类内距离: {avg_intra:.4f}")
     print(f"  类间/类内比: {ratio:.4f}")
     print(f"  用户数: {len(user_features)}")
     
