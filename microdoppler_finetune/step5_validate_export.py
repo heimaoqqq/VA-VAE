@@ -371,11 +371,7 @@ def evaluate_reconstruction_quality(model, data_root, split_file=None, samples_p
             'samples_count': 0, 'grade': '需改进 ⚠️'
         }
 
-    # 随机采样
-    if len(all_images) > num_samples:
-        import random
-        random.seed(42)
-        all_images = random.sample(all_images, num_samples)
+    # 样本已按用户控制数量，无需额外随机采样
 
     
     lpips_fn = None
