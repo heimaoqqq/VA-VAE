@@ -110,7 +110,7 @@ class MicroDopplerDataset(Dataset):
         for user_dir in sorted(self.data_dir.iterdir()):
             if user_dir.is_dir() and user_dir.name.startswith("ID_"):
                 user_id = int(user_dir.name.split("_")[1]) - 1  # 0-based indexing
-                images = list(user_dir.glob("*.png"))
+                images = list(user_dir.glob("*.jpg"))
                 
                 # 分割训练/验证集
                 n_train = int(len(images) * train_ratio)
