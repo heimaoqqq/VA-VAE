@@ -136,6 +136,11 @@ def validate_reconstruction(model, data_root, split_file, num_samples=16, device
         # 如果val是字典格式，转换为列表
         val_data = list(split_data['val'].values())[:num_samples]
     
+    # 检查数据项格式并调试
+    if val_data and len(val_data) > 0:
+        print(f"📊 数据项示例: {val_data[0]}")
+        print(f"📊 数据项类型: {type(val_data[0])}")
+    
     # 准备图像
     images = []
     reconstructions = []
