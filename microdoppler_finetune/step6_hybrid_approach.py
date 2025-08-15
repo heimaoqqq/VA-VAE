@@ -206,7 +206,13 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     - 可选：轻量级用户区分损失
     """
     
-    # 加载配置
+    # 加载配置 - 使用绝对路径解析
+    if not os.path.isabs(config_path):
+        # 相对于当前脚本文件的路径
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        config_path = os.path.join(script_dir, config_path)
+    
+    print(f"Loading config from: {config_path}")
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
