@@ -84,8 +84,47 @@ except ImportError:
     LPIPS_AVAILABLE = False
     print("⚠️ LPIPS未安装，感知损失评估将跳过")
 
+def get_training_vae_config():
+    """返回与step4_train_vavae.py中使用的确切VAE配置"""
+    # 从训练脚本的实际配置
+    return {
+        'target': 'ldm.models.autoencoder.AutoencoderKL',
+        'params': {
+            'embed_dim': 4,
+            'monitor': 'val/rec_loss',
+            'ddconfig': {
+                'double_z': True, 
+                'z_channels': 32,  # 训练时使用的32
+                'resolution': 256,
+                'in_channels': 3, 
+                'out_ch': 3, 
+                'ch': 128,
+                'ch_mult': [1, 1, 2, 2, 4],  # 训练时使用的配置
+                'num_res_blocks': 2,
+                'attn_resolutions': [],
+                'dropout': 0.0
+            },
+            'lossconfig': {
+                'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
+                'params': {
+                    'disc_start': 50001,
+                    'kl_weight': 1e-6,
+                    'disc_weight': 0.5,
+                    'perceptual_weight': 1.0,
+                    'vf_weight': 0.1,
+                    'adaptive_vf': False
+                }
+            }
+        }
+    }
+
+def infer_vae_config_from_checkpoint(checkpoint):
+    """使用训练时的确切配置"""
+    print("使用训练时的VAE配置: z_channels=32, ch_mult=[1,1,2,2,4]")
+    return get_training_vae_config()
+
 def load_model(checkpoint_path, config_path=None, device='cuda'):
-    """加载VA-VAE模型（符合官方格式）"""
+    """加载VA-VAE模型（自适应架构）"""
     print(f"\n📂 加载VA-VAE模型...")
     print(f"  Checkpoint: {checkpoint_path}")
     
@@ -100,38 +139,10 @@ def load_model(checkpoint_path, config_path=None, device='cuda'):
         config = OmegaConf.create(checkpoint['config'])
         print("  使用checkpoint中的配置")
     else:
-        # 使用默认VA-VAE配置
-        print("  使用默认VA-VAE配置")
-        config = OmegaConf.create({
-            'target': 'ldm.models.autoencoder.AutoencoderKL',
-            'params': {
-                'embed_dim': 4,
-                'monitor': 'val/rec_loss',
-                'ddconfig': {
-                    'double_z': True,
-                    'z_channels': 4,
-                    'resolution': 256,
-                    'in_channels': 3,
-                    'out_ch': 3,
-                    'ch': 128,
-                    'ch_mult': [1, 2, 4, 4],
-                    'num_res_blocks': 2,
-                    'attn_resolutions': [],
-                    'dropout': 0.0
-                },
-                'lossconfig': {
-                    'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
-                    'params': {
-                        'disc_start': 50001,
-                        'kl_weight': 1e-6,
-                        'disc_weight': 0.5,
-                        'perceptual_weight': 1.0,
-                        'vf_weight': 0.1,
-                        'adaptive_vf': False
-                    }
-                }
-            }
-        })
+        # 使用训练时的确切配置
+        print("  使用训练时的VAE配置")
+        inferred_config = get_training_vae_config()
+        config = OmegaConf.create(inferred_config)
     
     # 实例化模型
     model_config = config.model if hasattr(config, 'model') else config
@@ -139,7 +150,25 @@ def load_model(checkpoint_path, config_path=None, device='cuda'):
     
     # 加载state_dict
     state_dict = checkpoint.get('state_dict', checkpoint)
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    
+    # 先尝试加载，如果失败则调整配置
+    try:
+        missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        if len(missing) > 10 or len(unexpected) > 10:  # 如果有太多不匹配的键
+            raise RuntimeError("架构不匹配")
+    except RuntimeError as e:
+        if "架构不匹配" in str(e) or "size mismatch" in str(e):
+            print("  ⚠️ 架构不匹配，使用训练配置...")
+            
+            # 使用训练时的确切配置
+            config = OmegaConf.create(get_training_vae_config())
+            model_config = config.model if hasattr(config, 'model') else config
+            model = instantiate_from_config(model_config)
+            
+            # 再次尝试加载
+            missing, unexpected = model.load_state_dict(state_dict, strict=False)
+        else:
+            raise e
     
     if missing:
         print(f"  ⚠️ Missing keys: {len(missing)}")
@@ -156,6 +185,8 @@ def load_model(checkpoint_path, config_path=None, device='cuda'):
     print(f"  VA-VAE特性: VF={'✓' if has_vf else '✗'}, Proj={'✓' if has_proj else '✗'}")
     
     return model
+
+# 删除了infer_vae_config_from_checkpoint_detailed函数，使用训练配置
 
 
 def load_and_preprocess_image(img_path, device='cuda'):
