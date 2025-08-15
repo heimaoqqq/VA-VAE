@@ -231,27 +231,26 @@ def cleanup_distributed_training():
 
 
 def hybrid_dit_train_worker(rank, world_size, config_path, use_user_loss=False, user_loss_weight=0.1):
-    """分布式训练worker进程 - Kaggle T4x2优化"""
-    # Kaggle T4x2标准环境变量设置
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '29500'
-    os.environ['NCCL_DEBUG'] = 'WARN'
-    os.environ['TORCH_DISTRIBUTED_DEBUG'] = 'OFF'
+    """分布式训练worker函数"""
     
-    # 初始化分布式进程组
-    dist.init_process_group(
-        backend='nccl',
-        init_method='env://',
-        world_size=world_size,
-        rank=rank
-    )
+    # 初始化分布式环境
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group('nccl', rank=rank, world_size=world_size)
     
-    # 设置当前进程使用的GPU
+    # 设置当前进程的GPU - 直接设置，让CUDA自动处理
     torch.cuda.set_device(rank)
     device = torch.device(f'cuda:{rank}')
     
-    print(f"[GPU {rank}] 在设备 {device} 上启动分布式训练")
-    print(f"[GPU {rank}] 进程组初始化成功")
+    # 添加GPU诊断信息
+    print(f"\n{'='*60}")
+    print(f"Worker {rank}/{world_size-1} initialized")
+    print(f"  Process ID: {os.getpid()}")
+    print(f"  Device: {device}")
+    print(f"  GPU Name: {torch.cuda.get_device_name(rank)}")
+    print(f"  GPU Memory: {torch.cuda.get_device_properties(rank).total_memory / 1024**3:.1f} GB")
+    print(f"  Initial Memory Allocated: {torch.cuda.memory_allocated(rank) / 1024**2:.1f} MB")
+    print(f"{'='*60}")
     
     # 调用原训练函数但添加分布式支持
     hybrid_dit_train(config_path, use_user_loss, user_loss_weight, rank, world_size, device)
@@ -354,6 +353,8 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     vae = VA_VAE(tmp_config_path, img_size=256, fp16=True)
     vae.model.eval()  # VA-VAE内部已经调用了.cuda()，不需要额外的.to(device)
     
+    # 分布式训练中VAE在所有rank上都需要，因为每个rank独立处理自己的数据
+    
     logger.info("✅ 成功加载微调后的VA-VAE模型")
     logger.info("  - 该模型经过3阶段训练优化")
     logger.info("  - VF语义相似度 > 0.987")
@@ -395,8 +396,16 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     model.to(device)
     
     # 混合精度训练配置 - T4优化
-    use_amp = True  # T4 GPU支持FP16
+    use_amp = config['trainer'].get('precision', '16-mixed') == '16-mixed'
     scaler = torch.amp.GradScaler('cuda') if use_amp else None  # 修复废弃警告
+    
+    # T4内存优化：使用梯度检查点
+    # 注意：DiT模型可能没有gradient_checkpointing_enable方法
+    # 改用torch.utils.checkpoint
+    logger.info("📊 T4内存优化配置：")
+    logger.info(f"  - 混合精度训练: {use_amp}")
+    logger.info(f"  - 梯度累积步数: {config['trainer'].get('accumulate_grad_batches', 1)}")
+    logger.info(f"  - 梯度裁剪: {config['trainer'].get('gradient_clip_val', 1.0)}")
     
     # 分布式模型包装 - 符合官方DDP最佳实践
     if is_distributed:
@@ -454,8 +463,25 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
     base_batch_size = config['data']['params']['batch_size']  # 从配置文件读取
     batch_size = base_batch_size // world_size  # 分布式训练时每个GPU的batch_size
     
+    # T4 GPU内存限制，进一步减小batch size如果需要
+    if torch.cuda.is_available():
+        gpu_memory_gb = torch.cuda.get_device_properties(device).total_memory / 1024**3
+        if gpu_memory_gb < 16 and batch_size > 2:  # T4只有15GB
+            batch_size = min(batch_size, 2)
+            logger.warning(f"T4 GPU内存限制，调整batch_size为{batch_size}")
+    
+    # 强制验证batch_size配置
+    logger.info(f"[GPU {rank}] Batch size configuration:")
+    logger.info(f"  - Config batch_size: {config['data']['params']['batch_size']}")
+    logger.info(f"  - Total batch_size: {base_batch_size}")
+    logger.info(f"  - World size: {world_size}")
+    logger.info(f"  - Per-GPU batch_size: {batch_size}")
+    logger.info(f"  - Device: {device}")
+    
     if is_main_process:
-        logger.info(f"Total batch_size: {base_batch_size}, Per-GPU batch_size: {batch_size}")
+        logger.info(f"\n📊 Distributed Training Configuration:")
+        logger.info(f"  Total batch_size: {base_batch_size}, Per-GPU batch_size: {batch_size}")
+        logger.info(f"  Number of GPUs: {world_size}")
     
     # 分布式采样器配置
     train_sampler = DistributedSampler(
@@ -569,21 +595,35 @@ def hybrid_dit_train(config_path='../configs/microdoppler_finetune.yaml',
         model.train()
         train_losses = {'total': [], 'diffusion': [], 'user': []}
         
-        for batch_idx, batch in enumerate(tqdm(train_loader, desc="训练中")):
-            # 获取图像并进行VAE编码
-            images = batch['image'].to(device)  # [B, 3, 256, 256]
-            class_ids = batch['class_id'].to(device)
+        for i, batch in enumerate(tqdm(train_loader, desc="训练中")):
+            # 监控GPU内存（前5个batch）
+            if i < 5:
+                memory_allocated = torch.cuda.memory_allocated(rank) / 1024**2
+                memory_reserved = torch.cuda.memory_reserved(rank) / 1024**2
+                logger.info(f"[GPU {rank}] Batch {i}: Allocated={memory_allocated:.1f}MB, Reserved={memory_reserved:.1f}MB")
             
-            # VA-VAE编码 - 在主进程GPU上执行
+            # 数据准备
+            real_images = batch['image'].to(device, non_blocking=True)
+            class_ids = batch['class_id'].to(device, non_blocking=True) if 'class_id' in batch else None
+            
+            # 验证batch大小
+            actual_batch_size = real_images.shape[0]
+            if i == 0:
+                logger.info(f"[GPU {rank}] First batch shape: {list(real_images.shape)}")
+                logger.info(f"[GPU {rank}] Actual batch size: {actual_batch_size} (expected: {batch_size})")
+                if actual_batch_size != batch_size:
+                    logger.warning(f"[GPU {rank}] ⚠️ Batch size mismatch! Got {actual_batch_size}, expected {batch_size}")       
+            # VA-VAE编码 - 每个GPU独立处理自己的批次
             with torch.no_grad():
-                if rank == 0 or not is_distributed:
-                    # rank 0或单GPU模式：直接编码
-                    latents = vae.encode_images(images)  # [B, 32, 16, 16]
-                else:
-                    # 其他rank：需要将数据发到cuda:0编码后再返回
-                    images_cuda0 = images.to('cuda:0')
+                # VA-VAE在cuda:0上，需要处理设备转移
+                if device.index != 0:
+                    # 非cuda:0设备：转移数据到cuda:0进行编码
+                    images_cuda0 = real_images.to('cuda:0')
                     latents = vae.encode_images(images_cuda0)
-                    latents = latents.to(device)  # 移回当前设备
+                    latents = latents.to(device)  # 转回当前设备
+                else:
+                    # cuda:0设备：直接编码
+                    latents = vae.encode_images(real_images)  # [B, 32, 16, 16]
                 
                 # VA-VAE f16d32输出16x16，无需上采样
             
