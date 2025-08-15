@@ -82,7 +82,7 @@ from transport import create_transport
 from models.lightningdit import LightningDiT_models
 
 # 导入VA-VAE
-from vavae.ldm.models.autoencoders.vae import VA_VAE
+from tokenizer.vavae import VA_VAE
 
 # ==================== 数据集定义 ====================
 class MicroDopplerLatentDataset(Dataset):
