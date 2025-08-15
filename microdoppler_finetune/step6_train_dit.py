@@ -24,11 +24,11 @@ from PIL import Image
 import warnings
 warnings.filterwarnings('ignore')
 
-# 设置路径 - 使用相对路径（参考step4）
+# 添加LightningDiT路径（参考step4）
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / 'LightningDiT' / 'vavae'))
 sys.path.insert(0, str(project_root / 'LightningDiT'))
-sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root))  # 添加根目录以导入自定义数据集
 
 # 设置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
