@@ -9,7 +9,10 @@ import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 import numpy as np
 from pathlib import Path
 import json
@@ -38,6 +41,40 @@ os.environ['TORCHDYNAMO_DISABLE'] = '1'
 # 禁用torch.compile
 import torch._dynamo
 torch._dynamo.disable()
+
+# 分布式训练相关函数
+def setup(rank, world_size):
+    """初始化分布式训练 - Kaggle优化版本"""
+    # Kaggle环境配置
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '29500'  # 使用标准端口
+    os.environ['WORLD_SIZE'] = str(world_size)
+    os.environ['RANK'] = str(rank)
+    
+    # 初始化分布式进程组
+    dist.init_process_group(
+        backend="nccl", 
+        rank=rank, 
+        world_size=world_size,
+        timeout=datetime.timedelta(seconds=60)
+    )
+    
+    # 设置当前进程使用的GPU
+    torch.cuda.set_device(rank)
+    
+    # 打印分布式信息
+    if rank == 0:
+        logger.info(f"Initialized DDP with {world_size} GPUs")
+        for i in range(world_size):
+            logger.info(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+
+def cleanup():
+    """清理分布式训练"""
+    dist.destroy_process_group()
+
+def is_main_process():
+    """是否为主进程"""
+    return not dist.is_initialized() or dist.get_rank() == 0
 
 # 导入必要的模块
 from models.transport import create_transport
@@ -118,16 +155,22 @@ class MicroDopplerLatentDataset(Dataset):
 
 
 # ==================== 训练函数 ====================
-def train_dit():
-    """主训练函数"""
+def train_dit(rank=0, world_size=1):
+    """主训练函数 - 支持分布式训练"""
+    
+    # 初始化分布式训练
+    if world_size > 1:
+        setup(rank, world_size)
     
     # 设备设置
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"Using device: {device}")
+    device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
     
-    if torch.cuda.is_available():
-        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-        logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    if is_main_process():
+        logger.info(f"World size: {world_size}, Rank: {rank}")
+        logger.info(f"Using device: {device}")
+        if torch.cuda.is_available():
+            logger.info(f"GPU: {torch.cuda.get_device_name(rank)}")
+            logger.info(f"GPU Memory: {torch.cuda.get_device_properties(rank).total_memory / 1e9:.1f} GB")
     
     # ===== 1. 初始化VA-VAE（仅用于编码） =====
     logger.info("=== 初始化VA-VAE编码器 ===")
@@ -212,9 +255,22 @@ def train_dit():
     
     model.to(device)
     
+    # 包装为分布式模型（Kaggle优化）
+    if world_size > 1:
+        model = DDP(
+            model, 
+            device_ids=[rank], 
+            output_device=rank, 
+            find_unused_parameters=False,  # 设为False以提高性能
+            broadcast_buffers=True,
+            gradient_as_bucket_view=True  # 内存优化
+        )
+        if is_main_process():
+            logger.info(f"Model wrapped with DDP on rank {rank}")
+    
     # 创建EMA模型
     from copy import deepcopy
-    ema_model = deepcopy(model).to(device)
+    ema_model = deepcopy(model.module if world_size > 1 else model).to(device)
     for p in ema_model.parameters():
         p.requires_grad = False
     
@@ -228,34 +284,67 @@ def train_dit():
     )
     
     # ===== 4. 准备数据集 =====
-    logger.info("=== 准备数据集 ===")
+    if is_main_process():
+        logger.info("=== 准备数据集 ===")
     
     # 首先尝试生成潜空间（如果需要）
     data_dir = Path("/kaggle/input/dataset")
     latents_file = data_dir / 'latents_microdoppler.npz'
     
-    if not latents_file.exists():
+    # 只在主进程中预计算潜空间，避免多进程冲突
+    if not latents_file.exists() and is_main_process():
         logger.info("预计算潜空间表示...")
         encode_dataset_to_latents(vae, data_dir, device)
     
-    # 创建数据加载器
+    # 同步所有进程，确保潜空间数据已生成
+    if world_size > 1:
+        dist.barrier()
+    
+    # 创建数据采样器（分布式）
     train_dataset = MicroDopplerLatentDataset(data_dir, split='train')
     val_dataset = MicroDopplerLatentDataset(data_dir, split='val')
     
+    # 分布式采样器（Kaggle优化）
+    if world_size > 1:
+        train_sampler = DistributedSampler(
+            train_dataset, 
+            num_replicas=world_size, 
+            rank=rank,
+            shuffle=True,
+            drop_last=True  # 确保批次大小一致
+        )
+        val_sampler = DistributedSampler(
+            val_dataset, 
+            num_replicas=world_size, 
+            rank=rank, 
+            shuffle=False,
+            drop_last=False
+        )
+    else:
+        train_sampler = None
+        val_sampler = None
+    
+    # Kaggle环境数据加载器优化
     train_loader = DataLoader(
         train_dataset,
-        batch_size=4,  # T4内存限制
-        shuffle=True,
-        num_workers=2,
-        pin_memory=True
+        batch_size=4,  # 每GPU批次大小
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        num_workers=1,  # Kaggle环境减少worker数量
+        pin_memory=True,
+        persistent_workers=False,  # 避免Kaggle环境中的内存问题
+        prefetch_factor=1
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=4,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True
+        sampler=val_sampler,
+        num_workers=1,  # 保持一致
+        pin_memory=True,
+        persistent_workers=False,
+        prefetch_factor=1
     )
     
     # ===== 5. 设置优化器 =====
@@ -285,12 +374,17 @@ def train_dit():
     scaler = torch.cuda.amp.GradScaler()
     
     for epoch in range(num_epochs):
+        # 设置epoch for distributed sampler
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+        
         # 训练阶段
         model.train()
         train_loss = 0
         train_steps = 0
         
-        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]')
+        # 只在主进程显示进度条
+        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]', disable=not is_main_process())
         for batch in pbar:
             latents = batch['latent'].to(device)
             user_ids = batch['user_id'].to(device)
@@ -302,7 +396,9 @@ def train_dit():
             with torch.cuda.amp.autocast():
                 # 添加噪声
                 model_kwargs = {"y": user_ids}
-                loss_dict = transport.training_losses(model, latents, t, model_kwargs)
+                # 分布式训练时使用module
+                dit_model = model.module if world_size > 1 else model
+                loss_dict = transport.training_losses(dit_model, latents, t, model_kwargs)
                 loss = loss_dict["loss"].mean()
             
             # 反向传播
@@ -316,16 +412,19 @@ def train_dit():
             scaler.step(optimizer)
             scaler.update()
             
-            # 更新EMA
-            ema_decay = 0.9999
-            with torch.no_grad():
-                for ema_p, p in zip(ema_model.parameters(), model.parameters()):
-                    ema_p.data.mul_(ema_decay).add_(p.data, alpha=1-ema_decay)
+            # 更新EMA（只在主进程）
+            if is_main_process():
+                ema_decay = 0.9999
+                model_params = model.module.parameters() if world_size > 1 else model.parameters()
+                with torch.no_grad():
+                    for ema_p, p in zip(ema_model.parameters(), model_params):
+                        ema_p.data.mul_(ema_decay).add_(p.data, alpha=1-ema_decay)
             
             train_loss += loss.item()
             train_steps += 1
             
-            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+            if is_main_process():
+                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
         
         avg_train_loss = train_loss / train_steps
         
@@ -335,7 +434,8 @@ def train_dit():
         val_steps = 0
         
         with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Val]'):
+            val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Val]', disable=not is_main_process())
+            for batch in val_pbar:
                 latents = batch['latent'].to(device)
                 user_ids = batch['user_id'].to(device)
                 
@@ -343,7 +443,8 @@ def train_dit():
                 
                 with torch.cuda.amp.autocast():
                     model_kwargs = {"y": user_ids}
-                    loss_dict = transport.training_losses(model, latents, t, model_kwargs)
+                    dit_model = model.module if world_size > 1 else model
+                    loss_dict = transport.training_losses(dit_model, latents, t, model_kwargs)
                     loss = loss_dict["loss"].mean()
                 
                 val_loss += loss.item()
@@ -354,46 +455,83 @@ def train_dit():
         # 更新学习率
         scheduler.step()
         
-        # 日志记录
-        logger.info(f"Epoch {epoch+1}/{num_epochs}")
-        logger.info(f"  Train Loss: {avg_train_loss:.4f}")
-        logger.info(f"  Val Loss: {avg_val_loss:.4f}")
-        logger.info(f"  LR: {scheduler.get_last_lr()[0]:.2e}")
-        
-        # 早停检查
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            patience_counter = 0
+        # 同步所有进程的损失（Kaggle优化）
+        if world_size > 1:
+            # 使用更安全的损失同步方式
+            train_loss_tensor = torch.tensor(avg_train_loss, device=device, dtype=torch.float32)
+            val_loss_tensor = torch.tensor(avg_val_loss, device=device, dtype=torch.float32)
             
-            # 保存最佳模型
-            save_path = f"outputs/dit_best_epoch{epoch+1}_val{avg_val_loss:.4f}.pt"
-            os.makedirs("outputs", exist_ok=True)
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'ema_state_dict': ema_model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'train_loss': avg_train_loss,
-                'val_loss': avg_val_loss,
-            }, save_path)
-            logger.info(f"  ✓ Saved best model to {save_path}")
-        else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                logger.info(f"Early stopping triggered at epoch {epoch+1}")
-                break
+            try:
+                dist.all_reduce(train_loss_tensor, op=dist.ReduceOp.AVG)
+                dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
+                avg_train_loss = train_loss_tensor.item()
+                avg_val_loss = val_loss_tensor.item()
+            except Exception as e:
+                if is_main_process():
+                    logger.warning(f"Loss synchronization failed: {e}, using local loss")
         
-        # 定期生成样本
-        if (epoch + 1) % 5 == 0:
+        # 日志记录（只在主进程）
+        if is_main_process():
+            logger.info(f"Epoch {epoch+1}/{num_epochs}")
+            logger.info(f"  Train Loss: {avg_train_loss:.4f}")
+            logger.info(f"  Val Loss: {avg_val_loss:.4f}")
+            logger.info(f"  LR: {scheduler.get_last_lr()[0]:.2e}")
+        
+        # 早停检查（只在主进程）
+        should_stop = False
+        if is_main_process():
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                patience_counter = 0
+                
+                # 保存最佳模型
+                save_path = f"outputs/dit_best_epoch{epoch+1}_val{avg_val_loss:.4f}.pt"
+                os.makedirs("outputs", exist_ok=True)
+                model_state = model.module.state_dict() if world_size > 1 else model.state_dict()
+                
+                try:
+                    torch.save({
+                        'epoch': epoch,
+                        'model_state_dict': model_state,
+                        'ema_state_dict': ema_model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'train_loss': avg_train_loss,
+                        'val_loss': avg_val_loss,
+                    }, save_path)
+                    logger.info(f"  ✓ Saved best model to {save_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to save model: {e}")
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    logger.info(f"Early stopping triggered at epoch {epoch+1}")
+                    should_stop = True
+        
+        # 在分布式训练中同步早停决策
+        if world_size > 1:
+            stop_tensor = torch.tensor(1 if should_stop else 0, device=device, dtype=torch.int)
+            dist.broadcast(stop_tensor, src=0)
+            should_stop = stop_tensor.item() == 1
+        
+        if should_stop:
+            break
+        
+        # 定期生成样本（只在主进程）
+        if (epoch + 1) % 5 == 0 and is_main_process():
             logger.info("Generating samples...")
             generate_samples(ema_model, vae, transport, device, epoch+1)
         
         # 内存清理
         torch.cuda.empty_cache()
     
-    logger.info("=== 训练完成 ===")
-    logger.info(f"Best validation loss: {best_val_loss:.4f}")
+    if is_main_process():
+        logger.info("=== 训练完成 ===")
+        logger.info(f"Best validation loss: {best_val_loss:.4f}")
+    
+    # 清理分布式训练
+    if world_size > 1:
+        cleanup()
 
 
 def encode_dataset_to_latents(vae, data_dir, device):
@@ -468,5 +606,38 @@ def generate_samples(model, vae, transport, device, epoch):
         logger.info(f"Saved {num_samples} samples to {save_dir}")
 
 
+def main():
+    """主函数 - 处理分布式训练启动（Kaggle优化）"""
+    # Kaggle环境GPU检查
+    if not torch.cuda.is_available():
+        logger.error("CUDA not available! Please enable GPU accelerator in Kaggle.")
+        return
+    
+    world_size = torch.cuda.device_count()
+    logger.info(f"Detected {world_size} GPU(s)")
+    
+    # 显示GPU信息
+    for i in range(world_size):
+        gpu_props = torch.cuda.get_device_properties(i)
+        logger.info(f"  GPU {i}: {gpu_props.name} ({gpu_props.total_memory / 1e9:.1f} GB)")
+    
+    if world_size > 1:
+        logger.info(f"Starting distributed training with {world_size} GPUs")
+        # Kaggle环境优化：使用spawn方法启动多进程
+        try:
+            mp.spawn(
+                train_dit, 
+                args=(world_size,), 
+                nprocs=world_size, 
+                join=True
+            )
+        except Exception as e:
+            logger.error(f"Distributed training failed: {e}")
+            logger.info("Falling back to single GPU training...")
+            train_dit(rank=0, world_size=1)
+    else:
+        logger.info("Starting single GPU training")
+        train_dit(rank=0, world_size=1)
+
 if __name__ == "__main__":
-    train_dit()
+    main()
