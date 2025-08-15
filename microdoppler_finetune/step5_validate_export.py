@@ -816,45 +816,6 @@ def compute_latent_statistics(model, data_root, num_samples=100, device='cuda'):
     }
 
 
-def export_encoder_decoder(model, checkpoint_path, output_dir):
-    """导出编码器和解码器用于DiT训练"""
-    print("\n" + "="*60)
-    print("💾 导出编码器和解码器 (Export for DiT)")
-    print("="*60)
-    
-    # 创建输出目录
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # 构造输出文件路径
-    checkpoint_name = os.path.splitext(os.path.basename(checkpoint_path))[0]
-    encoder_path = os.path.join(output_dir, f"{checkpoint_name}_encoder.pt")
-    decoder_path = os.path.join(output_dir, f"{checkpoint_name}_decoder.pt")
-    
-    # 导出编码器
-    encoder_state = {
-        'encoder': model.encoder.state_dict(),
-        'quant_conv': model.quant_conv.state_dict() if hasattr(model, 'quant_conv') else None,
-        'embed_dim': model.embed_dim if hasattr(model, 'embed_dim') else 32,
-        'config': {
-            'z_channels': 32,
-            'resolution': 256,
-            'ch_mult': [1, 1, 2, 2, 4]
-        }
-    }
-    torch.save(encoder_state, encoder_path)
-    print(f"✅ 编码器已导出: {encoder_path}")
-    
-    # 导出解码器
-    decoder_state = {
-        'decoder': model.decoder.state_dict(),
-        'post_quant_conv': model.post_quant_conv.state_dict() if hasattr(model, 'post_quant_conv') else None,
-        'embed_dim': model.embed_dim if hasattr(model, 'embed_dim') else 32
-    }
-    torch.save(decoder_state, decoder_path)
-    print(f"\n📁 导出目录: {output_dir}")
-    print("\n🎉 VA-VAE验证与导出完成!")
-    
-    return encoder_path, decoder_path
 
 
 def generate_report(results):
@@ -940,8 +901,6 @@ def main():
                        help='测试VF对齐')
     parser.add_argument('--test_discrimination', action='store_true',
                        help='测试用户区分')
-    parser.add_argument('--export_models', action='store_true',
-                       help='导出编码器/解码器')
     parser.add_argument('--full_test', action='store_true',
                        help='运行所有测试')
     parser.add_argument('--comprehensive', action='store_true',
@@ -953,7 +912,6 @@ def main():
     if args.full_test or args.comprehensive:
         args.test_vf = True
         args.test_discrimination = True
-        args.export_models = True
     
     # 加载模型
     model = load_model(args.checkpoint, args.device)
@@ -979,15 +937,8 @@ def main():
             model, args.data_root, args.split_file, device=args.device
         )
     
-    # 4. 导出模型
-    if args.export_models:
-        # 设置导出目录 - 使用可写的工作目录
-        export_dir = Path('/kaggle/working/exported_models')
-        encoder_path, decoder_path = export_encoder_decoder(model, args.checkpoint, str(export_dir))
-        results['exported_models'] = {
-            'encoder': encoder_path,
-            'decoder': decoder_path
-        }
+    # 4. 统计报告
+    print(f"\n✅ VA-VAE验证完成! 共评估 {len([k for k in results.keys() if k != 'model_info'])} 个指标")
     
     # 生成报告
     generate_report(results)
@@ -998,7 +949,6 @@ def main():
         print("  • 使用 --full_test 运行所有验证测试")
         print("  • 使用 --test_vf 测试VF对齐")
         print("  • 使用 --test_discrimination 测试用户区分")
-        print("  • 使用 --export_models 导出用于DiT训练")
 
 
 if __name__ == '__main__':
@@ -1244,7 +1194,6 @@ def print_usage_instructions():
     print("  --test_reconstruction  : 测试重建质量")
     print("  --test_vf              : 测试VF对齐")
     print("  --test_discrimination  : 测试用户区分")
-    print("  --export_models        : 导出编码器/解码器")
     print("\n示例:")
     print("  # 运行完整测试")
     print("  python step5_validate_export.py --checkpoint model.pt --full_test")
