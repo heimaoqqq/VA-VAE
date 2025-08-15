@@ -19,13 +19,42 @@ from PIL import Image
 # 添加LightningDiT到路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT'))
 
+# 先处理fairscale依赖问题
+import torch.nn as nn
+
+# 创建fairscale的mock替代，避免导入错误
+class MockFairscaleModule:
+    def __init__(self, *args, **kwargs):
+        pass
+    
+    def __call__(self, *args, **kwargs):
+        return None
+
+# Mock fairscale模块
+import sys
+if 'fairscale' not in sys.modules:
+    import types
+    fairscale_mock = types.ModuleType('fairscale')
+    fairscale_mock.nn = types.ModuleType('nn')
+    fairscale_mock.nn.model_parallel = types.ModuleType('model_parallel')
+    fairscale_mock.nn.model_parallel.initialize = MockFairscaleModule()
+    fairscale_mock.nn.model_parallel.layers = types.ModuleType('layers')
+    fairscale_mock.nn.model_parallel.layers.ColumnParallelLinear = nn.Linear
+    fairscale_mock.nn.model_parallel.layers.RowParallelLinear = nn.Linear
+    fairscale_mock.nn.model_parallel.layers.ParallelEmbedding = nn.Embedding
+    sys.modules['fairscale'] = fairscale_mock
+    sys.modules['fairscale.nn'] = fairscale_mock.nn
+    sys.modules['fairscale.nn.model_parallel'] = fairscale_mock.nn.model_parallel
+    sys.modules['fairscale.nn.model_parallel.initialize'] = fairscale_mock.nn.model_parallel.initialize
+    sys.modules['fairscale.nn.model_parallel.layers'] = fairscale_mock.nn.model_parallel.layers
+
 try:
     from models.lightningdit import LightningDiT_models
     from tokenizer.vavae_models import VA_VAE
     from transport import create_transport
+    print("Successfully imported LightningDiT models")
 except ImportError as e:
-    print(f"Warning: Could not import LightningDiT models: {e}")
-    print("Please ensure LightningDiT is in the correct path and dependencies are installed")
+    print(f"Error importing LightningDiT models: {e}")
     exit(1)
 
 # 直接在此文件中定义，避免导入依赖问题
