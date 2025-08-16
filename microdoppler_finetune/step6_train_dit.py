@@ -255,18 +255,60 @@ def train_dit():
     logger.info(f"Model: LightningDiT-B/1 (768-dim, 12 layers)")
     logger.info(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
-    # 加载预训练权重
-    pretrained_base = "models/lightningdit-b-imagenet256.pt"
-    pretrained_xl = "models/lightningdit-xl-imagenet256-64ep.pt"
+    # 加载预训练权重 - 匹配step2_download_models.py的下载路径
+    kaggle_paths = [
+        "/kaggle/working/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt",  # step2下载的路径
+        "/kaggle/input/lightningdit-models/lightningdit-xl-imagenet256-64ep.pt",  # 预添加的数据集
+        "/kaggle/input/lightningdit-xl/lightningdit-xl-imagenet256-64ep.pt",
+        "/kaggle/input/va-vae-models/lightningdit-xl-imagenet256-64ep.pt"
+    ]
     
-    if os.path.exists(pretrained_base):
+    local_paths = [
+        "models/lightningdit-b-imagenet256.pt",
+        "models/lightningdit-xl-imagenet256-64ep.pt"
+    ]
+    
+    # 优先检查Kaggle路径
+    pretrained_base = None
+    pretrained_xl = None
+    
+    for path in kaggle_paths + local_paths:
+        if os.path.exists(path):
+            if 'base' in path.lower() or '-b-' in path:
+                pretrained_base = path
+                logger.info(f"找到Base模型: {path}")
+            elif 'xl' in path.lower():
+                pretrained_xl = path
+                logger.info(f"找到XL模型: {path}")
+    
+    # 如果都没找到，尝试下载
+    if pretrained_base is None and pretrained_xl is None:
+        logger.warning("未找到任何预训练权重，尝试下载...")
+        import urllib.request
+        os.makedirs('/kaggle/working/models', exist_ok=True)
+        
+        # 下载XL模型（64 epochs版本，更快）
+        xl_url = "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/resolve/main/lightningdit-xl-imagenet256-64ep.pt"
+        xl_path = "/kaggle/working/models/lightningdit-xl-imagenet256-64ep.pt"
+        
+        if not os.path.exists(xl_path):
+            try:
+                logger.info(f"下载LightningDiT-XL模型...")
+                urllib.request.urlretrieve(xl_url, xl_path)
+                pretrained_xl = xl_path
+                logger.info(f"下载完成: {xl_path}")
+            except Exception as e:
+                logger.error(f"下载失败: {e}")
+                logger.error("请手动下载模型文件到Kaggle Input")
+    
+    if pretrained_base and os.path.exists(pretrained_base):
         logger.info(f"Loading Base model weights: {pretrained_base}")
         checkpoint = torch.load(pretrained_base, map_location='cpu')
         state_dict = checkpoint.get('model', checkpoint)
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         logger.info(f"Missing: {len(missing)}, Unexpected: {len(unexpected)}")
-    elif os.path.exists(pretrained_xl):
+    elif pretrained_xl and os.path.exists(pretrained_xl):
         logger.info(f"Base weights not found, trying partial XL loading: {pretrained_xl}")
         checkpoint = torch.load(pretrained_xl, map_location='cpu')
         state_dict = checkpoint.get('model', checkpoint)
@@ -283,7 +325,12 @@ def train_dit():
             model.load_state_dict(compatible, strict=False)
             logger.info(f"Loaded {len(compatible)} compatible weights from XL")
     else:
-        logger.warning("No pretrained weights found, using random init")
+        logger.error("❌ 严重错误：未找到预训练权重！")
+        logger.error("模型将使用随机初始化，这会导致生成纯噪声图像。")
+        logger.error("请确保在Kaggle中添加以下数据集之一：")
+        logger.error("  1. 包含lightningdit-xl-imagenet256-64ep.pt的数据集")
+        logger.error("  2. 或下载: https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/")
+        raise ValueError("必须加载预训练权重才能正常训练！")
     
     model.to(device)
     
@@ -305,7 +352,9 @@ def train_dit():
         prediction="velocity",
         loss_weight=None,
         train_eps=None,
-        sample_eps=None
+        sample_eps=None,
+        use_cosine_loss=True,  # 官方使用cosine loss
+        use_lognorm=True  # 官方使用lognorm
     )
     
     # ===== 4. 准备数据集 =====
@@ -614,14 +663,17 @@ def get_training_config():
         'num_workers': 1,          # Kaggle环境优化
         'gradient_accumulation_steps': 4,  # 模拟更大batch
         'gradient_clip_norm': 2.0, # 略放宽以允许更大梯度更新
-        'warmup_steps': 1000,      # 更长预热，匹配官方策略
+        'warmup_steps': 1000,      # 采样配置 - 对齐官方LightningDiT配置
         'gradient_checkpointing': True,  # 显存优化
         'cfg_dropout': 0.15,       # 增强无条件学习
-        'cfg_scale': 10.0,         # 高维潜空间需要强CFG
+        'cfg_scale': 7.0,         # 适度CFG，保留更多细节
         'ema_decay': 0.9995,       # 平衡稳定性与响应速度
-        'sample_steps': 250,       # 采样步数
+        'sample_steps': 150,       # 采样步数
         'patience': 10,            # 早停耐心值
-        'min_delta': 0.0001,       # 最小改进阈值
+        'sampling_method': 'dopri5',  # 5阶自适应RK，更精确
+        'num_steps': 150,  # 较少步数即可达到高质量
+        'cfg_interval_start': 0.11,  # 保持官方设置
+        'timestep_shift': 0.1,  # 减小偏移，保留更多低噪声细节以保留微多普勒细节数
     }
 
 
@@ -1247,7 +1299,7 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus, c
     model.eval()
     
     with torch.no_grad():
-        print(f"\n  📊 开始生成条件样本 (Epoch {epoch}, dopri5求解器, 150步)...")
+        print(f"\n  📊 开始生成条件样本 (Epoch {epoch}, euler求解器, 250步)...")
         
         # 生成多个用户的样本
         num_users_to_sample = min(8, 31)  # 采样8个不同用户
@@ -1278,24 +1330,33 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus, c
             y_null = torch.full_like(user_batch, 31)  # null token (第32个类别)
             y_combined = torch.cat([user_batch, y_null], dim=0)
             
-            # 定义CFG包装函数
+            # 定义CFG包装函数（支持cfg_interval）
             def model_fn(x, t):
-                # x已经是单批次，需要复制为条件和无条件
-                x_combined = torch.cat([x, x], dim=0)
-                # 时间步t也需要复制以匹配批量大小
-                t_combined = torch.cat([t, t], dim=0)
-                out = actual_model(x_combined, t_combined, y=y_combined)
-                out_cond, out_uncond = out.chunk(2, dim=0)
-                # CFG: 无条件输出 + scale * (条件 - 无条件)
-                return out_uncond + cfg_scale * (out_cond - out_uncond)
+                # 应用cfg_interval：仅在低噪声时使用CFG
+                cfg_interval_start = config.get('cfg_interval_start', 0.11)
+                # 注意：t是归一化的时间步（0到1），t=0是纯噪声，t=1是干净数据
+                # 只有当t > cfg_interval_start时才使用CFG
+                if t.min() > cfg_interval_start:
+                    # x已经是单批次，需要复制为条件和无条件
+                    x_combined = torch.cat([x, x], dim=0)
+                    # 时间步t也需要复制以匹配批量大小
+                    t_combined = torch.cat([t, t], dim=0)
+                    out = actual_model(x_combined, t_combined, y=y_combined)
+                    out_cond, out_uncond = out.chunk(2, dim=0)
+                    # CFG: 无条件输出 + scale * (条件 - 无条件)
+                    return out_uncond + cfg_scale * (out_cond - out_uncond)
+                else:
+                    # 高噪声阶段不使用CFG，只使用条件生成
+                    return actual_model(x, t, y=user_batch)
             
             # 使用Sampler进行采样 - 官方推荐配置
             sampler = Sampler(transport)
             sample_fn = sampler.sample_ode(
-                sampling_method="dopri5",  # 高阶自适应求解器
-                num_steps=config.get('sample_steps', 250),  # 官方推荐250步
-                atol=1e-6,  # 绝对误差容忍度
-                rtol=1e-3   # 相对误差容忍度
+                sampling_method=config['sampling_method'],
+                num_steps=config['num_steps'],
+                atol=1e-6,
+                rtol=1e-3,
+                timestep_shift=config.get('timestep_shift', 0.3)
             )
             samples = sample_fn(z, model_fn)[-1]
             
