@@ -19,6 +19,7 @@ import json
 import logging
 from tqdm import tqdm
 from datetime import datetime, timedelta
+import time
 import matplotlib.pyplot as plt
 from PIL import Image
 from omegaconf import OmegaConf
@@ -457,7 +458,7 @@ def train_dit(rank=0, world_size=1):
             
             # 梯度裁剪
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'])
             
             scaler.step(optimizer)
             scaler.update()
@@ -648,8 +649,21 @@ def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
     logger.info(f"验证: 加载了 {len(test_data['latents'])} 个样本")
 
 
-def print_training_config(model, optimizer, scheduler, batch_size, num_epochs, 
-                         train_size, val_size, world_size):
+def get_training_config():
+    """获取训练配置参数"""
+    return {
+        'batch_size': 4,           # 每GPU批次大小
+        'num_epochs': 25,          # 训练轮数
+        'learning_rate': 1e-4,     # 学习率
+        'weight_decay': 0.01,      # 权重衰减
+        'num_workers': 2,          # 数据加载器worker数
+        'patience': 5,             # 早停耐心
+        'gradient_clip_norm': 1.0, # 梯度裁剪
+        'warmup_steps': 100,       # 学习率预热步数
+    }
+
+def print_training_config(model, optimizer, scheduler, config, 
+                         train_size, val_size, world_size, train_dataset=None):
     """输出详细的训练配置信息"""
     
     # 计算模型参数
@@ -662,6 +676,18 @@ def print_training_config(model, optimizer, scheduler, batch_size, num_epochs,
     else:
         model_config = model
     
+    # 动态获取用户类别数
+    num_classes = 31  # 默认值
+    if train_dataset is not None:
+        try:
+            # 尝试从数据集获取用户数量
+            if hasattr(train_dataset, 'user_ids'):
+                num_classes = len(torch.unique(train_dataset.user_ids))
+            elif hasattr(train_dataset, 'num_classes'):
+                num_classes = train_dataset.num_classes
+        except:
+            pass  # 使用默认值
+    
     print("\n" + "="*80)
     print("🚀 DiT微调训练配置")
     print("="*80)
@@ -669,14 +695,22 @@ def print_training_config(model, optimizer, scheduler, batch_size, num_epochs,
     print(f"📊 数据配置:")
     print(f"  训练样本数: {train_size:,}")
     print(f"  验证样本数: {val_size:,}")
-    print(f"  每GPU批量大小: {batch_size}")
-    print(f"  总批量大小: {batch_size * world_size}")
-    print(f"  用户类别数: 31")
+    print(f"  每GPU批量大小: {config['batch_size']}")
+    print(f"  总批量大小: {config['batch_size'] * world_size}")
+    print(f"  用户类别数: {num_classes}")
+    
+    # 动态获取模型信息
+    model_type = getattr(model_config, '__class__', type(model_config)).__name__
+    input_channels = getattr(model_config, 'in_channels', 'Unknown')
+    input_size = getattr(model_config, 'input_size', 'Unknown')
     
     print(f"\n🏗️  模型配置:")
-    print(f"  模型类型: LightningDiT-XL/1")
-    print(f"  输入尺寸: 16x16 (潜空间)")
-    print(f"  输入通道: 32 (VA-VAE编码)")
+    print(f"  模型类型: {model_type}")
+    if input_size != 'Unknown':
+        print(f"  输入尺寸: {input_size}×{input_size} (潜空间)")
+    else:
+        print(f"  输入尺寸: 推断为16×16 (潜空间)")
+    print(f"  输入通道: {input_channels}")
     print(f"  总参数量: {total_params:,}")
     print(f"  可训练参数: {trainable_params:,}")
     if hasattr(model_config, 'depth'):
@@ -687,13 +721,14 @@ def print_training_config(model, optimizer, scheduler, batch_size, num_epochs,
         print(f"  注意力头数: {model_config.num_heads}")
     
     print(f"\n⚙️  训练配置:")
-    print(f"  训练轮数: {num_epochs}")
+    print(f"  训练轮数: {config['num_epochs']}")
     print(f"  优化器: {optimizer.__class__.__name__}")
     print(f"  学习率: {optimizer.param_groups[0]['lr']:.2e}")
     print(f"  权重衰减: {optimizer.param_groups[0]['weight_decay']:.2e}")
+    print(f"  梯度裁剪: {config['gradient_clip_norm']}")
+    print(f"  数据加载器worker数: {config['num_workers']}")
     print(f"  调度器: {scheduler.__class__.__name__}")
     print(f"  混合精度: 启用")
-    print(f"  梯度裁剪: 1.0")
     
     print(f"\n🔧 硬件配置:")
     print(f"  GPU数量: {world_size}")
@@ -803,16 +838,6 @@ def train_worker(rank, world_size):
         # 预计算潜空间
         data_dir = Path("/kaggle/input/dataset")
         latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
-        
-        if not latents_file.exists():
-            logger.info("预计算潜空间表示...")
-            encode_dataset_to_latents(vae, data_dir, device)
-        
-        logger.info("潜空间预计算完成")
-    
-    # 同步所有进程等待潜空间计算完成
-    if world_size > 1:
-        torch.distributed.barrier()
     
     # 创建数据集
     data_dir = Path("/kaggle/input/dataset")
@@ -820,7 +845,7 @@ def train_worker(rank, world_size):
     val_dataset = MicroDopplerLatentDataset(data_dir, split='val')
     
     # DDP数据采样器
-    batch_size = 4  # 每个GPU的batch size
+    batch_size = config['batch_size']  # 每个GPU的batch size
     
     if world_size > 1:
         train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -840,7 +865,7 @@ def train_worker(rank, world_size):
         batch_size=batch_size,
         sampler=train_sampler,
         shuffle=shuffle,
-        num_workers=2,
+        num_workers=config['num_workers'],
         pin_memory=True
     )
     val_loader = DataLoader(
@@ -848,7 +873,7 @@ def train_worker(rank, world_size):
         batch_size=batch_size,
         sampler=val_sampler,
         shuffle=False,
-        num_workers=2,
+        num_workers=config['num_workers'],
         pin_memory=True
     )
     
@@ -891,17 +916,20 @@ def train_worker(rank, world_size):
     )
     
     # 优化器和调度器配置
-    learning_rate = 1e-4
-    weight_decay = 0.01
-    num_epochs = 25
-    
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=config['learning_rate'], 
+        weight_decay=config['weight_decay']
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max=config['num_epochs']
+    )
     
     # 输出详细训练配置
     if rank == 0:
-        print_training_config(model, optimizer, scheduler, batch_size, num_epochs, 
-                             len(train_dataset), len(val_dataset), world_size)
+        print_training_config(model, optimizer, scheduler, config, 
+                             len(train_dataset), len(val_dataset), world_size, train_dataset)
     
     # 混合精度训练
     scaler = torch.cuda.amp.GradScaler()
@@ -911,7 +939,7 @@ def train_worker(rank, world_size):
     train_metrics_history = []
     val_metrics_history = []
     
-    for epoch in range(num_epochs):
+    for epoch in range(config['num_epochs']):
         epoch_start_time = time.time()
         
         # DDP sampler需要设置epoch
@@ -927,7 +955,7 @@ def train_worker(rank, world_size):
         
         # 只在主进程显示进度条
         if rank == 0:
-            pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]')
+            pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Train]')
         else:
             pbar = train_loader
             
@@ -992,7 +1020,7 @@ def train_worker(rank, world_size):
         
         with torch.no_grad():
             if rank == 0:
-                val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Val]')
+                val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]')
             else:
                 val_pbar = val_loader
                 
@@ -1025,7 +1053,7 @@ def train_worker(rank, world_size):
             gpu_memory = torch.cuda.max_memory_allocated(device) / 1024**3  # GB
             
             # 输出详细的epoch统计
-            print(f"\n📊 Epoch {epoch+1}/{num_epochs} 训练统计")
+            print(f"\n📊 Epoch {epoch+1}/{config['num_epochs']} 训练统计")
             print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             print(f"🎯 损失指标:")
             print(f"  训练损失: {avg_train_loss:.6f}")
