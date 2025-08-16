@@ -755,7 +755,7 @@ def train_with_dataparallel(n_gpus):
     torch.cuda.set_device(0)
     
     # 加载配置
-    config_path = Path("configs/microdoppler_finetune.yaml")
+    config_path = Path("../configs/microdoppler_finetune.yaml")
     model_config = OmegaConf.load(config_path).model
     
     # 计算潜空间信息
