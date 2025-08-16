@@ -608,20 +608,22 @@ def get_training_config():
     return {
         'batch_size': 8,           # 增大batch提高稳定性
         'gradient_accumulation_steps': 2,  # 模拟更大batch=16
-        'num_epochs': 35,          # 给予充分学习时间，但用早停控制
-        'learning_rate': 5e-5,     # 平衡保护权重和学习细微特征
-        'weight_decay': 0.01,      # 降低正则化，允许学习微细差异
+        'num_epochs': 50,          # 延长训练以充分利用VA-VAE语义空间
+        'learning_rate': 3e-5,      # 平衡学习速度与稳定性
+        'weight_decay': 0.005,      # 适度正则化，防止过拟合
         'num_workers': 1,          # Kaggle环境优化
-        'patience': 8,             # 给予更多收敛时间
-        'gradient_clip_norm': 1.0, # 恢复标准设置
-        'warmup_steps': 500,       # 适度预热，稳定训练
+        'gradient_accumulation_steps': 4,  # 模拟更大batch
+        'gradient_clip_norm': 2.0, # 略放宽以允许更大梯度更新
+        'warmup_steps': 1000,      # 更长预热，匹配官方策略
         'gradient_checkpointing': True,  # 显存优化
         'cfg_dropout': 0.15,       # 增强无条件学习
         'cfg_scale': 10.0,         # 高维潜空间需要强CFG
-        'ema_decay': 0.999,        # 略快的EMA更新
+        'ema_decay': 0.9995,       # 平衡稳定性与响应速度
         'sample_steps': 250,       # 采样步数
-        'min_lr_ratio': 0.1,       # 最低学习率比例
+        'patience': 10,            # 早停耐心值
+        'min_delta': 0.0001,       # 最小改进阈值
     }
+
 
 def print_training_config(model, optimizer, scheduler, config, 
                          train_size, val_size, num_gpus, train_dataset=None):
@@ -824,7 +826,7 @@ def train_with_dataparallel(n_gpus):
     model = LightningDiT_B_1(
         input_size=H_latent,
         in_channels=C_latent,
-        num_classes=32,  # 31个用户 + 1个null token用于CFG
+        num_classes=31,  # 31个用户，模型会自动添加CFG token
         learn_sigma=False  # 固定方差，避免训练不稳定
     ).to(device)
     
@@ -908,11 +910,9 @@ def train_with_dataparallel(n_gpus):
             # 前向传播 - 添加CFG训练(10%无条件)
             with torch.cuda.amp.autocast():
                 # CFG训练：15%概率丢弃条件（增强无条件学习）
-                if torch.rand(1).item() < config.get('cfg_dropout', 0.15):
-                    # 无条件训练：使用最后一个类别作为null token (31)
-                    model_kwargs = {"y": torch.full_like(user_ids, 31)}
-                else:
-                    model_kwargs = {"y": user_ids}
+                # 注意：不需要手动设置null token，LabelEmbedder会自动处理
+                # 当dropout时，模型内部会使用num_classes(31)作为null token
+                model_kwargs = {"y": user_ids}
                 
                 # 使用重要性采样
                 t = torch.rand(latents.shape[0], device=device)
