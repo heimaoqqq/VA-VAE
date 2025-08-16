@@ -586,7 +586,7 @@ def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
 def get_training_config():
     """获取训练配置参数"""
     return {
-        'batch_size': 2,           # 每GPU批次大小（减少显存占用）
+        'batch_size': 8,           # 每GPU批次大小（优化显存利用率）
         'num_epochs': 25,          # 训练轮数
         'learning_rate': 1e-4,     # 学习率
         'weight_decay': 0.01,      # 权重衰减
