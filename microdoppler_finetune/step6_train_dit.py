@@ -718,7 +718,7 @@ def train_dit_kaggle():
     model = LightningDiT_models["LightningDiT-XL/1"](
         input_size=16,  # 256/16=16 for 16x downsampling
         num_classes=31,  # 31个用户
-        in_chans=32     # VA-VAE潜空间通道数
+        in_channels=32  # VA-VAE潜空间通道数（参数名修正）
     )
     
     # Kaggle多GPU：使用DataParallel
