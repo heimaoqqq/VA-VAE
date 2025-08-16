@@ -966,7 +966,7 @@ def train_with_dataparallel(n_gpus):
     print("="*80)
     
     # 检查LightningDiT模型
-    pretrained_b = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-b-imagenet256-64ep.pt"
+    pretrained_b = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-b-imagenet256.pt"
     if os.path.exists(pretrained_b):
         print(f"✅ 找到LightningDiT-B模型: {pretrained_b}")
         size_gb = os.path.getsize(pretrained_b) / (1024**3)
