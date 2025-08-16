@@ -1106,7 +1106,7 @@ def train_with_dataparallel(n_gpus):
         print("="*80)
         
         # 每个epoch生成条件扩散样本
-        if (epoch + 1) % 2 == 0:  # 每2个epoch生成一次，节省时间
+        if True:  # 每个epoch都生成可视化图像
             print("\n" + "="*80)
             print(f"🎨 Epoch {epoch + 1}: 生成条件扩散样本（使用微调后的VA-VAE）...")
             print("="*80)
@@ -1275,16 +1275,16 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus, c
             cfg_scale = config.get('cfg_scale', 10.0)  # 官方推荐CFG=10.0
             
             # 准备条件和无条件输入
-            z_combined = torch.cat([z, z], dim=0)
             y_null = torch.full_like(user_batch, 31)  # null token (第32个类别)
             y_combined = torch.cat([user_batch, y_null], dim=0)
             
             # 定义CFG包装函数
             def model_fn(x, t):
+                # x已经是单批次，需要复制为条件和无条件
                 x_combined = torch.cat([x, x], dim=0)
                 out = actual_model(x_combined, t, y=y_combined)
                 out_cond, out_uncond = out.chunk(2, dim=0)
-                # CFG: 条件输出 + scale * (条件 - 无条件)
+                # CFG: 无条件输出 + scale * (条件 - 无条件)
                 return out_uncond + cfg_scale * (out_cond - out_uncond)
             
             # 使用Sampler进行采样 - 官方推荐配置
