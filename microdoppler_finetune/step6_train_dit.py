@@ -47,7 +47,7 @@ def is_main_process():
 
 
 # 导入LightningDiT模块
-from transport import create_transport
+from transport import create_transport, Sampler
 from models.lightningdit import LightningDiT_models, LightningDiT_B_1
 
 # 导入VA-VAE
@@ -1174,13 +1174,13 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
             model_kwargs = {"y": user_batch}
             actual_model = model.module if n_gpus > 1 else model
             
-            # 使用transport进行采样
-            # sample_ode返回一个采样函数，需要调用它
-            sample_fn = transport.sample_ode(
+            # 使用Sampler进行采样
+            sampler = Sampler(transport)
+            sample_fn = sampler.sample_ode(
                 sampling_method="euler",
                 num_steps=50
             )
-            samples = sample_fn(z, actual_model, **model_kwargs)
+            samples = sample_fn(z, actual_model, **model_kwargs)[-1]  # 取最后一步结果
             
             all_samples.append(samples)
             all_user_ids.append(user_batch)
