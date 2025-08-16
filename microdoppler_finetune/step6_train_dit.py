@@ -976,7 +976,13 @@ def train_with_dataparallel(n_gpus):
         # 条件信息验证
         logger.info("\n✅ 条件注入验证:")
         logger.info(f"  • 用户类别数: {31}")
-        logger.info(f"  • 条件嵌入维度: {model.module.y_embedder.embedding_dim if hasattr(model, 'module') else model.y_embedder.embedding_dim}")
+        # LabelEmbedder使用embedding_table而非embedding_dim
+        actual_model = model.module if hasattr(model, 'module') else model
+        if hasattr(actual_model, 'y_embedder') and hasattr(actual_model.y_embedder, 'embedding_table'):
+            embed_dim = actual_model.y_embedder.embedding_table.embedding_dim
+            num_classes = actual_model.y_embedder.embedding_table.num_embeddings
+            logger.info(f"  • 条件嵌入维度: {embed_dim}")
+            logger.info(f"  • 支持的类别数: {num_classes}")
         logger.info(f"  • 条件信息已正确传递到模型")
         
         logger.info("="*80)
