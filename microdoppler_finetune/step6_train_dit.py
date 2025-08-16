@@ -751,6 +751,9 @@ def train_with_dataparallel(n_gpus):
         torch.cuda.empty_cache()
     torch.cuda.set_device(0)
     
+    # 初始化VA-VAE用于样本生成（仅在需要时使用）
+    vae = None
+    
     # 加载配置
     config_path = Path("../configs/microdoppler_finetune.yaml")
     model_config = OmegaConf.load(config_path).model
@@ -930,6 +933,16 @@ def train_with_dataparallel(n_gpus):
         # 每5个epoch生成条件扩散样本
         if (epoch + 1) % 5 == 0:
             logger.info("\n🎨 生成条件扩散样本...")
+            # 延迟初始化VAE以节省内存
+            if vae is None:
+                logger.info("初始化VA-VAE用于样本解码...")
+                from tokenizer.vavae import VA_VAE
+                vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
+                vae_config = OmegaConf.load(str(vae_config_path))
+                vae_config.ckpt_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+                temp_config_path = Path("/kaggle/working/temp_vae_config.yaml")
+                OmegaConf.save(vae_config, str(temp_config_path))
+                vae = VA_VAE(str(temp_config_path), img_size=256, horizon_flip=False, fp16=True)
             generate_conditional_samples(model, vae, transport, device, epoch + 1, n_gpus)
         
         # 记录指标
@@ -986,6 +999,70 @@ def train_with_dataparallel(n_gpus):
         logger.info(f"  • 条件信息已正确传递到模型")
         
         logger.info("="*80)
+        
+        # 每个epoch输出详细训练质量报告
+        logger.info("\n" + "="*80)
+        logger.info("🔍 训练质量分析")
+        logger.info("="*80)
+        
+        # 损失趋势分析
+        if epoch > 0:
+            train_loss_change = avg_train_loss - train_metrics_history[-2]['loss'] if len(train_metrics_history) > 1 else 0
+            val_loss_change = avg_val_loss - val_metrics_history[-2]['loss'] if len(val_metrics_history) > 1 else 0
+            
+            logger.info("\n📉 损失趋势:")
+            logger.info(f"  • 训练损失变化: {train_loss_change:+.6f} ({(train_loss_change/train_metrics_history[-2]['loss']*100):+.2f}%)" if len(train_metrics_history) > 1 else "N/A")
+            logger.info(f"  • 验证损失变化: {val_loss_change:+.6f} ({(val_loss_change/val_metrics_history[-2]['loss']*100):+.2f}%)" if len(val_metrics_history) > 1 else "N/A")
+            
+            # 过拟合检测
+            overfit_gap = avg_val_loss - avg_train_loss
+            logger.info("\n⚠️ 过拟合检测:")
+            logger.info(f"  • 验证-训练损失差: {overfit_gap:.6f}")
+            if overfit_gap > 0.1:
+                logger.warning("  • 警告: 可能存在过拟合，验证损失显著高于训练损失")
+            elif overfit_gap < -0.05:
+                logger.warning("  • 注意: 验证损失低于训练损失，可能存在数据泄露或评估问题")
+            else:
+                logger.info("  • 状态: 正常，无明显过拟合")
+        
+        # 训练稳定性分析
+        logger.info("\n⚡ 训练稳定性:")
+        if avg_train_grad_norm > 10:
+            logger.warning(f"  • 警告: 梯度范数过大 ({avg_train_grad_norm:.2f})，可能需要降低学习率")
+        elif avg_train_grad_norm < 0.01:
+            logger.warning(f"  • 警告: 梯度范数过小 ({avg_train_grad_norm:.4f})，可能陷入局部最优")
+        else:
+            logger.info(f"  • 梯度范数正常: {avg_train_grad_norm:.4f}")
+        
+        # 收敛状态判断
+        logger.info("\n🎯 收敛状态:")
+        if epoch >= 4:  # 至少5个epoch后判断
+            recent_val_losses = [m['loss'] for m in val_metrics_history[-5:]]
+            val_std = np.std(recent_val_losses)
+            logger.info(f"  • 最近5轮验证损失标准差: {val_std:.6f}")
+            if val_std < 0.001:
+                logger.info("  • 模型可能已收敛")
+            elif val_std < 0.01:
+                logger.info("  • 模型接近收敛")
+            else:
+                logger.info("  • 模型仍在优化中")
+        
+        logger.info("="*80)
+        
+        # 每5个epoch生成条件扩散样本
+        if (epoch + 1) % 5 == 0:
+            logger.info("\n🎨 生成条件扩散样本...")
+            # 延迟初始化VAE以节省内存
+            if vae is None:
+                logger.info("初始化VA-VAE用于样本解码...")
+                from tokenizer.vavae import VA_VAE
+                vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
+                vae_config = OmegaConf.load(str(vae_config_path))
+                vae_config.ckpt_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+                temp_config_path = Path("/kaggle/working/temp_vae_config.yaml")
+                OmegaConf.save(vae_config, str(temp_config_path))
+                vae = VA_VAE(str(temp_config_path), img_size=256, horizon_flip=False, fp16=True)
+            generate_conditional_samples(model, vae, transport, device, epoch + 1, n_gpus)
         
         # 保存最佳模型
         if avg_val_loss < best_val_loss:
