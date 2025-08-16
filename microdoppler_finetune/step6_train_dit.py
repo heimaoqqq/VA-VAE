@@ -779,24 +779,108 @@ def calculate_metrics(model, loss, optimizer):
 
 
 def train_dit_kaggle():
-    """Kaggle T4x2优化的训练函数 - 使用DistributedDataParallel"""
+    """Kaggle环境下的DiT微调训练"""
+    logger.info("开始Kaggle DiT微调训练...")
     
-    # GPU设备检查
+    # 检查GPU状态
+    if not torch.cuda.is_available():
+        raise RuntimeError("需要GPU进行训练")
+    
     world_size = torch.cuda.device_count()
     logger.info(f"检测到 {world_size} 个GPU")
     
+    # 显示GPU信息
+    for i in range(world_size):
+        logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+        logger.info(f"显存: {torch.cuda.get_device_properties(i).total_memory / 1e9:.1f}GB")
+    
+    # 预处理：确保潜空间数据准备好
+    latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
+    if not latents_file.exists():
+        logger.info("预计算潜空间数据...")
+        prepare_latents_for_training()
+        logger.info("潜空间预计算完成")
+    
+    # 配置多进程环境变量
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    # Kaggle环境优化
+    os.environ['NCCL_DEBUG'] = 'WARN'
+    os.environ['NCCL_IB_DISABLE'] = '1'
+    os.environ['NCCL_P2P_DISABLE'] = '1'
+    os.environ['NCCL_SOCKET_IFNAME'] = 'lo'
+    os.environ['NCCL_TIMEOUT'] = '10'
+    
     if world_size > 1:
-        # 使用DDP避免GPU不平衡问题
-        logger.info("启动DistributedDataParallel训练...")
-        mp.spawn(train_worker, args=(world_size,), nprocs=world_size, join=True)
+        logger.info(f"启动 {world_size} 进程分布式训练...")
+        # 多GPU DDP训练
+        try:
+            mp.spawn(train_worker, args=(world_size,), nprocs=world_size, join=True)
+        except Exception as e:
+            logger.error(f"DDP训练失败: {e}")
+            logger.info("回退到单GPU训练...")
+            train_worker(0, 1)
     else:
         # 单GPU模式
         logger.info("使用单GPU训练...")
         train_worker(0, 1)
 
 
+def prepare_latents_for_training():
+    """预处理：只在主进程中准备潜空间数据"""
+    # 检查GPU状态和显存
+    device = torch.device('cuda:0')
+    torch.cuda.set_device(0)
+    torch.cuda.empty_cache()
+    
+    logger.info("=== 准备潜空间数据 ===")
+    initial_memory = torch.cuda.memory_allocated(device) / 1024**3
+    logger.info(f"初始显存使用: {initial_memory:.2f}GB")
+    
+    # 修正配置中的checkpoint路径为微调模型
+    logger.info("准备VA-VAE配置...")
+    vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
+    
+    with open(vae_config_path, 'r') as f:
+        config_content = f.read()
+    
+    # 使用微调后的模型  
+    finetuned_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
+    if finetuned_checkpoint not in config_content:
+        config_content = config_content.replace(
+            'ckpt_path: /path/to/checkpoint.pt',
+            f'ckpt_path: {finetuned_checkpoint}'
+        )
+        with open(vae_config_path, 'w') as f:
+            f.write(config_content)
+        logger.info(f"已更新VA-VAE checkpoint路径: {finetuned_checkpoint}")
+    
+    # 初始化VA-VAE进行潜空间编码
+    from tokenizer.vavae import VA_VAE
+    logger.info("加载VA-VAE模型...")
+    vae = VA_VAE(str(vae_config_path), img_size=256, horizon_flip=False, fp16=True)
+    vae_memory = torch.cuda.memory_allocated(device) / 1024**3
+    logger.info(f"VA-VAE加载完成，显存: {vae_memory:.2f}GB")
+    
+    # 预计算潜空间
+    data_dir = Path("/kaggle/input/dataset")
+    latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
+    if not latents_file.exists():
+        logger.info("开始编码数据集到潜空间...")
+        encode_dataset_to_latents(vae, data_dir, device)
+        logger.info("潜空间编码完成")
+    else:
+        logger.info("潜空间文件已存在，跳过编码")
+    
+    # 释放VA-VAE显存
+    del vae
+    torch.cuda.empty_cache()
+    final_memory = torch.cuda.memory_allocated(device) / 1024**3
+    logger.info(f"VA-VAE释放后显存: {final_memory:.2f}GB")
+
+
 def train_worker(rank, world_size):
-    """DDP训练工作进程"""
+    """DDP训练工作进程 - 不加载VA-VAE，只处理DiT训练"""
     
     # 获取训练配置
     config = get_training_config()
@@ -826,31 +910,9 @@ def train_worker(rank, world_size):
     # 检查初始显存状态
     if rank == 0:
         initial_memory = torch.cuda.memory_allocated(device) / 1024**3
-        logger.info(f"初始显存使用: {initial_memory:.2f}GB")
+        logger.info(f"进程{rank}初始显存使用: {initial_memory:.2f}GB")
     
-    # 修正配置中的checkpoint路径为微调模型
-    logger.info("准备VA-VAE配置...")
-    vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
-    
-    with open(vae_config_path, 'r') as f:
-        config_content = f.read()
-    
-    # 使用微调后的模型  
-    finetuned_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
-    if rank == 0 and finetuned_checkpoint not in config_content:
-        config_content = config_content.replace(
-            'ckpt_path: /path/to/checkpoint.pt',
-            f'ckpt_path: {finetuned_checkpoint}'
-        )
-        with open(vae_config_path, 'w') as f:
-            f.write(config_content)
-        logger.info(f"已更新VA-VAE checkpoint路径: {finetuned_checkpoint}")
-    
-    # 同步所有进程
-    if world_size > 1:
-        torch.distributed.barrier()
-    
-    # 创建数据集
+    # 创建数据集 - 只使用预计算的潜空间
     data_dir = Path("/kaggle/input/dataset")
     train_dataset = MicroDopplerLatentDataset(data_dir, split='train')
     val_dataset = MicroDopplerLatentDataset(data_dir, split='val')
