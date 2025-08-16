@@ -48,7 +48,7 @@ def is_main_process():
 
 # 导入LightningDiT模块
 from transport import create_transport, Sampler
-from models.lightningdit import LightningDiT_models, LightningDiT_B_1
+from models.lightningdit import LightningDiT_models, LightningDiT_XL_1
 
 # 导入VA-VAE
 from tokenizer.vavae import VA_VAE
@@ -281,23 +281,21 @@ def train_dit():
     # VA-VAE的model已经在初始化时调用了.cuda()，不需要.to(device)
     # vae.model已经是eval模式
     
-    # ===== 2. 初始化LightningDiT-B模型 =====
-    logger.info("=== 初始化LightningDiT-B ===")
+    # ===== 2. 初始化LightningDiT-XL模型 =====
+    logger.info("=== 初始化LightningDiT-XL ===")
     latent_size = 16  # 256/16 = 16
     num_users = 31
     
-    model = LightningDiT_models["LightningDiT-B/1"](
+    model = LightningDiT_XL_1(
         input_size=latent_size,
         num_classes=num_users,
-        use_qknorm=False,
-        use_swiglu=True,
+        in_channels=32,
+        use_swiglu=True,  
         use_rope=True,
-        use_rmsnorm=True,
-        wo_shift=False,
-        in_channels=32  # VA-VAE f16d32
-    )
+        use_rmsnorm=True
+    ).to(device)
     
-    logger.info(f"Model: LightningDiT-B/1 (768-dim, 12 layers)")
+    logger.info(f"Model: LightningDiT-XL/1 (1152-dim, 28 layers)")
     logger.info(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
     # 使用指定的LightningDiT模型路径
@@ -966,16 +964,16 @@ def train_with_dataparallel(n_gpus):
     print("="*80)
     
     # 检查LightningDiT模型
-    pretrained_b = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-b-imagenet256.pt"
-    if os.path.exists(pretrained_b):
-        print(f"✅ 找到LightningDiT-B模型: {pretrained_b}")
-        size_gb = os.path.getsize(pretrained_b) / (1024**3)
+    pretrained_xl = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt"
+    if os.path.exists(pretrained_xl):
+        print(f"✅ 找到LightningDiT-XL模型: {pretrained_xl}")
+        size_gb = os.path.getsize(pretrained_xl) / (1024**3)
         print(f"   模型大小: {size_gb:.2f} GB")
-        if size_gb < 1:
-            print(f"   ⚠️ 模型文件可能不完整（预期约2.8GB）")
+        if size_gb < 5:
+            print(f"   ⚠️ 模型文件可能不完整（预期约10.8GB）")
     else:
-        print("❌ 未找到LightningDiT-B模型！")
-        print(f"   请确保文件存在: {pretrained_b}")
+        print("❌ 未找到LightningDiT-XL模型！")
+        print(f"   请确保文件存在: {pretrained_xl}")
         print("   运行 python step2_download_models.py 下载模型")
         
     # 检查VA-VAE模型  
@@ -1006,9 +1004,9 @@ def train_with_dataparallel(n_gpus):
     
     # ===== 加载预训练权重 =====
     print("\n🔄 加载LightningDiT预训练权重...")
-    if os.path.exists(pretrained_b):
-        print(f"   从: {pretrained_b}")
-        checkpoint = torch.load(pretrained_b, map_location='cpu')
+    if os.path.exists(pretrained_xl):
+        print(f"   从: {pretrained_xl}")
+        checkpoint = torch.load(pretrained_xl, map_location='cpu')
         state_dict = checkpoint.get('model', checkpoint)
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         
@@ -1030,7 +1028,7 @@ def train_with_dataparallel(n_gpus):
             print("❌ 没有找到兼容的权重！模型将使用随机初始化")
             print("   这会导致生成纯噪声图像")
     else:
-        print(f"❌ 预训练模型不存在: {pretrained_b}")
+        print(f"❌ 预训练模型不存在: {pretrained_xl}")
         print("   模型将使用随机初始化，生成质量会很差")
     
     # DataParallel包装
