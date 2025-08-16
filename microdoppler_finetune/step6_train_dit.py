@@ -437,16 +437,13 @@ def train_dit(rank=0, world_size=1):
             latents = batch[0].to(device)
             user_ids = batch[1].to(device)
             
-            # 采样时间步
-            t = torch.randint(0, transport.num_timesteps, (latents.shape[0],), device=device)
-            
             # 前向传播（混合精度）
             with torch.cuda.amp.autocast():
-                # 添加噪声
+                # Transport内部自动采样时间
                 model_kwargs = {"y": user_ids}
                 # 分布式训练时使用module
                 dit_model = model.module if world_size > 1 else model
-                loss_dict = transport.training_losses(dit_model, latents, t, model_kwargs)
+                loss_dict = transport.training_losses(dit_model, latents, model_kwargs)
                 loss = loss_dict["loss"].mean()
             
             # 反向传播
@@ -487,12 +484,10 @@ def train_dit(rank=0, world_size=1):
                 latents = batch[0].to(device)
                 user_ids = batch[1].to(device)
                 
-                t = torch.randint(0, transport.num_timesteps, (latents.shape[0],), device=device)
-                
                 with torch.cuda.amp.autocast():
                     model_kwargs = {"y": user_ids}
                     dit_model = model.module if world_size > 1 else model
-                    loss_dict = transport.training_losses(dit_model, latents, t, model_kwargs)
+                    loss_dict = transport.training_losses(dit_model, latents, model_kwargs)
                     loss = loss_dict["loss"].mean()
                 
                 val_loss += loss.item()
