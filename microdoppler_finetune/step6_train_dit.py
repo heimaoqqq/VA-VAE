@@ -957,20 +957,52 @@ def train_with_dataparallel(n_gpus):
         pin_memory=True
     )
     
+    # ===== 模型加载检查 =====
+    logger.info("\n" + "="*60)
+    logger.info("🔍 模型加载状态检查")
+    logger.info("="*60)
+    
+    # 检查LightningDiT模型
+    pretrained_xl = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt"
+    if os.path.exists(pretrained_xl):
+        logger.info(f"✅ 找到LightningDiT-XL模型: {pretrained_xl}")
+        size_gb = os.path.getsize(pretrained_xl) / (1024**3)
+        logger.info(f"   模型大小: {size_gb:.2f} GB")
+        if size_gb < 5:
+            logger.warning(f"   ⚠️ 模型文件可能不完整（预期约10.8GB）")
+    else:
+        logger.error("❌ 未找到LightningDiT-XL模型！")
+        logger.error(f"   请确保文件存在: {pretrained_xl}")
+        logger.error("   运行 python step2_download_models.py 下载模型")
+        
+    # 检查VA-VAE模型
+    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+    if os.path.exists(vae_checkpoint):
+        logger.info(f"✅ 找到VA-VAE模型: {vae_checkpoint}")
+        size_mb = os.path.getsize(vae_checkpoint) / (1024 * 1024)
+        logger.info(f"   模型大小: {size_mb:.2f} MB")
+    else:
+        logger.error("❌ 未找到VA-VAE模型！")
+        logger.error(f"   请确保文件存在: {vae_checkpoint}")
+    
     # 创建模型 - 使用B模型以适配T4显存
+    logger.info("\n🏗️ 创建LightningDiT-B模型...")
     model = LightningDiT_B_1(
         input_size=H_latent,
         in_channels=C_latent,
         num_classes=31,  # 31个用户，模型会自动添加CFG token
-        learn_sigma=False  # 固定方差，避免训练不稳定
+        use_qknorm=False,
+        use_swiglu=True,  
+        use_rope=True,
+        use_rmsnorm=True
     ).to(device)
     
-    # 启用梯度检查点
-    model.use_checkpoint = True
+    logger.info(f"✅ 模型创建完成")
+    logger.info(f"   参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
     # DataParallel包装
     if n_gpus > 1:
-        logger.info(f"使用 DataParallel 在 {n_gpus} 个GPU上训练")
+        logger.info(f"🔗 使用 DataParallel 在 {n_gpus} 个GPU上训练")
         model = nn.DataParallel(model, device_ids=list(range(n_gpus)))
     
     # 创建EMA模型 - 用于稳定生成质量
