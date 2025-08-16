@@ -779,7 +779,7 @@ def train_with_dataparallel(n_gpus):
     # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
-        batch_size=config['batch_size_per_gpu'] * n_gpus,  # 总batch size
+        batch_size=config['batch_size'] * n_gpus,  # 总batch size
         shuffle=True,
         num_workers=config['num_workers'],
         pin_memory=True,
@@ -788,7 +788,7 @@ def train_with_dataparallel(n_gpus):
     
     val_loader = DataLoader(
         val_dataset,
-        batch_size=config['batch_size_per_gpu'] * n_gpus,
+        batch_size=config['batch_size'] * n_gpus,
         shuffle=False,
         num_workers=config['num_workers'],
         pin_memory=True
