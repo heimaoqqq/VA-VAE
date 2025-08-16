@@ -922,8 +922,13 @@ def train_worker(rank, world_size):
         os.environ['MASTER_PORT'] = '12355'
         os.environ['NCCL_DEBUG'] = 'WARN'
         
-        # 初始化进程组
-        torch.distributed.init_process_group("nccl", rank=rank, world_size=world_size)
+        # 初始化进程组，指定设备
+        torch.distributed.init_process_group(
+            backend="nccl", 
+            rank=rank, 
+            world_size=world_size,
+            device_id=rank  # 指定设备ID避免NCCL警告
+        )
     
     # 设备设置
     device = torch.device(f'cuda:{rank}')
@@ -1099,35 +1104,68 @@ def train_worker(rank, world_size):
             pbar = train_loader
             
         for batch_idx, batch in enumerate(pbar):
-            batch_start_time = time.time()
-            latents = batch[0].to(device)
-            user_ids = batch[1].to(device)
+            try:
+                batch_start_time = time.time()
+                
+                # 调试：第一个batch的详细信息
+                if epoch == 0 and batch_idx == 0:
+                    logger.info(f"进程{rank}: 开始处理第一个batch")
+                
+                latents = batch[0].to(device)
+                user_ids = batch[1].to(device)
+                
+                # 调试：检查第一个batch的shape（仅rank 0）
+                if epoch == 0 and batch_idx == 0 and rank == 0:
+                    logger.info(f"\n📋 数据格式检查:")
+                    logger.info(f"  潜空间shape: {latents.shape}")
+                    logger.info(f"  用户ID shape: {user_ids.shape}")
+                    logger.info(f"  潜空间数据类型: {latents.dtype}")
+                    logger.info(f"  潜空间数值范围: [{latents.min():.3f}, {latents.max():.3f}]")
+                    print()
+                
+                # 前向传播
+                if epoch == 0 and batch_idx == 0:
+                    logger.info(f"进程{rank}: 开始前向传播")
+                
+                with torch.cuda.amp.autocast():
+                    model_kwargs = {"y": user_ids}
+                    loss_dict = transport.training_losses(model, latents, model_kwargs)
+                    loss = loss_dict["loss"].mean()
+                
+                if epoch == 0 and batch_idx == 0:
+                    logger.info(f"进程{rank}: 前向传播完成，loss={loss.item():.4f}")
             
-            # 调试：检查第一个batch的shape（仅rank 0）
-            if epoch == 0 and batch_idx == 0 and rank == 0:
-                logger.info(f"\n📋 数据格式检查:")
-                logger.info(f"  潜空间shape: {latents.shape}")
-                logger.info(f"  用户ID shape: {user_ids.shape}")
-                logger.info(f"  潜空间数据类型: {latents.dtype}")
-                logger.info(f"  潜空间数值范围: [{latents.min():.3f}, {latents.max():.3f}]")
-                print()
-            
-            # 前向传播
-            with torch.cuda.amp.autocast():
-                model_kwargs = {"y": user_ids}
-                loss_dict = transport.training_losses(model, latents, model_kwargs)
-                loss = loss_dict["loss"].mean()
+            except Exception as e:
+                logger.error(f"进程{rank}: batch {batch_idx} 出错: {e}")
+                raise
             
             # 反向传播
+            if epoch == 0 and batch_idx == 0:
+                logger.info(f"进程{rank}: 开始反向传播")
+            
             optimizer.zero_grad()
             scaler.scale(loss).backward()
+            
+            if epoch == 0 and batch_idx == 0:
+                logger.info(f"进程{rank}: backward完成，开始梯度裁剪")
+            
             scaler.unscale_(optimizer)
             
             # 计算梯度范数
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'])
+            
+            if epoch == 0 and batch_idx == 0:
+                logger.info(f"进程{rank}: 梯度裁剪完成，grad_norm={grad_norm:.4f}")
             
             scaler.step(optimizer)
             scaler.update()
+            
+            if epoch == 0 and batch_idx == 0:
+                logger.info(f"进程{rank}: 优化器step完成")
+            
+            # 定期清理显存缓存
+            if batch_idx % 50 == 0:
+                torch.cuda.empty_cache()
             
             # 统计
             train_loss += loss.item()
@@ -1153,6 +1191,12 @@ def train_worker(rank, world_size):
                 # 显存警告
                 if current_memory > 13.0:  # T4总显存约14.7GB，警告阈值13GB
                     logger.warning(f"显存使用过高: {current_memory:.2f}GB")
+                    
+            # 第一个batch完成后的同步
+            if epoch == 0 and batch_idx == 0 and world_size > 1:
+                logger.info(f"进程{rank}: 第一个batch完成，等待同步...")
+                torch.distributed.barrier()
+                logger.info(f"进程{rank}: 同步完成")
         
         # 训练阶段统计
         avg_train_loss = train_loss / train_steps
@@ -1240,39 +1284,48 @@ def train_worker(rank, world_size):
             
             print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
             
-            # 保存最佳模型
-            if is_improving:
+            # 最佳模型保存
+            if avg_val_loss < best_val_loss:
                 best_val_loss = avg_val_loss
-                checkpoint_path = Path("/kaggle/working") / f"dit_best_epoch{epoch+1}.pt"
-                torch.save({
-                    'epoch': epoch + 1,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'val_loss': avg_val_loss,
-                    'train_loss': avg_train_loss,
-                    'grad_norm': avg_train_grad_norm,
-                }, checkpoint_path)
-                logger.info(f"💾 保存最佳模型: {checkpoint_path}")
-            
-            # 记录训练历史
-            train_metrics_history.append({
-                'epoch': epoch + 1,
-                'train_loss': avg_train_loss,
-                'val_loss': avg_val_loss,
-                'grad_norm': avg_train_grad_norm,
-                'lr': current_lr,
-                'epoch_time': epoch_time,
-                'samples_per_sec': train_samples_per_sec
-            })
+                if rank == 0:
+                    best_model_path = Path("/kaggle/working") / f"best_dit_epoch_{epoch+1}.pt"
+                    torch.save({
+                        'epoch': epoch + 1,
+                        'model_state_dict': model.module.state_dict() if world_size > 1 else model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'val_loss': avg_val_loss,
+                        'config': config
+                    }, best_model_path)
+                    logger.info(f"保存最佳模型到 {best_model_path}")
         
-        # 重置GPU内存统计
-        torch.cuda.reset_peak_memory_stats(device)
+        # 更新学习率
+        scheduler.step()
     
-    # 清理分布式进程组
-    if world_size > 1:
-        torch.distributed.destroy_process_group()
-        
+    # 训练完成
     if rank == 0:
+        logger.info("🎉 训练完成!")
+        logger.info(f"最佳验证损失: {best_val_loss:.6f}")
+        
+        # 保存最终模型
+        final_model_path = Path("/kaggle/working") / "final_dit_model.pt"
+        torch.save({
+            'model_state_dict': model.module.state_dict() if world_size > 1 else model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'config': config,
+            'training_history': {
+                'train_metrics': train_metrics_history,
+                'val_metrics': val_metrics_history
+            }
+        }, final_model_path)
+        logger.info(f"保存最终模型到 {final_model_path}")
+    
+    # 清理分布式环境
+    if world_size > 1:
+        logger.info(f"进程{rank}: 清理分布式环境...")
+        torch.distributed.destroy_process_group()
+        logger.info(f"进程{rank}: 分布式环境清理完成")
         logger.info("训练完成！")
 
 
