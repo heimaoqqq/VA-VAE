@@ -873,6 +873,27 @@ def train_with_dataparallel(n_gpus):
     
     logger.info(f"潜空间维度: {H_latent}x{W_latent}x{C_latent}")
     
+    # 自动检测数据集路径
+    possible_data_paths = [
+        "/kaggle/input/dataset",  # 标准Kaggle路径
+        "/kaggle/input/micro-doppler-data",  # 替代路径
+        "/kaggle/working/dataset",  # 工作目录
+        "./dataset",  # 本地路径
+    ]
+    
+    data_dir = None
+    for path in possible_data_paths:
+        if Path(path).exists():
+            data_dir = Path(path)
+            logger.info(f"找到数据集: {path}")
+            break
+    
+    if data_dir is None:
+        logger.error("未找到数据集！请检查以下路径:")
+        for path in possible_data_paths:
+            logger.error(f"  - {path}")
+        raise FileNotFoundError("Dataset not found")
+    
     # 创建数据集
     train_dataset = MicroDopplerLatentDataset(
         data_dir=str(data_dir),
