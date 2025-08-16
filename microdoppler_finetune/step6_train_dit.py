@@ -896,6 +896,9 @@ def train_with_dataparallel(n_gpus):
     # 初始化VA-VAE用于样本生成（仅在需要时使用）
     vae = None
     
+    # 定义模型路径（全局使用）
+    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+    
     # 加载配置
     config_path = Path("../configs/microdoppler_finetune.yaml")
     model_config = OmegaConf.load(config_path).model
