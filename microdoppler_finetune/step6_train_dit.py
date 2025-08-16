@@ -966,16 +966,16 @@ def train_with_dataparallel(n_gpus):
     print("="*80)
     
     # 检查LightningDiT模型
-    pretrained_xl = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt"
-    if os.path.exists(pretrained_xl):
-        print(f"✅ 找到LightningDiT-XL模型: {pretrained_xl}")
-        size_gb = os.path.getsize(pretrained_xl) / (1024**3)
+    pretrained_b = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-b-imagenet256-64ep.pt"
+    if os.path.exists(pretrained_b):
+        print(f"✅ 找到LightningDiT-B模型: {pretrained_b}")
+        size_gb = os.path.getsize(pretrained_b) / (1024**3)
         print(f"   模型大小: {size_gb:.2f} GB")
-        if size_gb < 5:
-            print(f"   ⚠️ 模型文件可能不完整（预期约10.8GB）")
+        if size_gb < 1:
+            print(f"   ⚠️ 模型文件可能不完整（预期约2.8GB）")
     else:
-        print("❌ 未找到LightningDiT-XL模型！")
-        print(f"   请确保文件存在: {pretrained_xl}")
+        print("❌ 未找到LightningDiT-B模型！")
+        print(f"   请确保文件存在: {pretrained_b}")
         print("   运行 python step2_download_models.py 下载模型")
         
     # 检查VA-VAE模型  
@@ -988,9 +988,10 @@ def train_with_dataparallel(n_gpus):
         print(f"   请确保文件存在: {vae_checkpoint}")
     print("="*80)
     
-    # 创建模型 - 使用B模型以适配T4显存
-    logger.info("\n🏗️ 创建LightningDiT-B模型...")
-    model = LightningDiT_B_1(
+    # 创建模型 - 改用XL模型匹配预训练权重
+    print("\n🏗️ 创建LightningDiT-XL模型（匹配预训练权重）...")
+    from models.lightningdit import LightningDiT_XL_1
+    model = LightningDiT_XL_1(
         input_size=H_latent,
         in_channels=C_latent,
         num_classes=31,  # 31个用户，模型会自动添加CFG token
@@ -1005,9 +1006,9 @@ def train_with_dataparallel(n_gpus):
     
     # ===== 加载预训练权重 =====
     print("\n🔄 加载LightningDiT预训练权重...")
-    if os.path.exists(pretrained_xl):
-        print(f"   从: {pretrained_xl}")
-        checkpoint = torch.load(pretrained_xl, map_location='cpu')
+    if os.path.exists(pretrained_b):
+        print(f"   从: {pretrained_b}")
+        checkpoint = torch.load(pretrained_b, map_location='cpu')
         state_dict = checkpoint.get('model', checkpoint)
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
         
@@ -1029,7 +1030,7 @@ def train_with_dataparallel(n_gpus):
             print("❌ 没有找到兼容的权重！模型将使用随机初始化")
             print("   这会导致生成纯噪声图像")
     else:
-        print(f"❌ 预训练模型不存在: {pretrained_xl}")
+        print(f"❌ 预训练模型不存在: {pretrained_b}")
         print("   模型将使用随机初始化，生成质量会很差")
     
     # DataParallel包装
