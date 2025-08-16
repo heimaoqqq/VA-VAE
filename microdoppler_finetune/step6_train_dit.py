@@ -1045,22 +1045,44 @@ def train_with_dataparallel(n_gpus):
         
         # 每5个epoch生成条件扩散样本
         if (epoch + 1) % 5 == 0:
-            logger.info("\n🎨 生成条件扩散样本...")
-            # 延迟初始化VAE以节省内存
-            if vae is None:
-                logger.info("初始化VA-VAE用于样本解码...")
-                from tokenizer.vavae import VA_VAE
-                vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
-                vae_config = OmegaConf.load(str(vae_config_path))
-                vae_config.ckpt_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
-                temp_config_path = Path("/kaggle/working/temp_vae_config.yaml")
-                OmegaConf.save(vae_config, str(temp_config_path))
-                vae = VA_VAE(str(temp_config_path), img_size=256, horizon_flip=False, fp16=True)
-            generate_conditional_samples(model, vae, transport, device, epoch + 1, n_gpus)
+            print("\n" + "="*80)
+            print(f"🎨 Epoch {epoch + 1}: 生成条件扩散样本...")
+            print("="*80)
+            
+            try:
+                # 延迟初始化VAE以节省内存
+                if vae is None:
+                    print("  • 初始化VA-VAE用于样本解码...")
+                    from tokenizer.vavae import VA_VAE
+                    vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
+                    vae_config = OmegaConf.load(str(vae_config_path))
+                    vae_config.ckpt_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+                    temp_config_path = Path("/kaggle/working/temp_vae_config.yaml")
+                    OmegaConf.save(vae_config, str(temp_config_path))
+                    vae = VA_VAE(str(temp_config_path), img_size=256, horizon_flip=False, fp16=True)
+                    print("  • VA-VAE初始化完成")
+                
+                generate_conditional_samples(model, vae, transport, device, epoch + 1, n_gpus)
+                print("  • 条件样本生成完成\n")
+            except Exception as e:
+                print(f"  ⚠️ 条件样本生成失败: {e}")
+                import traceback
+                traceback.print_exc()
         
         # 保存最佳模型
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
+            
+            # 删除旧的最佳模型以节约空间
+            old_best_models = list(Path("/kaggle/working").glob("best_dit_epoch_*.pt"))
+            for old_model in old_best_models:
+                try:
+                    old_model.unlink()
+                    logger.info(f"  • 删除旧模型: {old_model.name}")
+                except Exception as e:
+                    logger.warning(f"  • 无法删除旧模型 {old_model.name}: {e}")
+            
+            # 保存新的最佳模型
             best_model_path = Path("/kaggle/working") / f"best_dit_epoch_{epoch+1}.pt"
             model_state = model.module.state_dict() if n_gpus > 1 else model.state_dict()
             torch.save({
@@ -1071,7 +1093,7 @@ def train_with_dataparallel(n_gpus):
                 'val_loss': avg_val_loss,
                 'config': config
             }, best_model_path)
-            logger.info(f"保存最佳模型到 {best_model_path}")
+            logger.info(f"  ✅ 保存最佳模型到 {best_model_path} (val_loss: {avg_val_loss:.6f})")
     
     # 保存最终模型
     final_model_path = Path("/kaggle/working") / "final_dit_model.pt"
@@ -1153,17 +1175,21 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
     model.eval()
     
     with torch.no_grad():
+        print(f"\n  📊 开始生成条件样本 (Epoch {epoch})...")
+        
         # 生成多个用户的样本
         num_users_to_sample = min(8, 31)  # 采样8个不同用户
         samples_per_user = 2  # 每个用户生成2个样本
         
         # 选择要采样的用户
         selected_users = torch.linspace(0, 30, num_users_to_sample, dtype=torch.long, device=device)
+        print(f"  • 选择的用户ID: {selected_users.tolist()}")
+        print(f"  • 每个用户生成 {samples_per_user} 个样本")
         
         all_samples = []
         all_user_ids = []
         
-        for user_id in selected_users:
+        for idx, user_id in enumerate(selected_users):
             # 为每个用户生成多个样本
             user_batch = user_id.repeat(samples_per_user)
             
@@ -1184,47 +1210,65 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
             
             all_samples.append(samples)
             all_user_ids.append(user_batch)
+            
+            if (idx + 1) % 4 == 0:
+                print(f"    • 已生成 {idx + 1}/{num_users_to_sample} 个用户的样本")
         
         # 合并所有样本
         all_samples = torch.cat(all_samples, dim=0)
         all_user_ids = torch.cat(all_user_ids, dim=0)
         
-        # 解码潜空间到图像
-        logger.info(f"  • 生成了 {len(all_samples)} 个条件样本")
-        logger.info(f"  • 用户ID分布: {selected_users.tolist()}")
+        print(f"  • 成功生成 {len(all_samples)} 个条件样本")
+        print(f"  • 样本形状: {all_samples.shape}")
         
         # 使用VA-VAE解码
+        print("\n  🎨 开始解码潜空间样本到图像...")
         try:
             # 将潜空间样本移到cuda:0（VA-VAE所在的设备）
             samples_cuda0 = all_samples.to('cuda:0')
+            print(f"    • 样本已移到 cuda:0")
             
             # 反标准化（如果有统计信息）
             if hasattr(vae, 'latent_mean') and vae.latent_mean is not None:
                 samples_cuda0 = samples_cuda0 * vae.latent_std + vae.latent_mean
+                print(f"    • 已应用反标准化")
             
             # 解码
+            print(f"    • 开始VA-VAE解码...")
             images = vae.decode(samples_cuda0)
+            print(f"    • 解码完成，图像形状: {images.shape}")
             
             # 保存图像
             save_dir = Path("/kaggle/working") / f"samples_epoch_{epoch}"
-            save_dir.mkdir(exist_ok=True)
+            save_dir.mkdir(exist_ok=True, parents=True)
             
             from torchvision.utils import save_image
-            for i, (img, uid) in enumerate(zip(images, all_user_ids)):
-                # 保存单张图像
-                img_path = save_dir / f"user_{uid.item()}_sample_{i}.png"
-                save_image(img, img_path, normalize=True, value_range=(-1, 1))
             
             # 创建网格图
             grid_path = save_dir / "grid.png"
-            save_image(images[:16], grid_path, nrow=4, normalize=True, value_range=(-1, 1))
+            num_show = min(16, len(images))
+            save_image(images[:num_show], grid_path, nrow=4, normalize=True, value_range=(-1, 1))
+            print(f"  ✅ 网格图已保存: {grid_path}")
             
-            logger.info(f"  • 样本已保存到: {save_dir}")
-            logger.info(f"  • 网格图: {grid_path}")
+            # 保存前几张单独的图像
+            num_save = min(8, len(images))
+            for i in range(num_save):
+                uid = all_user_ids[i].item()
+                img_path = save_dir / f"user_{uid}_sample_{i}.png"
+                save_image(images[i], img_path, normalize=True, value_range=(-1, 1))
+            print(f"  ✅ 保存了 {num_save} 张单独图像到: {save_dir}")
+            
+            # 创建用户分组的网格图
+            users_path = save_dir / "users_grid.png"
+            save_image(images, users_path, nrow=samples_per_user, normalize=True, value_range=(-1, 1))
+            print(f"  ✅ 用户分组网格图: {users_path}")
             
         except Exception as e:
-            logger.error(f"  ⚠️ 解码失败: {e}")
-            logger.info("  • 保存潜空间样本而非图像...")
+            print(f"\n  ⚠️ 解码失败: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            print("  • 正在保存潜空间样本而非图像...")
             
             # 保存潜空间表示
             latent_path = Path("/kaggle/working") / f"latents_epoch_{epoch}.pt"
@@ -1233,7 +1277,7 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
                 'user_ids': all_user_ids.cpu(),
                 'epoch': epoch
             }, latent_path)
-            logger.info(f"  • 潜空间样本保存到: {latent_path}")
+            print(f"  ✅ 潜空间样本已保存到: {latent_path}")
 
 
 def main():
