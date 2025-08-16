@@ -9,10 +9,8 @@ import sys
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader, DistributedSampler
-import torch.distributed as dist
-import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import Dataset, DataLoader
+from torch.nn.parallel import DataParallel
 import numpy as np
 from pathlib import Path
 import json
@@ -45,39 +43,11 @@ os.environ['TORCHDYNAMO_DISABLE'] = '1'
 import torch._dynamo
 torch._dynamo.disable()
 
-# 分布式训练相关函数
-def setup(rank, world_size):
-    """初始化分布式训练 - Kaggle优化版本"""
-    # Kaggle环境配置
-    os.environ['MASTER_ADDR'] = '127.0.0.1'
-    os.environ['MASTER_PORT'] = '29500'  # 使用标准端口
-    os.environ['WORLD_SIZE'] = str(world_size)
-    os.environ['RANK'] = str(rank)
-    
-    # 初始化分布式进程组
-    dist.init_process_group(
-        backend="nccl", 
-        rank=rank, 
-        world_size=world_size,
-        timeout=timedelta(seconds=60)
-    )
-    
-    # 设置当前进程使用的GPU
-    torch.cuda.set_device(rank)
-    
-    # 打印分布式信息
-    if rank == 0:
-        logger.info(f"Initialized DDP with {world_size} GPUs")
-        for i in range(world_size):
-            logger.info(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-
-def cleanup():
-    """清理分布式训练"""
-    dist.destroy_process_group()
-
+# DataParallel辅助函数
 def is_main_process():
-    """是否为主进程"""
-    return not dist.is_initialized() or dist.get_rank() == 0
+    """始终返回True，因为不使用分布式训练"""
+    return True
+
 
 # 导入LightningDiT模块
 from transport import create_transport
@@ -203,22 +173,19 @@ class MicroDopplerLatentDataset(Dataset):
 
 
 # ==================== 训练函数 ====================
-def train_dit(rank=0, world_size=1):
-    """主训练函数 - 支持分布式训练"""
-    
-    # 初始化分布式训练
-    if world_size > 1:
-        setup(rank, world_size)
+def train_dit():
+    """主训练函数 - DataParallel模式"""
     
     # 设备设置
-    device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    if is_main_process():
-        logger.info(f"World size: {world_size}, Rank: {rank}")
-        logger.info(f"Using device: {device}")
-        if torch.cuda.is_available():
-            logger.info(f"GPU: {torch.cuda.get_device_name(rank)}")
-            logger.info(f"GPU Memory: {torch.cuda.get_device_properties(rank).total_memory / 1e9:.1f} GB")
+    logger.info(f"Using device: {device}")
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        logger.info(f"Available GPUs: {num_gpus}")
+        for i in range(num_gpus):
+            logger.info(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+            logger.info(f"  GPU Memory: {torch.cuda.get_device_properties(i).total_memory / 1e9:.1f} GB")
     
     # ===== 1. 初始化VA-VAE（仅用于编码） =====
     logger.info("=== 初始化VA-VAE编码器 ===")
@@ -303,22 +270,15 @@ def train_dit(rank=0, world_size=1):
     
     model.to(device)
     
-    # 包装为分布式模型（Kaggle优化）
-    if world_size > 1:
-        model = DDP(
-            model, 
-            device_ids=[rank], 
-            output_device=rank, 
-            find_unused_parameters=False,  # 设为False以提高性能
-            broadcast_buffers=True,
-            gradient_as_bucket_view=True  # 内存优化
-        )
-        if is_main_process():
-            logger.info(f"Model wrapped with DDP on rank {rank}")
+    # 如果是多GPU，使用DataParallel包装
+    num_gpus = torch.cuda.device_count()
+    if num_gpus > 1:
+        model = DataParallel(model)
+        logger.info(f"Model wrapped with DataParallel using {num_gpus} GPUs")
     
     # 创建EMA模型
     from copy import deepcopy
-    ema_model = deepcopy(model.module if world_size > 1 else model).to(device)
+    ema_model = deepcopy(model.module if num_gpus > 1 else model).to(device)
     for p in ema_model.parameters():
         p.requires_grad = False
     
@@ -349,34 +309,15 @@ def train_dit(rank=0, world_size=1):
         import time
         time.sleep(2)
     
-    # 同步所有进程，确保潜空间数据已生成
-    if world_size > 1:
-        dist.barrier()
-        logger.info(f"Rank {rank} 同步完成")
+    # DataParallel模式不需要同步
     
     # 创建数据采样器（分布式）
     train_dataset = MicroDopplerLatentDataset(data_dir, split='train')
     val_dataset = MicroDopplerLatentDataset(data_dir, split='val')
     
-    # 分布式采样器（Kaggle优化）
-    if world_size > 1:
-        train_sampler = DistributedSampler(
-            train_dataset, 
-            num_replicas=world_size, 
-            rank=rank,
-            shuffle=True,
-            drop_last=True  # 确保批次大小一致
-        )
-        val_sampler = DistributedSampler(
-            val_dataset, 
-            num_replicas=world_size, 
-            rank=rank, 
-            shuffle=False,
-            drop_last=False
-        )
-    else:
-        train_sampler = None
-        val_sampler = None
+    # DataParallel模式不需要特殊采样器
+    train_sampler = None
+    val_sampler = None
     
     # Kaggle环境数据加载器优化
     train_loader = DataLoader(
@@ -428,9 +369,7 @@ def train_dit(rank=0, world_size=1):
     scaler = torch.cuda.amp.GradScaler()
     
     for epoch in range(num_epochs):
-        # 设置epoch for distributed sampler
-        if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
+        # DataParallel模式不需要设置epoch
         
         # 训练阶段
         model.train()
@@ -447,8 +386,8 @@ def train_dit(rank=0, world_size=1):
             with torch.cuda.amp.autocast():
                 # Transport内部自动采样时间
                 model_kwargs = {"y": user_ids}
-                # 分布式训练时使用module
-                dit_model = model.module if world_size > 1 else model
+                # DataParallel时使用module
+                dit_model = model.module if isinstance(model, DataParallel) else model
                 loss_dict = transport.training_losses(dit_model, latents, model_kwargs)
                 loss = loss_dict["loss"].mean()
             
@@ -470,7 +409,7 @@ def train_dit(rank=0, world_size=1):
             # 更新EMA（只在主进程）
             if is_main_process():
                 ema_decay = 0.9999
-                model_params = model.module.parameters() if world_size > 1 else model.parameters()
+                model_params = model.module.parameters() if isinstance(model, DataParallel) else model.parameters()
                 with torch.no_grad():
                     for ema_p, p in zip(ema_model.parameters(), model_params):
                         ema_p.data.mul_(ema_decay).add_(p.data, alpha=1-ema_decay)
@@ -496,7 +435,7 @@ def train_dit(rank=0, world_size=1):
                 
                 with torch.cuda.amp.autocast():
                     model_kwargs = {"y": user_ids}
-                    dit_model = model.module if world_size > 1 else model
+                    dit_model = model.module if isinstance(model, DataParallel) else model
                     loss_dict = transport.training_losses(dit_model, latents, model_kwargs)
                     loss = loss_dict["loss"].mean()
                 
@@ -540,7 +479,7 @@ def train_dit(rank=0, world_size=1):
                 # 保存最佳模型
                 save_path = f"outputs/dit_best_epoch{epoch+1}_val{avg_val_loss:.4f}.pt"
                 os.makedirs("outputs", exist_ok=True)
-                model_state = model.module.state_dict() if world_size > 1 else model.state_dict()
+                model_state = model.module.state_dict() if isinstance(model, DataParallel) else model.state_dict()
                 
                 try:
                     torch.save({
@@ -561,11 +500,7 @@ def train_dit(rank=0, world_size=1):
                     logger.info(f"Early stopping triggered at epoch {epoch+1}")
                     should_stop = True
         
-        # 在分布式训练中同步早停决策
-        if world_size > 1:
-            stop_tensor = torch.tensor(1 if should_stop else 0, device=device, dtype=torch.int)
-            dist.broadcast(stop_tensor, src=0)
-            should_stop = stop_tensor.item() == 1
+        # DataParallel模式不需要同步早停决策
         
         if should_stop:
             break
@@ -582,9 +517,7 @@ def train_dit(rank=0, world_size=1):
         logger.info("=== 训练完成 ===")
         logger.info(f"Best validation loss: {best_val_loss:.4f}")
     
-    # 清理分布式训练
-    if world_size > 1:
-        cleanup()
+    # DataParallel模式不需要清理
 
 
 def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
@@ -668,7 +601,7 @@ def get_training_config():
     }
 
 def print_training_config(model, optimizer, scheduler, config, 
-                         train_size, val_size, world_size, train_dataset=None):
+                         train_size, val_size, num_gpus, train_dataset=None):
     """输出详细的训练配置信息"""
     
     # 计算模型参数
@@ -701,7 +634,7 @@ def print_training_config(model, optimizer, scheduler, config,
     print(f"  训练样本数: {train_size:,}")
     print(f"  验证样本数: {val_size:,}")
     print(f"  每GPU批量大小: {config['batch_size']}")
-    print(f"  总批量大小: {config['batch_size'] * world_size}")
+    print(f"  总批量大小: {config['batch_size'] * num_gpus}")
     print(f"  用户类别数: {num_classes}")
     
     # 动态获取模型信息
@@ -736,10 +669,8 @@ def print_training_config(model, optimizer, scheduler, config,
     print(f"  混合精度: 启用")
     
     print(f"\n🔧 硬件配置:")
-    print(f"  GPU数量: {world_size}")
-    print(f"  并行方式: {'DistributedDataParallel' if world_size > 1 else 'Single GPU'}")
-    if world_size > 1:
-        print(f"  通信后端: NCCL")
+    print(f"  GPU数量: {num_gpus}")
+    print(f"  并行方式: {'DataParallel' if num_gpus > 1 else 'Single GPU'}")
     
     print(f"\n📈 评估指标:")
     print(f"  • 训练/验证损失")
@@ -779,41 +710,23 @@ def calculate_metrics(model, loss, optimizer):
 
 
 def train_dit_kaggle():
-    """Kaggle环境下的DiT微调训练"""
+    """Kaggle环境下的DiT微调训练 - 使用DataParallel"""
     logger.info("开始Kaggle DiT微调训练...")
     
     # 检查GPU状态
     if not torch.cuda.is_available():
         raise RuntimeError("需要GPU进行训练")
     
-    world_size = torch.cuda.device_count()
-    logger.info(f"检测到 {world_size} 个GPU")
+    # 检测GPU数量
+    n_gpus = torch.cuda.device_count()
+    logger.info(f"检测到 {n_gpus} 个GPU")
     
-    # 强制检查是否真的有2个GPU
-    if world_size == 1:
-        # 尝试手动检测第二个GPU
-        try:
-            torch.cuda.get_device_name(1)
-            logger.warning("发现第二个GPU但torch.cuda.device_count()只返回1，强制设置world_size=2")
-            world_size = 2
-        except:
-            logger.info("确认只有1个GPU可用")
-    
-    # 显示GPU信息
-    for i in range(world_size):
-        try:
-            logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
-            logger.info(f"显存: {torch.cuda.get_device_properties(i).total_memory / 1e9:.1f}GB")
-            # 测试GPU可用性
-            torch.cuda.set_device(i)
-            test_tensor = torch.randn(10, device=f'cuda:{i}')
-            logger.info(f"GPU {i} 可用性测试: 通过")
-            del test_tensor
-        except Exception as e:
-            logger.error(f"GPU {i} 不可用: {e}")
-            if i == 1:  # 如果GPU 1不可用，回退到单GPU
-                world_size = 1
-                break
+    # 详细GPU信息
+    for i in range(n_gpus):
+        props = torch.cuda.get_device_properties(i)
+        logger.info(f"GPU {i}: {props.name}, 显存: {props.total_memory / 1024**3:.1f}GB")
+        torch.cuda.set_device(i)
+        torch.cuda.empty_cache()
     
     # 预处理：确保潜空间数据准备好
     latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
@@ -822,64 +735,257 @@ def train_dit_kaggle():
         prepare_latents_for_training()
         logger.info("潜空间预计算完成")
     
-    # 配置多进程环境变量
-    os.environ['MASTER_ADDR'] = '127.0.0.1'  # 使用IP而非localhost
-    os.environ['MASTER_PORT'] = '12457'      # 换一个端口避免冲突
-    # Kaggle环境优化
-    os.environ['NCCL_DEBUG'] = 'INFO'        # 更详细的调试信息
-    os.environ['NCCL_IB_DISABLE'] = '1'
-    os.environ['NCCL_P2P_DISABLE'] = '1'
-    os.environ['NCCL_SOCKET_IFNAME'] = 'lo'
-    os.environ['NCCL_TIMEOUT'] = '1800'      # 增加超时时间
-    os.environ['NCCL_BLOCKING_WAIT'] = '1'   # 阻塞等待
+    # 直接使用DataParallel训练，避免DDP的复杂性
+    train_with_dataparallel(n_gpus)
+
+
+def train_with_dataparallel(n_gpus):
+    """使用DataParallel进行训练"""
+    # 获取训练配置
+    config = get_training_config()
     
-    logger.info(f"最终world_size: {world_size}")
+    # 设置主设备
+    device = torch.device('cuda:0')
+    torch.cuda.set_device(0)
     
-    if world_size > 1:
-        logger.info(f"启动 {world_size} 进程分布式训练...")
-        # 多GPU DDP训练
-        try:
-            # 显式检查两个GPU是否真的可用
-            for i in range(world_size):
-                torch.cuda.set_device(i)
+    # 清理显存
+    for i in range(n_gpus):
+        torch.cuda.set_device(i)
+        torch.cuda.empty_cache()
+    torch.cuda.set_device(0)
+    
+    # 加载配置
+    config_path = Path("configs/vavae_finetune_custom.yaml")
+    model_config = OmegaConf.load(config_path).model
+    
+    # 计算潜空间信息
+    H_latent = model_config.params.encoder_config.params.resolution // \
+               (2 ** (len(model_config.params.encoder_config.params.ch_mult) - 1))
+    W_latent = H_latent
+    C_latent = model_config.params.encoder_config.params.z_channels * \
+               model_config.params.encoder_config.params.double_z
+    
+    logger.info(f"潜空间维度: {H_latent}x{W_latent}x{C_latent}")
+    
+    # 创建数据集
+    train_dataset = MicroDopplerLatentDataset(
+        split='train',
+        H_latent=H_latent,
+        W_latent=W_latent,
+        C_latent=C_latent
+    )
+    
+    val_dataset = MicroDopplerLatentDataset(
+        split='val',
+        H_latent=H_latent,
+        W_latent=W_latent,
+        C_latent=C_latent
+    )
+    
+    # 创建数据加载器
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['batch_size_per_gpu'] * n_gpus,  # 总batch size
+        shuffle=True,
+        num_workers=config['num_workers'],
+        pin_memory=True,
+        drop_last=True
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config['batch_size_per_gpu'] * n_gpus,
+        shuffle=False,
+        num_workers=config['num_workers'],
+        pin_memory=True
+    )
+    
+    # 创建模型
+    model = DiT_XL_2(
+        input_size=H_latent,
+        in_channels=C_latent,
+        num_classes=31,
+        learn_sigma=True
+    ).to(device)
+    
+    # 启用梯度检查点
+    model.use_checkpoint = True
+    
+    # DataParallel包装
+    if n_gpus > 1:
+        logger.info(f"使用 DataParallel 在 {n_gpus} 个GPU上训练")
+        model = nn.DataParallel(model, device_ids=list(range(n_gpus)))
+    
+    # 创建transport
+    transport = create_transport(
+        'Linear',
+        'velocity',
+        None,
+        None,
+        None,
+    )
+    transport.sample = types.MethodType(sample_fn, transport)
+    
+    # 优化器和调度器
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config['learning_rate'],
+        weight_decay=config['weight_decay']
+    )
+    
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config['num_epochs'] * len(train_loader),
+        eta_min=1e-6
+    )
+    
+    # 混合精度训练
+    scaler = torch.cuda.amp.GradScaler(init_scale=65536.0, growth_interval=2000)
+    
+    # 打印配置信息
+    print_training_config(config, model, train_dataset, val_dataset, n_gpus, use_ddp=False)
+    
+    # 训练循环
+    best_val_loss = float('inf')
+    train_metrics_history = []
+    val_metrics_history = []
+    
+    for epoch in range(config['num_epochs']):
+        # 训练阶段
+        model.train()
+        train_loss = 0
+        train_steps = 0
+        train_grad_norm = 0
+        train_samples = 0
+        
+        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Train]')
+        
+        for batch_idx, batch in enumerate(pbar):
+            batch_start_time = time.time()
+            latents = batch[0].to(device)
+            user_ids = batch[1].to(device)
+            
+            # 前向传播
+            with torch.cuda.amp.autocast():
+                model_kwargs = {"y": user_ids}
+                loss_dict = transport.training_losses(model, latents, model_kwargs)
+                loss = loss_dict["loss"].mean()
+            
+            # 反向传播
+            optimizer.zero_grad()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            
+            # 梯度裁剪
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'])
+            
+            scaler.step(optimizer)
+            scaler.update()
+            
+            # 定期清理显存
+            if batch_idx % 50 == 0:
                 torch.cuda.empty_cache()
-                memory_free = torch.cuda.get_device_properties(i).total_memory / 1024**3
-                logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}, 总显存: {memory_free:.1f}GB")
             
-            # 测试进程间通信
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                sock.bind(('127.0.0.1', int(os.environ['MASTER_PORT'])))
-                sock.close()
-                logger.info(f"端口 {os.environ['MASTER_PORT']} 可用")
-            except Exception as port_e:
-                logger.warning(f"端口测试失败: {port_e}")
-                # 尝试其他端口
-                for test_port in range(12400, 12500):
-                    try:
-                        sock.bind(('127.0.0.1', test_port))
-                        sock.close()
-                        os.environ['MASTER_PORT'] = str(test_port)
-                        logger.info(f"使用端口 {test_port}")
-                        break
-                    except:
-                        continue
-                else:
-                    raise Exception("无法找到可用端口")
+            # 统计
+            train_loss += loss.item()
+            train_grad_norm += grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm
+            train_steps += 1
+            train_samples += latents.size(0)
             
-            # 启动多进程训练
-            logger.info(f"启动多进程，端口: {os.environ['MASTER_PORT']}")
-            torch.multiprocessing.spawn(train_worker, args=(world_size,), nprocs=world_size, join=True)
-        except Exception as e:
-            logger.error(f"多GPU训练失败: {e}")
-            logger.info("回退到单GPU训练...")
-            world_size = 1
-            train_worker(0, 1)
-    else:
-        logger.info("使用单GPU训练...")
-        train_worker(0, 1)
+            # 更新进度条
+            current_lr = optimizer.param_groups[0]['lr']
+            samples_per_sec = latents.size(0) / (time.time() - batch_start_time)
+            current_memory = torch.cuda.max_memory_allocated(0) / 1024**3
+            
+            pbar.set_postfix({
+                'loss': f'{loss.item():.4f}',
+                'lr': f'{current_lr:.2e}',
+                'grad': f'{grad_norm:.2f}',
+                'sps': f'{samples_per_sec:.1f}',
+                'mem': f'{current_memory:.1f}GB'
+            })
+            
+            scheduler.step()
+        
+        # 训练阶段统计
+        avg_train_loss = train_loss / train_steps
+        avg_train_grad_norm = train_grad_norm / train_steps
+        
+        # 验证阶段
+        model.eval()
+        val_loss = 0
+        val_steps = 0
+        
+        with torch.no_grad():
+            pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]')
+            for batch in pbar:
+                latents = batch[0].to(device)
+                user_ids = batch[1].to(device)
+                
+                with torch.cuda.amp.autocast():
+                    model_kwargs = {"y": user_ids}
+                    loss_dict = transport.training_losses(model, latents, model_kwargs)
+                    loss = loss_dict["loss"].mean()
+                
+                val_loss += loss.item()
+                val_steps += 1
+                
+                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+        
+        avg_val_loss = val_loss / val_steps
+        
+        # 记录指标
+        train_metrics_history.append({
+            'epoch': epoch + 1,
+            'loss': avg_train_loss,
+            'grad_norm': avg_train_grad_norm,
+            'lr': current_lr
+        })
+        
+        val_metrics_history.append({
+            'epoch': epoch + 1,
+            'loss': avg_val_loss
+        })
+        
+        # 打印epoch总结
+        logger.info(f"\nEpoch {epoch+1}/{config['num_epochs']} 完成:")
+        logger.info(f"  训练损失: {avg_train_loss:.6f}")
+        logger.info(f"  验证损失: {avg_val_loss:.6f}")
+        logger.info(f"  梯度范数: {avg_train_grad_norm:.4f}")
+        logger.info(f"  学习率: {current_lr:.2e}")
+        
+        # 保存最佳模型
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            best_model_path = Path("/kaggle/working") / f"best_dit_epoch_{epoch+1}.pt"
+            model_state = model.module.state_dict() if n_gpus > 1 else model.state_dict()
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model_state,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'val_loss': avg_val_loss,
+                'config': config
+            }, best_model_path)
+            logger.info(f"保存最佳模型到 {best_model_path}")
+    
+    # 保存最终模型
+    final_model_path = Path("/kaggle/working") / "final_dit_model.pt"
+    model_state = model.module.state_dict() if n_gpus > 1 else model.state_dict()
+    torch.save({
+        'model_state_dict': model_state,
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'config': config,
+        'training_history': {
+            'train_metrics': train_metrics_history,
+            'val_metrics': val_metrics_history
+        }
+    }, final_model_path)
+    
+    logger.info(f"\n🎉 训练完成!")
+    logger.info(f"最佳验证损失: {best_val_loss:.6f}")
+    logger.info(f"最终模型保存到: {final_model_path}")
 
 
 def prepare_latents_for_training():
@@ -935,425 +1041,7 @@ def prepare_latents_for_training():
     logger.info(f"VA-VAE释放后显存: {final_memory:.2f}GB")
 
 
-def train_worker(rank, world_size):
-    """DDP训练工作进程 - 不加载VA-VAE，只处理DiT训练"""
-    
-    # 获取训练配置
-    config = get_training_config()
-    
-    # 初始化分布式环境
-    if world_size > 1:
-        # 从环境变量获取配置
-        master_addr = os.environ.get('MASTER_ADDR', '127.0.0.1')
-        master_port = os.environ.get('MASTER_PORT', '12457')
-        
-        logger.info(f"进程{rank}: 连接到 {master_addr}:{master_port}")
-        
-        # 初始化进程组，指定设备
-        torch.distributed.init_process_group(
-            backend="nccl", 
-            rank=rank, 
-            world_size=world_size,
-            init_method=f'tcp://{master_addr}:{master_port}'
-        )
-    
-    # 设备设置
-    device = torch.device(f'cuda:{rank}')
-    torch.cuda.set_device(rank)
-    
-    # 清理CUDA缓存
-    torch.cuda.empty_cache()
-    
-    # 显存使用优化
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
-    
-    logger.info(f"进程 {rank}/{world_size}: 使用设备 {device}")
-    
-    # 检查初始显存状态（所有进程都报告）
-    initial_memory = torch.cuda.memory_allocated(device) / 1024**3
-    logger.info(f"进程{rank}初始显存使用: {initial_memory:.2f}GB")
-    
-    # 验证进程分配
-    if world_size > 1:
-        logger.info(f"进程{rank}: 等待所有进程同步...")
-        torch.distributed.barrier()
-        logger.info(f"进程{rank}: 同步完成")
-    
-    # 创建数据集 - 只使用预计算的潜空间
-    data_dir = Path("/kaggle/input/dataset")
-    train_dataset = MicroDopplerLatentDataset(data_dir, split='train')
-    val_dataset = MicroDopplerLatentDataset(data_dir, split='val')
-    
-    # DDP数据采样器
-    batch_size = config['batch_size']  # 每个GPU的batch size
-    
-    if world_size > 1:
-        logger.info(f"进程{rank}: 配置DistributedSampler，总进程={world_size}")
-        train_sampler = torch.utils.data.distributed.DistributedSampler(
-            train_dataset, num_replicas=world_size, rank=rank, shuffle=True
-        )
-        val_sampler = torch.utils.data.distributed.DistributedSampler(
-            val_dataset, num_replicas=world_size, rank=rank, shuffle=False
-        )
-        shuffle = False
-        
-        # 报告数据分片情况
-        logger.info(f"进程{rank}: 训练数据分片 {len(train_sampler)} samples")
-        logger.info(f"进程{rank}: 验证数据分片 {len(val_sampler)} samples") 
-    else:
-        logger.info("单GPU模式: 使用标准DataLoader")
-        train_sampler = None
-        val_sampler = None
-        shuffle = True
-    
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        sampler=train_sampler,
-        shuffle=shuffle,
-        num_workers=config['num_workers'],
-        pin_memory=True
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        sampler=val_sampler,
-        shuffle=False,
-        num_workers=config['num_workers'],
-        pin_memory=True
-    )
-    
-    if rank == 0:
-        logger.info(f"训练样本: {len(train_dataset)}, 验证样本: {len(val_dataset)}")
-    
-    # 初始化模型
-    if rank == 0:
-        logger.info("初始化DiT模型...")
-    
-    from transport import create_transport
-    from models.lightningdit import LightningDiT
-    
-    model = LightningDiT(
-        input_size=16,
-        patch_size=1,
-        in_channels=32,
-        hidden_size=1152,
-        depth=28,
-        num_heads=16,
-        mlp_ratio=4.0,
-        class_dropout_prob=0.1,
-        num_classes=31,
-        learn_sigma=False
-    ).to(device)
-    
-    # 启用梯度检查点以节省显存
-    if config.get('gradient_checkpointing', False):
-        if hasattr(model, 'enable_input_require_grads'):
-            model.enable_input_require_grads()
-        # 为transformer层启用梯度检查点
-        if hasattr(model, 'blocks'):
-            for block in model.blocks:
-                if hasattr(block, 'checkpoint'):
-                    block.checkpoint = True
-    
-    # DDP包装
-    if world_size > 1:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[rank], output_device=rank
-        )
-        if rank == 0:
-            logger.info(f"使用DistributedDataParallel，{world_size}个GPU")
-    else:
-        if rank == 0:
-            logger.info("使用单GPU训练")
-    
-    # Transport配置
-    transport = create_transport(
-        path_type='Linear',
-        prediction='velocity',
-        loss_weight=None,
-        use_cosine_loss=True,
-        use_lognorm=True
-    )
-    
-    # 优化器和调度器配置
-    optimizer = torch.optim.AdamW(
-        model.parameters(), 
-        lr=config['learning_rate'], 
-        weight_decay=config['weight_decay']
-    )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, 
-        T_max=config['num_epochs']
-    )
-    
-    # 输出详细训练配置
-    if rank == 0:
-        print_training_config(model, optimizer, scheduler, config, 
-                             len(train_dataset), len(val_dataset), world_size, train_dataset)
-    
-    # 混合精度训练（使用更积极的缩放策略）
-    scaler = torch.cuda.amp.GradScaler(
-        init_scale=1024.0,  # 降低初始缩放
-        growth_factor=1.1,   # 减少增长因子
-        backoff_factor=0.8   # 增加回退因子
-    )
-    
-    # 显存监控
-    if rank == 0:
-        model_memory = torch.cuda.memory_allocated(device) / 1024**3
-        logger.info(f"模型加载后显存: {model_memory:.2f}GB")
-    
-    # 训练循环
-    best_val_loss = float('inf')
-    train_metrics_history = []
-    val_metrics_history = []
-    
-    for epoch in range(config['num_epochs']):
-        epoch_start_time = time.time()
-        
-        # DDP sampler需要设置epoch
-        if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
-        
-        # 训练阶段
-        model.train()
-        train_loss = 0
-        train_steps = 0
-        train_grad_norm = 0
-        train_samples = 0
-        
-        # 只在主进程显示进度条
-        if rank == 0:
-            pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Train]')
-        else:
-            pbar = train_loader
-            
-        for batch_idx, batch in enumerate(pbar):
-            try:
-                batch_start_time = time.time()
-                
-                # 调试：第一个batch的详细信息
-                if epoch == 0 and batch_idx == 0:
-                    logger.info(f"进程{rank}: 开始处理第一个batch")
-                
-                latents = batch[0].to(device)
-                user_ids = batch[1].to(device)
-                
-                # 调试：检查第一个batch的shape（仅rank 0）
-                if epoch == 0 and batch_idx == 0 and rank == 0:
-                    logger.info(f"\n📋 数据格式检查:")
-                    logger.info(f"  潜空间shape: {latents.shape}")
-                    logger.info(f"  用户ID shape: {user_ids.shape}")
-                    logger.info(f"  潜空间数据类型: {latents.dtype}")
-                    logger.info(f"  潜空间数值范围: [{latents.min():.3f}, {latents.max():.3f}]")
-                    print()
-                
-                # 前向传播
-                if epoch == 0 and batch_idx == 0:
-                    logger.info(f"进程{rank}: 开始前向传播")
-                
-                with torch.cuda.amp.autocast():
-                    model_kwargs = {"y": user_ids}
-                    loss_dict = transport.training_losses(model, latents, model_kwargs)
-                    loss = loss_dict["loss"].mean()
-                
-                if epoch == 0 and batch_idx == 0:
-                    logger.info(f"进程{rank}: 前向传播完成，loss={loss.item():.4f}")
-            
-            except Exception as e:
-                logger.error(f"进程{rank}: batch {batch_idx} 出错: {e}")
-                raise
-            
-            # 反向传播
-            if epoch == 0 and batch_idx == 0:
-                logger.info(f"进程{rank}: 开始反向传播")
-            
-            optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            
-            if epoch == 0 and batch_idx == 0:
-                logger.info(f"进程{rank}: backward完成，开始梯度裁剪")
-            
-            scaler.unscale_(optimizer)
-            
-            # 计算梯度范数
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'])
-            
-            if epoch == 0 and batch_idx == 0:
-                logger.info(f"进程{rank}: 梯度裁剪完成，grad_norm={grad_norm:.4f}")
-            
-            scaler.step(optimizer)
-            scaler.update()
-            
-            if epoch == 0 and batch_idx == 0:
-                logger.info(f"进程{rank}: 优化器step完成")
-            
-            # 定期清理显存缓存
-            if batch_idx % 50 == 0:
-                torch.cuda.empty_cache()
-            
-            # 统计
-            train_loss += loss.item()
-            train_grad_norm += grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm
-            train_steps += 1
-            train_samples += latents.size(0)
-            
-            if rank == 0:
-                # 计算当前指标
-                current_lr = optimizer.param_groups[0]['lr']
-                samples_per_sec = latents.size(0) / (time.time() - batch_start_time)
-                
-                # 显存监控
-                current_memory = torch.cuda.memory_allocated(device) / 1024**3
-                
-                pbar.set_postfix({
-                    'loss': f'{loss.item():.4f}',
-                    'lr': f'{current_lr:.2e}',
-                    'sps': f'{samples_per_sec:.1f}',
-                    'mem': f'{current_memory:.1f}GB'
-                })
-                
-                # 显存警告
-                if current_memory > 13.0:  # T4总显存约14.7GB，警告阈值13GB
-                    logger.warning(f"显存使用过高: {current_memory:.2f}GB")
-                    
-            # 第一个batch完成后的同步
-            if epoch == 0 and batch_idx == 0 and world_size > 1:
-                logger.info(f"进程{rank}: 第一个batch完成，等待同步...")
-                torch.distributed.barrier()
-                logger.info(f"进程{rank}: 同步完成")
-        
-        # 训练阶段统计
-        avg_train_loss = train_loss / train_steps
-        avg_train_grad_norm = train_grad_norm / train_steps
-        
-        # 验证阶段
-        model.eval()
-        val_loss = 0
-        val_steps = 0
-        val_samples = 0
-        
-        with torch.no_grad():
-            if rank == 0:
-                val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]')
-            else:
-                val_pbar = val_loader
-                
-            for batch in val_pbar:
-                latents = batch[0].to(device)
-                user_ids = batch[1].to(device)
-                
-                with torch.cuda.amp.autocast():
-                    model_kwargs = {"y": user_ids}
-                    loss_dict = transport.training_losses(model, latents, model_kwargs)
-                    loss = loss_dict["loss"].mean()
-                
-                val_loss += loss.item()
-                val_steps += 1
-                val_samples += latents.size(0)
-                
-                if rank == 0:
-                    val_pbar.set_postfix({'val_loss': f'{loss.item():.4f}'})
-        
-        avg_val_loss = val_loss / val_steps
-        scheduler.step()
-        
-        # 计算epoch统计
-        epoch_time = time.time() - epoch_start_time
-        train_samples_per_sec = train_samples / epoch_time * world_size  # 总吞吐量
-        current_lr = optimizer.param_groups[0]['lr']
-        
-        # GPU内存统计（仅rank 0）
-        if rank == 0:
-            gpu_memory = torch.cuda.max_memory_allocated(device) / 1024**3  # GB
-            
-            # 输出详细的epoch统计
-            print(f"\n📊 Epoch {epoch+1}/{config['num_epochs']} 训练统计")
-            print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            print(f"🎯 损失指标:")
-            print(f"  训练损失: {avg_train_loss:.6f}")
-            print(f"  验证损失: {avg_val_loss:.6f}")
-            print(f"  损失变化: {avg_val_loss - avg_train_loss:+.6f}")
-            
-            print(f"\n⚡ 训练动态:")
-            print(f"  梯度范数: {avg_train_grad_norm:.4f}")
-            print(f"  学习率: {current_lr:.2e}")
-            print(f"  训练时间: {epoch_time:.1f}s")
-            print(f"  训练吞吐: {train_samples_per_sec:.1f} samples/sec")
-            
-            print(f"\n💾 资源使用:")
-            print(f"  GPU显存峰值: {gpu_memory:.2f}GB")
-            print(f"  训练样本数: {train_samples}")
-            print(f"  验证样本数: {val_samples}")
-            
-            # 训练质量评估
-            is_improving = avg_val_loss < best_val_loss
-            improvement_rate = (best_val_loss - avg_val_loss) / best_val_loss * 100 if best_val_loss != float('inf') else 0
-            
-            print(f"\n📈 质量评估:")
-            print(f"  模型改进: {'✅ 是' if is_improving else '❌ 否'}")
-            if is_improving:
-                print(f"  改进幅度: {improvement_rate:.2f}%")
-                print(f"  最佳损失: {avg_val_loss:.6f}")
-            else:
-                print(f"  最佳损失: {best_val_loss:.6f}")
-            
-            # 过拟合检测
-            overfitting_gap = avg_train_loss - avg_val_loss
-            if overfitting_gap < -0.01:
-                print(f"  ⚠️  可能过拟合 (gap: {overfitting_gap:.4f})")
-            elif overfitting_gap > 0.05:
-                print(f"  ⚠️  可能欠拟合 (gap: {overfitting_gap:.4f})")
-            else:
-                print(f"  ✅ 拟合良好 (gap: {overfitting_gap:.4f})")
-            
-            print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
-            
-            # 最佳模型保存
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                if rank == 0:
-                    best_model_path = Path("/kaggle/working") / f"best_dit_epoch_{epoch+1}.pt"
-                    torch.save({
-                        'epoch': epoch + 1,
-                        'model_state_dict': model.module.state_dict() if world_size > 1 else model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'scheduler_state_dict': scheduler.state_dict(),
-                        'val_loss': avg_val_loss,
-                        'config': config
-                    }, best_model_path)
-                    logger.info(f"保存最佳模型到 {best_model_path}")
-        
-        # 更新学习率
-        scheduler.step()
-    
-    # 训练完成
-    if rank == 0:
-        logger.info("🎉 训练完成!")
-        logger.info(f"最佳验证损失: {best_val_loss:.6f}")
-        
-        # 保存最终模型
-        final_model_path = Path("/kaggle/working") / "final_dit_model.pt"
-        torch.save({
-            'model_state_dict': model.module.state_dict() if world_size > 1 else model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-            'config': config,
-            'training_history': {
-                'train_metrics': train_metrics_history,
-                'val_metrics': val_metrics_history
-            }
-        }, final_model_path)
-        logger.info(f"保存最终模型到 {final_model_path}")
-    
-    # 清理分布式环境
-    if world_size > 1:
-        logger.info(f"进程{rank}: 清理分布式环境...")
-        torch.distributed.destroy_process_group()
-        logger.info(f"进程{rank}: 分布式环境清理完成")
-        logger.info("训练完成！")
+# DDP训练函数已删除，改用DataParallel
 
 
 def generate_samples(model, vae, transport, device, epoch):
@@ -1401,8 +1089,8 @@ def main():
         logger.error("CUDA not available! Please enable GPU accelerator in Kaggle.")
         return
     
-    world_size = torch.cuda.device_count()
-    logger.info(f"Detected {world_size} GPU(s)")
+    num_gpus = torch.cuda.device_count()
+    logger.info(f"Detected {num_gpus} GPU(s)")
     
     # Kaggle T4x2使用DataParallel，不使用分布式训练
     train_dit_kaggle()
