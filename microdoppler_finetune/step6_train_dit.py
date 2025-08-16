@@ -1003,6 +1003,35 @@ def train_with_dataparallel(n_gpus):
     logger.info(f"✅ 模型创建完成")
     logger.info(f"   参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
+    # ===== 加载预训练权重 =====
+    print("\n🔄 加载LightningDiT预训练权重...")
+    if os.path.exists(pretrained_xl):
+        print(f"   从: {pretrained_xl}")
+        checkpoint = torch.load(pretrained_xl, map_location='cpu')
+        state_dict = checkpoint.get('model', checkpoint)
+        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        
+        # 只加载兼容的权重
+        compatible = {}
+        model_state = model.state_dict()
+        for k, v in state_dict.items():
+            if k in model_state and v.shape == model_state[k].shape:
+                compatible[k] = v
+        
+        if compatible:
+            model.load_state_dict(compatible, strict=False)
+            match_rate = len(compatible)/len(model_state)*100
+            print(f"✅ 成功加载 {len(compatible)}/{len(state_dict)} 个权重")
+            print(f"   匹配率: {match_rate:.1f}% ({len(compatible)}/{len(model_state)})")
+            if match_rate < 50:
+                print(f"   ⚠️ 匹配率较低，可能影响生成质量")
+        else:
+            print("❌ 没有找到兼容的权重！模型将使用随机初始化")
+            print("   这会导致生成纯噪声图像")
+    else:
+        print(f"❌ 预训练模型不存在: {pretrained_xl}")
+        print("   模型将使用随机初始化，生成质量会很差")
+    
     # DataParallel包装
     if n_gpus > 1:
         logger.info(f"🔗 使用 DataParallel 在 {n_gpus} 个GPU上训练")
