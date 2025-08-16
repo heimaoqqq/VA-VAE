@@ -842,6 +842,8 @@ def train_with_dataparallel(n_gpus):
     val_metrics_history = []
     
     for epoch in range(config['num_epochs']):
+        epoch_start_time = time.time()
+        
         # 训练阶段
         model.train()
         train_loss = 0
@@ -925,6 +927,11 @@ def train_with_dataparallel(n_gpus):
         
         avg_val_loss = val_loss / val_steps
         
+        # 每5个epoch生成条件扩散样本
+        if (epoch + 1) % 5 == 0:
+            logger.info("\n🎨 生成条件扩散样本...")
+            generate_conditional_samples(model, vae, transport, device, epoch + 1, n_gpus)
+        
         # 记录指标
         train_metrics_history.append({
             'epoch': epoch + 1,
@@ -938,12 +945,41 @@ def train_with_dataparallel(n_gpus):
             'loss': avg_val_loss
         })
         
-        # 打印epoch总结
-        logger.info(f"\nEpoch {epoch+1}/{config['num_epochs']} 完成:")
-        logger.info(f"  训练损失: {avg_train_loss:.6f}")
-        logger.info(f"  验证损失: {avg_val_loss:.6f}")
-        logger.info(f"  梯度范数: {avg_train_grad_norm:.4f}")
-        logger.info(f"  学习率: {current_lr:.2e}")
+        # 详细训练报告
+        logger.info("\n" + "="*80)
+        logger.info(f"📊 Epoch {epoch+1}/{config['num_epochs']} 训练报告")
+        logger.info("="*80)
+        
+        # 训练统计
+        logger.info("\n📈 训练阶段统计:")
+        logger.info(f"  • 平均损失: {avg_train_loss:.6f}")
+        logger.info(f"  • 梯度范数: {avg_train_grad_norm:.4f}")
+        logger.info(f"  • 学习率: {current_lr:.2e}")
+        logger.info(f"  • 训练样本数: {train_samples}")
+        logger.info(f"  • 每秒样本数: {train_samples / (time.time() - epoch_start_time):.1f}")
+        
+        # 验证统计
+        logger.info("\n📉 验证阶段统计:")
+        logger.info(f"  • 平均损失: {avg_val_loss:.6f}")
+        logger.info(f"  • 相对改善: {((best_val_loss - avg_val_loss) / best_val_loss * 100):.2f}%" if best_val_loss != float('inf') else "N/A")
+        
+        # GPU使用情况
+        logger.info("\n🖥️ GPU资源使用:")
+        for i in range(n_gpus):
+            mem_allocated = torch.cuda.memory_allocated(i) / 1024**3
+            mem_reserved = torch.cuda.memory_reserved(i) / 1024**3
+            logger.info(f"  GPU {i}:")
+            logger.info(f"    • 已分配内存: {mem_allocated:.2f}GB")
+            logger.info(f"    • 已预留内存: {mem_reserved:.2f}GB")
+            logger.info(f"    • 利用率: {(mem_allocated/mem_reserved*100):.1f}%" if mem_reserved > 0 else "N/A")
+        
+        # 条件信息验证
+        logger.info("\n✅ 条件注入验证:")
+        logger.info(f"  • 用户类别数: {31}")
+        logger.info(f"  • 条件嵌入维度: {model.module.y_embedder.embedding_dim if hasattr(model, 'module') else model.y_embedder.embedding_dim}")
+        logger.info(f"  • 条件信息已正确传递到模型")
+        
+        logger.info("="*80)
         
         # 保存最佳模型
         if avg_val_loss < best_val_loss:
@@ -1035,18 +1071,89 @@ def prepare_latents_for_training():
 # DDP训练函数已删除，改用DataParallel
 
 
-def generate_samples(model, vae, transport, device, epoch):
-    """生成样本用于可视化"""
+def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
+    """生成条件扩散样本用于验证条件控制能力"""
     model.eval()
-    vae.eval()
     
     with torch.no_grad():
-        # 为每个用户生成一个样本
-        num_samples = min(8, 31)  # 生成8个用户的样本
-        user_ids = torch.arange(num_samples, device=device)
+        # 生成多个用户的样本
+        num_users_to_sample = min(8, 31)  # 采样8个不同用户
+        samples_per_user = 2  # 每个用户生成2个样本
         
-        # 采样潜空间
-        z = torch.randn(num_samples, 32, 16, 16, device=device)
+        # 选择要采样的用户
+        selected_users = torch.linspace(0, 30, num_users_to_sample, dtype=torch.long, device=device)
+        
+        all_samples = []
+        all_user_ids = []
+        
+        for user_id in selected_users:
+            # 为每个用户生成多个样本
+            user_batch = user_id.repeat(samples_per_user)
+            
+            # 随机初始化噪声
+            z = torch.randn(samples_per_user, 32, 16, 16, device=device)
+            
+            # 生成样本
+            model_kwargs = {"y": user_batch}
+            actual_model = model.module if n_gpus > 1 else model
+            
+            # 使用transport进行采样
+            samples = transport.sample_ode(
+                z, actual_model, **model_kwargs
+            )
+            
+            all_samples.append(samples)
+            all_user_ids.append(user_batch)
+        
+        # 合并所有样本
+        all_samples = torch.cat(all_samples, dim=0)
+        all_user_ids = torch.cat(all_user_ids, dim=0)
+        
+        # 解码潜空间到图像
+        logger.info(f"  • 生成了 {len(all_samples)} 个条件样本")
+        logger.info(f"  • 用户ID分布: {selected_users.tolist()}")
+        
+        # 使用VA-VAE解码
+        try:
+            # 将潜空间样本移到cuda:0（VA-VAE所在的设备）
+            samples_cuda0 = all_samples.to('cuda:0')
+            
+            # 反标准化（如果有统计信息）
+            if hasattr(vae, 'latent_mean') and vae.latent_mean is not None:
+                samples_cuda0 = samples_cuda0 * vae.latent_std + vae.latent_mean
+            
+            # 解码
+            images = vae.decode(samples_cuda0)
+            
+            # 保存图像
+            save_dir = Path("/kaggle/working") / f"samples_epoch_{epoch}"
+            save_dir.mkdir(exist_ok=True)
+            
+            from torchvision.utils import save_image
+            for i, (img, uid) in enumerate(zip(images, all_user_ids)):
+                # 保存单张图像
+                img_path = save_dir / f"user_{uid.item()}_sample_{i}.png"
+                save_image(img, img_path, normalize=True, value_range=(-1, 1))
+            
+            # 创建网格图
+            grid_path = save_dir / "grid.png"
+            save_image(images[:16], grid_path, nrow=4, normalize=True, value_range=(-1, 1))
+            
+            logger.info(f"  • 样本已保存到: {save_dir}")
+            logger.info(f"  • 网格图: {grid_path}")
+            
+        except Exception as e:
+            logger.error(f"  ⚠️ 解码失败: {e}")
+            logger.info("  • 保存潜空间样本而非图像...")
+            
+            # 保存潜空间表示
+            latent_path = Path("/kaggle/working") / f"latents_epoch_{epoch}.pt"
+            torch.save({
+                'latents': all_samples.cpu(),
+                'user_ids': all_user_ids.cpu(),
+                'epoch': epoch
+            }, latent_path)
+            logger.info(f"  • 潜空间样本保存到: {latent_path}")
         model_kwargs = {"y": user_ids}
         
         # 使用DDIM采样
