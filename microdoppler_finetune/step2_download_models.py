@@ -81,19 +81,19 @@ def download_vavae_models():
         base_path = Path.cwd()
         print("📍 本地环境检测")
     
-    # 创建LightningDiT模型目录
-    lightningdit_models_dir = base_path / "LightningDiT" / "models"
-    lightningdit_models_dir.mkdir(parents=True, exist_ok=True)
+    # 创建模型目录 - 与step6_train_dit.py保持一致
+    models_dir = base_path / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
     
-    # 只需要LightningDiT模型（VA-VAE使用微调后的）
+    # 下载LightningDiT-L模型（VA-VAE使用微调后的）
     models = {
-        "LightningDiT XL": {
-            "url": "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/resolve/main/lightningdit-xl-imagenet256-64ep.pt",
-            "filename": "lightningdit-xl-imagenet256-64ep.pt",
-            "size_mb": 10800,  # XL模型约10.8GB
-            "description": "LightningDiT-XL预训练权重 (ImageNet 256x256)",
+        "LightningDiT L": {
+            "url": "https://huggingface.co/hustvl/lightningdit-l-imagenet256-100ep/resolve/main/lightningdit-l-imagenet256-100ep.pt",
+            "filename": "lightningdit-l-imagenet256-100ep.pt",
+            "size_mb": 3700,  # L模型约3.7GB
+            "description": "LightningDiT-L预训练权重 (ImageNet 256x256, 100轮)",
             "required": True,
-            "dest_dir": lightningdit_models_dir
+            "dest_dir": models_dir
         },
         "Latent Statistics": {
             "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/latents_stats.pt",
@@ -101,7 +101,7 @@ def download_vavae_models():
             "size_mb": 0.001,
             "description": "潜在空间统计信息（用于采样）",
             "required": False,
-            "dest_dir": lightningdit_models_dir
+            "dest_dir": models_dir
         }
     }
     
@@ -140,7 +140,7 @@ def download_vavae_models():
             continue
         
         # 使用每个模型指定的目标目录
-        dest_dir = info.get('dest_dir', lightningdit_models_dir)
+        dest_dir = info.get('dest_dir', models_dir)
         dest_path = dest_dir / info['filename']
         
         print(f"\n📦 处理: {name}")
@@ -160,9 +160,9 @@ def download_vavae_models():
     # 创建模型配置文件
     print("\n📝 创建模型配置...")
     model_config = {
-        "vavae_checkpoint": str(lightningdit_models_dir / "vavae-ema.pt"),
-        "lightningdit_checkpoint": str(lightningdit_models_dir / "lightningdit-xl-imagenet256-64ep.pt"),
-        "latent_stats": str(lightningdit_models_dir / "latents_stats.pt") if (lightningdit_models_dir / "latents_stats.pt").exists() else None,
+        "vavae_checkpoint": str(models_dir / "vavae-ema.pt"),
+        "lightningdit_checkpoint": str(models_dir / "lightningdit-l-imagenet256-100ep.pt"),
+        "latent_stats": str(models_dir / "latents_stats.pt") if (models_dir / "latents_stats.pt").exists() else None,
         "model_type": "VA-VAE",
         "latent_dim": 32,
         "vfm_type": "dinov2",
@@ -189,7 +189,7 @@ def download_vavae_models():
     print("1. 运行 python step3_prepare_dataset.py 准备数据集")
     print("2. 运行 python step4_train_stage1.py 开始第一阶段训练")
     
-    return lightningdit_models_dir
+    return models_dir
 
 def check_kaggle_models():
     """检查Kaggle输入目录中的预训练模型"""
