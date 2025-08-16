@@ -6,20 +6,17 @@ Step 6: 训练条件LightningDiT模型
 
 import os
 import sys
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from torch.nn.parallel import DataParallel
-import numpy as np
-from pathlib import Path
+import time
 import json
 import logging
-from tqdm import tqdm
-from datetime import datetime, timedelta
-import time
-import matplotlib.pyplot as plt
+import types
+from pathlib import Path
 from PIL import Image
+import numpy as np
+from tqdm import tqdm
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 from omegaconf import OmegaConf
 import warnings
 warnings.filterwarnings('ignore')
