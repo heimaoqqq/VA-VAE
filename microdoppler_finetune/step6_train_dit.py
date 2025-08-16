@@ -339,7 +339,7 @@ def train_dit():
     # Kaggle环境数据加载器优化
     train_loader = DataLoader(
         train_dataset,
-        batch_size=4,  # 每GPU批次大小
+        batch_size=config['batch_size'],  # 使用配置值
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         num_workers=1,  # Kaggle环境减少worker数量
@@ -362,24 +362,24 @@ def train_dit():
     # ===== 5. 设置优化器 =====
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=5e-5,
-        weight_decay=0.01,
+        lr=5e-5,  # 平衡保护和学习的学习率
+        weight_decay=0.01,  # 恢复适度正则化
         betas=(0.9, 0.95)
     )
     
     # 学习率调度器
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=25,
+        T_max=35,  # 对应新的轮数
         eta_min=1e-7
     )
     
     # ===== 6. 训练循环 =====
     logger.info("=== 开始训练 ===")
     
-    num_epochs = 25
+    num_epochs = 35  # 允许充分学习，用早停控制
     best_val_loss = float('inf')
-    patience = 5
+    patience = 8  # 给予更多收敛机会
     patience_counter = 0
     
     # 混合精度训练
@@ -604,21 +604,23 @@ def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
 
 
 def get_training_config():
-    """获取训练配置"""
+    """获取微调训练配置 - 针对微多普勒细微特征学习优化"""
     return {
-        'batch_size': 4,           # 进一步减小批量，更频繁梯度更新
-        'num_epochs': 100,         # 增加到100轮确保充分收敛
-        'learning_rate': 2e-5,     # 进一步降低学习率，稳定训练
-        'weight_decay': 0.02,      # 增强正则化防过拟合
-        'num_workers': 1,          # 数据加载器worker数
-        'patience': 20,            # 更多耐心等待收敛
-        'gradient_clip_norm': 0.5, # 更严格的梯度裁剪
-        'warmup_steps': 200,       # 更长的预热期
-        'gradient_checkpointing': True,  # 启用梯度检查点
-        'cfg_dropout': 0.1,        # CFG训练dropout（保持适度）
-        'cfg_scale': 10.0,         # 官方推荐的CFG强度
-        'ema_decay': 0.9999,       # EMA衰减率
-        'sample_steps': 250,       # 官方推荐的采样步数
+        'batch_size': 8,           # 增大batch提高稳定性
+        'gradient_accumulation_steps': 2,  # 模拟更大batch=16
+        'num_epochs': 35,          # 给予充分学习时间，但用早停控制
+        'learning_rate': 5e-5,     # 平衡保护权重和学习细微特征
+        'weight_decay': 0.01,      # 降低正则化，允许学习微细差异
+        'num_workers': 1,          # Kaggle环境优化
+        'patience': 8,             # 给予更多收敛时间
+        'gradient_clip_norm': 1.0, # 恢复标准设置
+        'warmup_steps': 500,       # 适度预热，稳定训练
+        'gradient_checkpointing': True,  # 显存优化
+        'cfg_dropout': 0.15,       # 增强无条件学习
+        'cfg_scale': 10.0,         # 高维潜空间需要强CFG
+        'ema_decay': 0.999,        # 略快的EMA更新
+        'sample_steps': 250,       # 采样步数
+        'min_lr_ratio': 0.1,       # 最低学习率比例
     }
 
 def print_training_config(model, optimizer, scheduler, config, 
@@ -850,26 +852,27 @@ def train_with_dataparallel(n_gpus):
         None,
     )
     
-    # 优化器和调度器 - 进一步优化以降低损失
+    # 优化器 - 按官方推荐配置
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=config['learning_rate'],  # 使用配置的学习率
-        weight_decay=config['weight_decay'],  # 使用配置的权重衰减
-        betas=(0.9, 0.999),  # 稳定的动量参数
-        eps=1e-8  # 数值稳定性
+        lr=config['learning_rate'],
+        weight_decay=config['weight_decay'],
+        betas=(0.9, 0.95),  # 官方配置：beta2=0.95
+        eps=1e-8
     )
     
     # 使用余弦退火+预热，避免早期学习率过高
     from torch.optim.lr_scheduler import LambdaLR
     
     def lr_lambda(current_step):
-        warmup_steps = config.get('warmup_steps', 200)  # 使用配置的预热步数
+        warmup_steps = config.get('warmup_steps', 500)  # 适度预热期
         if current_step < warmup_steps:
             # 线性预热
             return float(current_step) / float(max(1, warmup_steps))
-        # 余弦退火，最低保留10%学习率
-        progress = float(current_step - warmup_steps) / float(max(1, config['num_epochs'] * len(train_loader) - warmup_steps))
-        return max(0.1, 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.14159))))
+        # 余弦退火，最低保留学习率
+        total_steps = config['num_epochs'] * len(train_loader)
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return max(0.01, 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.14159))))  # 最低1%
     
     scheduler = LambdaLR(optimizer, lr_lambda)
     
@@ -904,8 +907,8 @@ def train_with_dataparallel(n_gpus):
             
             # 前向传播 - 添加CFG训练(10%无条件)
             with torch.cuda.amp.autocast():
-                # CFG训练：10%概率丢弃条件
-                if torch.rand(1).item() < config.get('cfg_dropout', 0.1):
+                # CFG训练：15%概率丢弃条件（增强无条件学习）
+                if torch.rand(1).item() < config.get('cfg_dropout', 0.15):
                     # 无条件训练：使用最后一个类别作为null token (31)
                     model_kwargs = {"y": torch.full_like(user_ids, 31)}
                 else:
