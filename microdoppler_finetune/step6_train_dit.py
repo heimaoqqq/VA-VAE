@@ -823,14 +823,15 @@ def train_dit_kaggle():
         logger.info("潜空间预计算完成")
     
     # 配置多进程环境变量
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_ADDR'] = '127.0.0.1'  # 使用IP而非localhost
+    os.environ['MASTER_PORT'] = '12457'      # 换一个端口避免冲突
     # Kaggle环境优化
-    os.environ['NCCL_DEBUG'] = 'WARN'
+    os.environ['NCCL_DEBUG'] = 'INFO'        # 更详细的调试信息
     os.environ['NCCL_IB_DISABLE'] = '1'
     os.environ['NCCL_P2P_DISABLE'] = '1'
     os.environ['NCCL_SOCKET_IFNAME'] = 'lo'
-    os.environ['NCCL_TIMEOUT'] = '10'
+    os.environ['NCCL_TIMEOUT'] = '1800'      # 增加超时时间
+    os.environ['NCCL_BLOCKING_WAIT'] = '1'   # 阻塞等待
     
     logger.info(f"最终world_size: {world_size}")
     
@@ -841,18 +842,42 @@ def train_dit_kaggle():
             # 显式检查两个GPU是否真的可用
             for i in range(world_size):
                 torch.cuda.set_device(i)
-                test = torch.randn(1).cuda()
-                logger.info(f"进程启动前GPU {i}测试: 成功")
-                del test
+                torch.cuda.empty_cache()
+                memory_free = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}, 总显存: {memory_free:.1f}GB")
             
-            logger.info("开始spawn多进程...")
-            mp.spawn(train_worker, args=(world_size,), nprocs=world_size, join=True)
+            # 测试进程间通信
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(('127.0.0.1', int(os.environ['MASTER_PORT'])))
+                sock.close()
+                logger.info(f"端口 {os.environ['MASTER_PORT']} 可用")
+            except Exception as port_e:
+                logger.warning(f"端口测试失败: {port_e}")
+                # 尝试其他端口
+                for test_port in range(12400, 12500):
+                    try:
+                        sock.bind(('127.0.0.1', test_port))
+                        sock.close()
+                        os.environ['MASTER_PORT'] = str(test_port)
+                        logger.info(f"使用端口 {test_port}")
+                        break
+                    except:
+                        continue
+                else:
+                    raise Exception("无法找到可用端口")
+            
+            # 启动多进程训练
+            logger.info(f"启动多进程，端口: {os.environ['MASTER_PORT']}")
+            torch.multiprocessing.spawn(train_worker, args=(world_size,), nprocs=world_size, join=True)
         except Exception as e:
-            logger.error(f"DDP训练失败: {e}")
+            logger.error(f"多GPU训练失败: {e}")
             logger.info("回退到单GPU训练...")
+            world_size = 1
             train_worker(0, 1)
     else:
-        # 单GPU模式
         logger.info("使用单GPU训练...")
         train_worker(0, 1)
 
@@ -918,16 +943,18 @@ def train_worker(rank, world_size):
     
     # 初始化分布式环境
     if world_size > 1:
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
-        os.environ['NCCL_DEBUG'] = 'WARN'
+        # 从环境变量获取配置
+        master_addr = os.environ.get('MASTER_ADDR', '127.0.0.1')
+        master_port = os.environ.get('MASTER_PORT', '12457')
+        
+        logger.info(f"进程{rank}: 连接到 {master_addr}:{master_port}")
         
         # 初始化进程组，指定设备
         torch.distributed.init_process_group(
             backend="nccl", 
             rank=rank, 
             world_size=world_size,
-            device_id=rank  # 指定设备ID避免NCCL警告
+            init_method=f'tcp://{master_addr}:{master_port}'
         )
     
     # 设备设置
