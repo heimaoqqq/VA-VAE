@@ -655,23 +655,27 @@ def train_dit_kaggle():
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
     
-    # 初始化VA-VAE
-    logger.info("加载VA-VAE...")
+    # 修正配置中的checkpoint路径为微调模型
+    logger.info("准备VA-VAE配置...")
     vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
-    vae = VA_VAE(str(vae_config_path), img_size=256, horizon_flip=False, fp16=True)
     
-    # 修正配置中的checkpoint路径
     with open(vae_config_path, 'r') as f:
         config_content = f.read()
     
-    if '/kaggle/input/vavae-pretrained/vavae-ema.pt' not in config_content:
+    # 使用微调后的模型
+    finetuned_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
+    if finetuned_checkpoint not in config_content:
         config_content = config_content.replace(
-            'ckpt_path: "ckpt_path"',
-            'ckpt_path: "/kaggle/input/vavae-pretrained/vavae-ema.pt"'
+            'ckpt_path: /path/to/checkpoint.pt',
+            f'ckpt_path: {finetuned_checkpoint}'
         )
         with open(vae_config_path, 'w') as f:
             f.write(config_content)
+        logger.info(f"已更新VA-VAE checkpoint路径: {finetuned_checkpoint}")
     
+    # 初始化VA-VAE
+    logger.info("加载VA-VAE...")
+    vae = VA_VAE(str(vae_config_path), img_size=256, horizon_flip=False, fp16=True)
     logger.info("VA-VAE加载完成")
     
     # 数据集准备
