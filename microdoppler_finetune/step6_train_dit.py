@@ -62,6 +62,23 @@ class MicroDopplerLatentDataset(Dataset):
         self.split = split
         self.latent_norm = latent_norm
         
+        # 加载数据集划分信息
+        split_file = Path("/kaggle/working/data_split/dataset_split.json")
+        if not split_file.exists():
+            # 如果没有划分文件，尝试其他位置
+            alt_split_file = Path("/kaggle/input/data_split/dataset_split.json")
+            if alt_split_file.exists():
+                split_file = alt_split_file
+            else:
+                logger.warning(f"未找到数据集划分文件: {split_file}")
+                logger.warning("请先运行 step3_prepare_dataset.py 创建数据划分")
+                split_info = None
+        else:
+            import json
+            with open(split_file, 'r') as f:
+                split_info = json.load(f)
+            logger.info(f"加载数据划分: {split_file}")
+        
         # 加载潜空间数据和标签 - 从可写目录加载
         latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
         stats_file = Path("/kaggle/working") / 'latents_stats.pt'
@@ -99,29 +116,45 @@ class MicroDopplerLatentDataset(Dataset):
             self.latents = None
             self.load_images()
         
-        # 分割训练/验证集
-        if self.latents is not None:
-            n_samples = len(self.latents)
-        elif hasattr(self, 'image_paths'):
-            n_samples = len(self.image_paths)
-        else:
-            logger.error("没有数据可用于创建数据集")
-            n_samples = 0
+        # 使用step3创建的数据划分
+        if split_info is not None and split in split_info:
+            # 使用预定义的划分
+            self.file_list = []
+            self.user_labels = []
             
-        if n_samples == 0:
-            logger.error(f"数据集为空！latents={self.latents is not None}, "
-                        f"has_image_paths={hasattr(self, 'image_paths')}")
-            self.indices = np.array([])
-        else:
-            indices = np.arange(n_samples)
-            np.random.seed(42)
-            np.random.shuffle(indices)
+            for user_key, image_paths in split_info[split].items():
+                user_id = int(user_key.split('_')[1]) - 1  # ID_1 -> 0
+                for img_path in image_paths:
+                    self.file_list.append(img_path)
+                    self.user_labels.append(user_id)
             
-            n_val = int(n_samples * val_ratio)
-            if split == 'train':
-                self.indices = indices[n_val:]
+            logger.info(f"使用step3划分: {split} 集包含 {len(self.file_list)} 张图像")
+            self.indices = np.arange(len(self.file_list))
+            n_samples = len(self.file_list)  # 设置n_samples用于后续日志
+        else:
+            # 如果没有划分信息，使用原来的随机划分
+            if self.latents is not None:
+                n_samples = len(self.latents)
+            elif hasattr(self, 'image_paths'):
+                n_samples = len(self.image_paths)
             else:
-                self.indices = indices[:n_val]
+                logger.error("没有数据可用于创建数据集")
+                n_samples = 0
+                
+            if n_samples == 0:
+                logger.error(f"数据集为空！latents={self.latents is not None}, "
+                            f"has_image_paths={hasattr(self, 'image_paths')}")
+                self.indices = np.array([])
+            else:
+                indices = np.arange(n_samples)
+                np.random.seed(42)
+                np.random.shuffle(indices)
+                
+                n_val = int(n_samples * val_ratio)
+                if split == 'train':
+                    self.indices = indices[n_val:]
+                else:
+                    self.indices = indices[:n_val]
         
         logger.info(f"{split} dataset: {len(self.indices)} samples (total: {n_samples})")
     
@@ -130,7 +163,17 @@ class MicroDopplerLatentDataset(Dataset):
         self.image_paths = []
         self.user_ids = []
         
-        data_path = self.data_dir / 'processed_microdoppler'
+        # 检查不同的数据路径格式
+        # 原始数据集: /kaggle/input/dataset/ID_*
+        # 处理后: processed_microdoppler/ID_*
+        data_path = self.data_dir
+        if not (data_path / 'ID_1').exists():
+            # 尝试processed_microdoppler子目录
+            alt_path = data_path / 'processed_microdoppler'
+            if alt_path.exists():
+                data_path = alt_path
+                logger.info(f"使用处理后的数据路径: {data_path}")
+        
         for user_dir in sorted(data_path.glob('ID_*')):
             user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
             
@@ -144,16 +187,7 @@ class MicroDopplerLatentDataset(Dataset):
             logger.info(f"编码用户 {user_dir.name}: {len(image_files)} 张图像")
             
             for img_path in image_files:
-                # 加载和预处理图像
-                image = Image.open(img_path).convert('RGB')
-                image = torch.from_numpy(np.array(image)).float() / 127.5 - 1.0
-                image = image.permute(2, 0, 1).unsqueeze(0)
-                
-                # 编码到潜空间 - 使用实例的encode_images方法
-                with torch.no_grad():
-                    latent = vae.encode_images(image.to(device))
-                
-                self.latents.append(latent.cpu().numpy())
+                self.image_paths.append(str(img_path))
                 self.user_ids.append(user_id)
     
     def __len__(self):
