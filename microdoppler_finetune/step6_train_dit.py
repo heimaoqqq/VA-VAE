@@ -149,9 +149,9 @@ class MicroDopplerLatentDataset(Dataset):
                 image = torch.from_numpy(np.array(image)).float() / 127.5 - 1.0
                 image = image.permute(2, 0, 1).unsqueeze(0)
                 
-                # 编码到潜空间 - 使用VA_VAE的encode_images方法
+                # 编码到潜空间 - 使用实例的encode_images方法
                 with torch.no_grad():
-                    latent = VA_VAE.encode_images(image)
+                    latent = vae.encode_images(image.to(device))
                 
                 self.latents.append(latent.cpu().numpy())
                 self.user_ids.append(user_id)
@@ -206,8 +206,27 @@ def train_dit():
     
     # ===== 1. 初始化VA-VAE（仅用于编码） =====
     logger.info("=== 初始化VA-VAE编码器 ===")
-    # 创建临时配置文件，指向我们的checkpoint
-    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+    # 创建临时配置文件，自动检测VA-VAE checkpoint
+    # 检查多个可能的VA-VAE模型路径
+    possible_vae_paths = [
+        "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt",  # 用户提供
+        "/kaggle/input/vavae-stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt", 
+        "/kaggle/working/checkpoints/stage3/last.ckpt",  # 本地训练
+        "/kaggle/working/checkpoints/stage3/best.ckpt",
+    ]
+    
+    vae_checkpoint = None
+    for path in possible_vae_paths:
+        if Path(path).exists():
+            vae_checkpoint = path
+            logger.info(f"找到VA-VAE模型: {path}")
+            break
+    
+    if vae_checkpoint is None:
+        logger.error("未找到VA-VAE模型！请检查以下路径:")
+        for path in possible_vae_paths:
+            logger.error(f"  - {path}")
+        raise FileNotFoundError("VA-VAE checkpoint not found")
     
     # 加载原始配置并修改checkpoint路径
     vae_config_path = project_root / 'LightningDiT' / 'tokenizer' / 'configs' / 'vavae_f16d32.yaml'
@@ -362,8 +381,26 @@ def train_dit():
         logger.info("=== 准备数据集 ===")
     
     # 首先尝试生成潜空间（如果需要）
-    # 修改为正确的数据集路径 - 与step3_prepare_dataset.py一致
-    data_dir = Path("/kaggle/input/dataset")
+    # 自动检测数据集路径
+    possible_data_paths = [
+        "/kaggle/input/dataset",  # 标准Kaggle路径
+        "/kaggle/input/micro-doppler-data",  # 替代路径
+        "./dataset",  # 本地路径
+        "G:/micro-doppler-dataset"  # 本地测试路径
+    ]
+    
+    data_dir = None
+    for path in possible_data_paths:
+        if Path(path).exists():
+            data_dir = Path(path)
+            logger.info(f"找到数据集: {path}")
+            break
+    
+    if data_dir is None:
+        logger.error("未找到数据集！请检查以下路径:")
+        for path in possible_data_paths:
+            logger.error(f"  - {path}")
+        raise FileNotFoundError("Dataset not found")
     latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'  # 保存到可写目录
     
     # 只在主进程中预计算潜空间，避免多进程冲突
@@ -612,7 +649,7 @@ def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
             image = torch.from_numpy(np.array(image)).float() / 127.5 - 1.0
             image = image.permute(2, 0, 1).unsqueeze(0).to(device)
             
-            # 编码到潜空间 - 使用VA_VAE的encode_images方法
+            # 编码到潜空间 - 使用实例的encode_images方法
             with torch.no_grad():
                 latent = vae.encode_images(image)
             
@@ -847,12 +884,12 @@ def train_with_dataparallel(n_gpus):
     
     # 创建数据集
     train_dataset = MicroDopplerLatentDataset(
-        data_dir="/kaggle/input/dataset",
+        data_dir=str(data_dir),
         split='train'
     )
     
     val_dataset = MicroDopplerLatentDataset(
-        data_dir="/kaggle/input/dataset", 
+        data_dir=str(data_dir), 
         split='val'
     )
     
@@ -1171,8 +1208,8 @@ def train_with_dataparallel(n_gpus):
                     # 使用微调好的VA-VAE模型
                     vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
                     vae_config = OmegaConf.load(str(vae_config_path))
-                    # 确认使用Stage 3微调后的模型
-                    vae_config.ckpt_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+                    # 使用自动检测到的VA-VAE模型
+                    vae_config.ckpt_path = vae_checkpoint
                     temp_config_path = Path("/kaggle/working/temp_vae_config.yaml")
                     OmegaConf.save(vae_config, str(temp_config_path))
                     vae = VA_VAE(str(temp_config_path), img_size=256, horizon_flip=False, fp16=True)
@@ -1250,8 +1287,8 @@ def prepare_latents_for_training():
     with open(vae_config_path, 'r') as f:
         config_content = f.read()
     
-    # 使用微调后的模型  
-    finetuned_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
+    # 使用自动检测到的微调模型  
+    finetuned_checkpoint = vae_checkpoint
     if finetuned_checkpoint not in config_content:
         config_content = config_content.replace(
             'ckpt_path: /path/to/checkpoint.pt',
@@ -1268,8 +1305,7 @@ def prepare_latents_for_training():
     vae_memory = torch.cuda.memory_allocated(device) / 1024**3
     logger.info(f"VA-VAE加载完成，显存: {vae_memory:.2f}GB")
     
-    # 预计算潜空间
-    data_dir = Path("/kaggle/input/dataset")
+    # 预计算潜空间（使用已检测的数据路径）
     latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
     if not latents_file.exists():
         logger.info("开始编码数据集到潜空间...")
@@ -1387,10 +1423,10 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus, c
             
             # 解码
             print(f"    • 开始VA-VAE解码...")
-            # VA_VAE使用decode_to_images方法，返回numpy数组
+            # VA_VAE使用decode_to_images方法，返回[0,255]的uint8图像
             images_np = vae.decode_to_images(samples_cuda0)
-            # 转换为torch tensor并调整范围到[-1, 1]
-            images = torch.from_numpy(images_np).float() / 127.5 - 1.0
+            # 转换为torch tensor并正确归一化到[-1, 1]
+            images = torch.from_numpy(images_np).float() / 255.0 * 2.0 - 1.0  # [0,255] -> [-1,1]
             images = images.permute(0, 3, 1, 2)  # NHWC -> NCHW
             print(f"    • 解码完成，图像形状: {images.shape}")
             
