@@ -912,13 +912,13 @@ def train_with_dataparallel(n_gpus):
         val_loss = 0
         val_steps = 0
         
-        with torch.no_grad():
-            pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]} [Val]')
+        with tqdm(val_loader, desc=f"Epoch {epoch+1}/{config['num_epochs']} [Val]") as pbar:
             for batch in pbar:
-                latents = batch[0].to(device)
-                user_ids = batch[1].to(device)
+                latents = batch['latent'].to(device)
+                user_ids = batch['user_id'].to(device)
                 
-                with torch.cuda.amp.autocast():
+                with torch.no_grad():
+                    # 传递条件信息
                     model_kwargs = {"y": user_ids}
                     loss_dict = transport.training_losses(model, latents, model_kwargs)
                     loss = loss_dict["loss"].mean()
@@ -930,20 +930,8 @@ def train_with_dataparallel(n_gpus):
         
         avg_val_loss = val_loss / val_steps
         
-        # 每5个epoch生成条件扩散样本
-        if (epoch + 1) % 5 == 0:
-            logger.info("\n🎨 生成条件扩散样本...")
-            # 延迟初始化VAE以节省内存
-            if vae is None:
-                logger.info("初始化VA-VAE用于样本解码...")
-                from tokenizer.vavae import VA_VAE
-                vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
-                vae_config = OmegaConf.load(str(vae_config_path))
-                vae_config.ckpt_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
-                temp_config_path = Path("/kaggle/working/temp_vae_config.yaml")
-                OmegaConf.save(vae_config, str(temp_config_path))
-                vae = VA_VAE(str(temp_config_path), img_size=256, horizon_flip=False, fp16=True)
-            generate_conditional_samples(model, vae, transport, device, epoch + 1, n_gpus)
+        # 确保进度条完全结束后再输出日志
+        print()  # 添加空行确保tqdm进度条结束
         
         # 记录指标
         train_metrics_history.append({
@@ -958,96 +946,102 @@ def train_with_dataparallel(n_gpus):
             'loss': avg_val_loss
         })
         
-        # 详细训练报告
-        logger.info("\n" + "="*80)
-        logger.info(f"📊 Epoch {epoch+1}/{config['num_epochs']} 训练报告")
-        logger.info("="*80)
+        # 详细训练报告 - 使用print确保输出
+        print("\n" + "="*80)
+        print(f"📊 Epoch {epoch+1}/{config['num_epochs']} 训练报告")
+        print("="*80)
         
         # 训练统计
-        logger.info("\n📈 训练阶段统计:")
-        logger.info(f"  • 平均损失: {avg_train_loss:.6f}")
-        logger.info(f"  • 梯度范数: {avg_train_grad_norm:.4f}")
-        logger.info(f"  • 学习率: {current_lr:.2e}")
-        logger.info(f"  • 训练样本数: {train_samples}")
-        logger.info(f"  • 每秒样本数: {train_samples / (time.time() - epoch_start_time):.1f}")
+        print("\n📈 训练阶段统计:")
+        print(f"  • 平均损失: {avg_train_loss:.6f}")
+        print(f"  • 梯度范数: {avg_train_grad_norm:.4f}")
+        print(f"  • 学习率: {current_lr:.2e}")
+        print(f"  • 训练样本数: {train_samples}")
+        print(f"  • 每秒样本数: {train_samples / (time.time() - epoch_start_time):.1f}")
         
         # 验证统计
-        logger.info("\n📉 验证阶段统计:")
-        logger.info(f"  • 平均损失: {avg_val_loss:.6f}")
-        logger.info(f"  • 相对改善: {((best_val_loss - avg_val_loss) / best_val_loss * 100):.2f}%" if best_val_loss != float('inf') else "N/A")
+        print("\n📉 验证阶段统计:")
+        print(f"  • 平均损失: {avg_val_loss:.6f}")
+        print(f"  • 相对改善: {((best_val_loss - avg_val_loss) / best_val_loss * 100):.2f}%" if best_val_loss != float('inf') else "N/A")
         
         # GPU使用情况
-        logger.info("\n🖥️ GPU资源使用:")
+        print("\n🖥️ GPU资源使用:")
         for i in range(n_gpus):
             mem_allocated = torch.cuda.memory_allocated(i) / 1024**3
             mem_reserved = torch.cuda.memory_reserved(i) / 1024**3
-            logger.info(f"  GPU {i}:")
-            logger.info(f"    • 已分配内存: {mem_allocated:.2f}GB")
-            logger.info(f"    • 已预留内存: {mem_reserved:.2f}GB")
-            logger.info(f"    • 利用率: {(mem_allocated/mem_reserved*100):.1f}%" if mem_reserved > 0 else "N/A")
+            print(f"  GPU {i}:")
+            print(f"    • 已分配内存: {mem_allocated:.2f}GB")
+            print(f"    • 已预留内存: {mem_reserved:.2f}GB")
+            print(f"    • 利用率: {(mem_allocated/mem_reserved*100):.1f}%" if mem_reserved > 0 else "N/A")
         
         # 条件信息验证
-        logger.info("\n✅ 条件注入验证:")
-        logger.info(f"  • 用户类别数: {31}")
+        print("\n✅ 条件注入验证:")
+        print(f"  • 用户类别数: {31}")
         # LabelEmbedder使用embedding_table而非embedding_dim
         actual_model = model.module if hasattr(model, 'module') else model
         if hasattr(actual_model, 'y_embedder') and hasattr(actual_model.y_embedder, 'embedding_table'):
             embed_dim = actual_model.y_embedder.embedding_table.embedding_dim
             num_classes = actual_model.y_embedder.embedding_table.num_embeddings
-            logger.info(f"  • 条件嵌入维度: {embed_dim}")
-            logger.info(f"  • 支持的类别数: {num_classes}")
-        logger.info(f"  • 条件信息已正确传递到模型")
+            print(f"  • 条件嵌入维度: {embed_dim}")
+            print(f"  • 支持的类别数: {num_classes}")
+        print(f"  • 条件信息已正确传递到模型")
         
-        logger.info("="*80)
+        print("="*80)
         
         # 每个epoch输出详细训练质量报告
-        logger.info("\n" + "="*80)
-        logger.info("🔍 训练质量分析")
-        logger.info("="*80)
+        print("\n" + "="*80)
+        print("🔍 训练质量分析")
+        print("="*80)
         
         # 损失趋势分析
         if epoch > 0:
             train_loss_change = avg_train_loss - train_metrics_history[-2]['loss'] if len(train_metrics_history) > 1 else 0
             val_loss_change = avg_val_loss - val_metrics_history[-2]['loss'] if len(val_metrics_history) > 1 else 0
             
-            logger.info("\n📉 损失趋势:")
-            logger.info(f"  • 训练损失变化: {train_loss_change:+.6f} ({(train_loss_change/train_metrics_history[-2]['loss']*100):+.2f}%)" if len(train_metrics_history) > 1 else "N/A")
-            logger.info(f"  • 验证损失变化: {val_loss_change:+.6f} ({(val_loss_change/val_metrics_history[-2]['loss']*100):+.2f}%)" if len(val_metrics_history) > 1 else "N/A")
+            print("\n📉 损失趋势:")
+            if len(train_metrics_history) > 1:
+                print(f"  • 训练损失变化: {train_loss_change:+.6f} ({(train_loss_change/train_metrics_history[-2]['loss']*100):+.2f}%)")
+            else:
+                print("  • 训练损失变化: N/A")
+            if len(val_metrics_history) > 1:
+                print(f"  • 验证损失变化: {val_loss_change:+.6f} ({(val_loss_change/val_metrics_history[-2]['loss']*100):+.2f}%)")
+            else:
+                print("  • 验证损失变化: N/A")
             
             # 过拟合检测
             overfit_gap = avg_val_loss - avg_train_loss
-            logger.info("\n⚠️ 过拟合检测:")
-            logger.info(f"  • 验证-训练损失差: {overfit_gap:.6f}")
+            print("\n⚠️ 过拟合检测:")
+            print(f"  • 验证-训练损失差: {overfit_gap:.6f}")
             if overfit_gap > 0.1:
-                logger.warning("  • 警告: 可能存在过拟合，验证损失显著高于训练损失")
+                print("  • 警告: 可能存在过拟合，验证损失显著高于训练损失")
             elif overfit_gap < -0.05:
-                logger.warning("  • 注意: 验证损失低于训练损失，可能存在数据泄露或评估问题")
+                print("  • 注意: 验证损失低于训练损失，可能存在数据泄露或评估问题")
             else:
-                logger.info("  • 状态: 正常，无明显过拟合")
+                print("  • 状态: 正常，无明显过拟合")
         
         # 训练稳定性分析
-        logger.info("\n⚡ 训练稳定性:")
+        print("\n⚡ 训练稳定性:")
         if avg_train_grad_norm > 10:
-            logger.warning(f"  • 警告: 梯度范数过大 ({avg_train_grad_norm:.2f})，可能需要降低学习率")
+            print(f"  • 警告: 梯度范数过大 ({avg_train_grad_norm:.2f})，可能需要降低学习率")
         elif avg_train_grad_norm < 0.01:
-            logger.warning(f"  • 警告: 梯度范数过小 ({avg_train_grad_norm:.4f})，可能陷入局部最优")
+            print(f"  • 警告: 梯度范数过小 ({avg_train_grad_norm:.4f})，可能陷入局部最优")
         else:
-            logger.info(f"  • 梯度范数正常: {avg_train_grad_norm:.4f}")
+            print(f"  • 梯度范数正常: {avg_train_grad_norm:.4f}")
         
         # 收敛状态判断
-        logger.info("\n🎯 收敛状态:")
+        print("\n🎯 收敛状态:")
         if epoch >= 4:  # 至少5个epoch后判断
             recent_val_losses = [m['loss'] for m in val_metrics_history[-5:]]
             val_std = np.std(recent_val_losses)
-            logger.info(f"  • 最近5轮验证损失标准差: {val_std:.6f}")
+            print(f"  • 最近5轮验证损失标准差: {val_std:.6f}")
             if val_std < 0.001:
-                logger.info("  • 模型可能已收敛")
+                print("  • 模型可能已收敛")
             elif val_std < 0.01:
-                logger.info("  • 模型接近收敛")
+                print("  • 模型接近收敛")
             else:
-                logger.info("  • 模型仍在优化中")
+                print("  • 模型仍在优化中")
         
-        logger.info("="*80)
+        print("="*80)
         
         # 每5个epoch生成条件扩散样本
         if (epoch + 1) % 5 == 0:
@@ -1181,9 +1175,12 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
             actual_model = model.module if n_gpus > 1 else model
             
             # 使用transport进行采样
-            samples = transport.sample_ode(
-                z, actual_model, **model_kwargs
+            # sample_ode返回一个采样函数，需要调用它
+            sample_fn = transport.sample_ode(
+                sampling_method="euler",
+                num_steps=50
             )
+            samples = sample_fn(z, actual_model, **model_kwargs)
             
             all_samples.append(samples)
             all_user_ids.append(user_batch)
