@@ -135,7 +135,7 @@ def download_vavae_models():
             continue
         
         # 使用每个模型指定的目标目录
-        dest_dir = info.get('dest_dir', models_dir)
+        dest_dir = info.get('dest_dir', lightningdit_models_dir)
         dest_path = dest_dir / info['filename']
         
         print(f"\n📦 处理: {name}")
