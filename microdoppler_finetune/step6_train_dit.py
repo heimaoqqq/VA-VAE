@@ -1282,7 +1282,9 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus, c
             def model_fn(x, t):
                 # x已经是单批次，需要复制为条件和无条件
                 x_combined = torch.cat([x, x], dim=0)
-                out = actual_model(x_combined, t, y=y_combined)
+                # 时间步t也需要复制以匹配批量大小
+                t_combined = torch.cat([t, t], dim=0)
+                out = actual_model(x_combined, t_combined, y=y_combined)
                 out_cond, out_uncond = out.chunk(2, dim=0)
                 # CFG: 无条件输出 + scale * (条件 - 无条件)
                 return out_uncond + cfg_scale * (out_cond - out_uncond)
