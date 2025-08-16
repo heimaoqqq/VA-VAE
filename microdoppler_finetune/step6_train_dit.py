@@ -789,10 +789,31 @@ def train_dit_kaggle():
     world_size = torch.cuda.device_count()
     logger.info(f"检测到 {world_size} 个GPU")
     
+    # 强制检查是否真的有2个GPU
+    if world_size == 1:
+        # 尝试手动检测第二个GPU
+        try:
+            torch.cuda.get_device_name(1)
+            logger.warning("发现第二个GPU但torch.cuda.device_count()只返回1，强制设置world_size=2")
+            world_size = 2
+        except:
+            logger.info("确认只有1个GPU可用")
+    
     # 显示GPU信息
     for i in range(world_size):
-        logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
-        logger.info(f"显存: {torch.cuda.get_device_properties(i).total_memory / 1e9:.1f}GB")
+        try:
+            logger.info(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+            logger.info(f"显存: {torch.cuda.get_device_properties(i).total_memory / 1e9:.1f}GB")
+            # 测试GPU可用性
+            torch.cuda.set_device(i)
+            test_tensor = torch.randn(10, device=f'cuda:{i}')
+            logger.info(f"GPU {i} 可用性测试: 通过")
+            del test_tensor
+        except Exception as e:
+            logger.error(f"GPU {i} 不可用: {e}")
+            if i == 1:  # 如果GPU 1不可用，回退到单GPU
+                world_size = 1
+                break
     
     # 预处理：确保潜空间数据准备好
     latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
@@ -811,10 +832,20 @@ def train_dit_kaggle():
     os.environ['NCCL_SOCKET_IFNAME'] = 'lo'
     os.environ['NCCL_TIMEOUT'] = '10'
     
+    logger.info(f"最终world_size: {world_size}")
+    
     if world_size > 1:
         logger.info(f"启动 {world_size} 进程分布式训练...")
         # 多GPU DDP训练
         try:
+            # 显式检查两个GPU是否真的可用
+            for i in range(world_size):
+                torch.cuda.set_device(i)
+                test = torch.randn(1).cuda()
+                logger.info(f"进程启动前GPU {i}测试: 成功")
+                del test
+            
+            logger.info("开始spawn多进程...")
             mp.spawn(train_worker, args=(world_size,), nprocs=world_size, join=True)
         except Exception as e:
             logger.error(f"DDP训练失败: {e}")
@@ -905,12 +936,17 @@ def train_worker(rank, world_size):
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
     
-    logger.info(f"进程 {rank}: 使用设备 {device}")
+    logger.info(f"进程 {rank}/{world_size}: 使用设备 {device}")
     
-    # 检查初始显存状态
-    if rank == 0:
-        initial_memory = torch.cuda.memory_allocated(device) / 1024**3
-        logger.info(f"进程{rank}初始显存使用: {initial_memory:.2f}GB")
+    # 检查初始显存状态（所有进程都报告）
+    initial_memory = torch.cuda.memory_allocated(device) / 1024**3
+    logger.info(f"进程{rank}初始显存使用: {initial_memory:.2f}GB")
+    
+    # 验证进程分配
+    if world_size > 1:
+        logger.info(f"进程{rank}: 等待所有进程同步...")
+        torch.distributed.barrier()
+        logger.info(f"进程{rank}: 同步完成")
     
     # 创建数据集 - 只使用预计算的潜空间
     data_dir = Path("/kaggle/input/dataset")
@@ -921,6 +957,7 @@ def train_worker(rank, world_size):
     batch_size = config['batch_size']  # 每个GPU的batch size
     
     if world_size > 1:
+        logger.info(f"进程{rank}: 配置DistributedSampler，总进程={world_size}")
         train_sampler = torch.utils.data.distributed.DistributedSampler(
             train_dataset, num_replicas=world_size, rank=rank, shuffle=True
         )
@@ -928,7 +965,12 @@ def train_worker(rank, world_size):
             val_dataset, num_replicas=world_size, rank=rank, shuffle=False
         )
         shuffle = False
+        
+        # 报告数据分片情况
+        logger.info(f"进程{rank}: 训练数据分片 {len(train_sampler)} samples")
+        logger.info(f"进程{rank}: 验证数据分片 {len(val_sampler)} samples") 
     else:
+        logger.info("单GPU模式: 使用标准DataLoader")
         train_sampler = None
         val_sampler = None
         shuffle = True
