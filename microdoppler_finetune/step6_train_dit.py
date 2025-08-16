@@ -833,7 +833,8 @@ def train_with_dataparallel(n_gpus):
     scaler = torch.cuda.amp.GradScaler(init_scale=65536.0, growth_interval=2000)
     
     # 打印配置信息
-    print_training_config(config, model, train_dataset, val_dataset, n_gpus, use_ddp=False)
+    print_training_config(model, optimizer, scheduler, config, 
+                         len(train_dataset), len(val_dataset), n_gpus, train_dataset)
     
     # 训练循环
     best_val_loss = float('inf')
