@@ -815,7 +815,6 @@ def train_with_dataparallel(n_gpus):
         None,
         None,
     )
-    transport.sample = types.MethodType(sample_fn, transport)
     
     # 优化器和调度器
     optimizer = torch.optim.AdamW(
