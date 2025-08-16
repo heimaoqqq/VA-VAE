@@ -767,17 +767,13 @@ def train_with_dataparallel(n_gpus):
     
     # 创建数据集
     train_dataset = MicroDopplerLatentDataset(
-        split='train',
-        H_latent=H_latent,
-        W_latent=W_latent,
-        C_latent=C_latent
+        data_dir="/kaggle/input/dataset",
+        split='train'
     )
     
     val_dataset = MicroDopplerLatentDataset(
-        split='val',
-        H_latent=H_latent,
-        W_latent=W_latent,
-        C_latent=C_latent
+        data_dir="/kaggle/input/dataset", 
+        split='val'
     )
     
     # 创建数据加载器
