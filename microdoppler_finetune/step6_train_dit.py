@@ -961,32 +961,32 @@ def train_with_dataparallel(n_gpus):
     )
     
     # ===== 模型加载检查 =====
-    logger.info("\n" + "="*60)
-    logger.info("🔍 模型加载状态检查")
-    logger.info("="*60)
+    print("\n" + "="*80)
+    print("🔍 模型加载状态检查")
+    print("="*80)
     
     # 检查LightningDiT模型
     pretrained_xl = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt"
     if os.path.exists(pretrained_xl):
-        logger.info(f"✅ 找到LightningDiT-XL模型: {pretrained_xl}")
+        print(f"✅ 找到LightningDiT-XL模型: {pretrained_xl}")
         size_gb = os.path.getsize(pretrained_xl) / (1024**3)
-        logger.info(f"   模型大小: {size_gb:.2f} GB")
+        print(f"   模型大小: {size_gb:.2f} GB")
         if size_gb < 5:
-            logger.warning(f"   ⚠️ 模型文件可能不完整（预期约10.8GB）")
+            print(f"   ⚠️ 模型文件可能不完整（预期约10.8GB）")
     else:
-        logger.error("❌ 未找到LightningDiT-XL模型！")
-        logger.error(f"   请确保文件存在: {pretrained_xl}")
-        logger.error("   运行 python step2_download_models.py 下载模型")
+        print("❌ 未找到LightningDiT-XL模型！")
+        print(f"   请确保文件存在: {pretrained_xl}")
+        print("   运行 python step2_download_models.py 下载模型")
         
-    # 检查VA-VAE模型
-    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+    # 检查VA-VAE模型  
     if os.path.exists(vae_checkpoint):
-        logger.info(f"✅ 找到VA-VAE模型: {vae_checkpoint}")
+        print(f"✅ 找到VA-VAE模型: {vae_checkpoint}")
         size_mb = os.path.getsize(vae_checkpoint) / (1024 * 1024)
-        logger.info(f"   模型大小: {size_mb:.2f} MB")
+        print(f"   模型大小: {size_mb:.2f} MB")
     else:
-        logger.error("❌ 未找到VA-VAE模型！")
-        logger.error(f"   请确保文件存在: {vae_checkpoint}")
+        print("❌ 未找到VA-VAE模型！")
+        print(f"   请确保文件存在: {vae_checkpoint}")
+    print("="*80)
     
     # 创建模型 - 使用B模型以适配T4显存
     logger.info("\n🏗️ 创建LightningDiT-B模型...")
