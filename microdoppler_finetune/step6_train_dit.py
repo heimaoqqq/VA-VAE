@@ -207,26 +207,18 @@ def train_dit():
     # ===== 1. 初始化VA-VAE（仅用于编码） =====
     logger.info("=== 初始化VA-VAE编码器 ===")
     # 创建临时配置文件，自动检测VA-VAE checkpoint
-    # 检查多个可能的VA-VAE模型路径
-    possible_vae_paths = [
-        "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt",  # 用户提供
-        "/kaggle/input/vavae-stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt", 
-        "/kaggle/working/checkpoints/stage3/last.ckpt",  # 本地训练
-        "/kaggle/working/checkpoints/stage3/best.ckpt",
-    ]
+    # 使用指定的VA-VAE模型路径
+    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
     
-    vae_checkpoint = None
-    for path in possible_vae_paths:
-        if Path(path).exists():
-            vae_checkpoint = path
-            logger.info(f"找到VA-VAE模型: {path}")
-            break
-    
-    if vae_checkpoint is None:
-        logger.error("未找到VA-VAE模型！请检查以下路径:")
-        for path in possible_vae_paths:
-            logger.error(f"  - {path}")
-        raise FileNotFoundError("VA-VAE checkpoint not found")
+    if Path(vae_checkpoint).exists():
+        logger.info(f"✅ 找到VA-VAE模型: {vae_checkpoint}")
+        # 检查文件大小
+        size_mb = Path(vae_checkpoint).stat().st_size / (1024 * 1024)
+        logger.info(f"   模型大小: {size_mb:.2f} MB")
+    else:
+        logger.error("❌ 未找到VA-VAE模型！")
+        logger.error(f"   请确保文件存在: {vae_checkpoint}")
+        raise FileNotFoundError(f"VA-VAE checkpoint not found at {vae_checkpoint}")
     
     # 加载原始配置并修改checkpoint路径
     vae_config_path = project_root / 'LightningDiT' / 'tokenizer' / 'configs' / 'vavae_f16d32.yaml'
@@ -274,61 +266,52 @@ def train_dit():
     logger.info(f"Model: LightningDiT-B/1 (768-dim, 12 layers)")
     logger.info(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
-    # 加载预训练权重 - 匹配step2_download_models.py的下载路径
-    kaggle_paths = [
-        "/kaggle/working/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt",  # step2下载的路径
-        "/kaggle/input/lightningdit-models/lightningdit-xl-imagenet256-64ep.pt",  # 预添加的数据集
-        "/kaggle/input/lightningdit-xl/lightningdit-xl-imagenet256-64ep.pt",
-        "/kaggle/input/va-vae-models/lightningdit-xl-imagenet256-64ep.pt"
-    ]
-    
-    local_paths = [
-        "models/lightningdit-b-imagenet256.pt",
-        "models/lightningdit-xl-imagenet256-64ep.pt"
-    ]
-    
-    # 优先检查Kaggle路径
+    # 使用指定的LightningDiT模型路径
+    pretrained_xl = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt"
     pretrained_base = None
-    pretrained_xl = None
     
-    for path in kaggle_paths + local_paths:
-        if os.path.exists(path):
-            if 'base' in path.lower() or '-b-' in path:
-                pretrained_base = path
-                logger.info(f"找到Base模型: {path}")
-            elif 'xl' in path.lower():
-                pretrained_xl = path
-                logger.info(f"找到XL模型: {path}")
+    # 检查LightningDiT模型是否存在
+    if os.path.exists(pretrained_xl):
+        logger.info(f"✅ 找到LightningDiT-XL模型: {pretrained_xl}")
+        # 检查文件大小
+        size_gb = os.path.getsize(pretrained_xl) / (1024**3)
+        logger.info(f"   模型大小: {size_gb:.2f} GB")
+        if size_gb < 5:
+            logger.warning(f"   ⚠️ 模型文件可能不完整（预期约10.8GB）")
+    else:
+        logger.error("❌ 未找到LightningDiT-XL模型！")
+        logger.error(f"   请确保文件存在: {pretrained_xl}")
+        logger.error("   运行 python step2_download_models.py 下载模型")
     
-    # 如果都没找到，尝试下载
-    if pretrained_base is None and pretrained_xl is None:
-        logger.warning("未找到任何预训练权重，尝试下载...")
+    # 如果没找到，尝试下载
+    if pretrained_xl is None or not os.path.exists(pretrained_xl):
+        logger.warning("未找到LightningDiT模型，尝试下载...")
         import urllib.request
-        os.makedirs('/kaggle/working/models', exist_ok=True)
+        # 创建模型目录
+        os.makedirs('/kaggle/working/VA-VAE/LightningDiT/models', exist_ok=True)
         
-        # 下载XL模型（64 epochs版本，更快）
+        # 下载XL模型
         xl_url = "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/resolve/main/lightningdit-xl-imagenet256-64ep.pt"
-        xl_path = "/kaggle/working/models/lightningdit-xl-imagenet256-64ep.pt"
         
-        if not os.path.exists(xl_path):
-            try:
-                logger.info(f"下载LightningDiT-XL模型...")
-                urllib.request.urlretrieve(xl_url, xl_path)
-                pretrained_xl = xl_path
-                logger.info(f"下载完成: {xl_path}")
-            except Exception as e:
-                logger.error(f"下载失败: {e}")
-                logger.error("请手动下载模型文件到Kaggle Input")
+        try:
+            logger.info(f"从 HuggingFace 下载LightningDiT-XL模型...")
+            logger.info(f"URL: {xl_url}")
+            logger.info(f"目标路径: {pretrained_xl}")
+            urllib.request.urlretrieve(xl_url, pretrained_xl)
+            logger.info(f"✅ 下载完成")
+            size_gb = os.path.getsize(pretrained_xl) / (1024**3)
+            logger.info(f"   模型大小: {size_gb:.2f} GB")
+        except Exception as e:
+            logger.error(f"❌ 下载失败: {e}")
+            logger.error("请手动下载模型或运行 step2_download_models.py")
     
-    if pretrained_base and os.path.exists(pretrained_base):
-        logger.info(f"Loading Base model weights: {pretrained_base}")
-        checkpoint = torch.load(pretrained_base, map_location='cpu')
-        state_dict = checkpoint.get('model', checkpoint)
-        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        missing, unexpected = model.load_state_dict(state_dict, strict=False)
-        logger.info(f"Missing: {len(missing)}, Unexpected: {len(unexpected)}")
-    elif pretrained_xl and os.path.exists(pretrained_xl):
-        logger.info(f"Base weights not found, trying partial XL loading: {pretrained_xl}")
+    # 加载预训练权重
+    logger.info("\n" + "="*60)
+    logger.info("🎯 加载LightningDiT预训练权重")
+    logger.info("="*60)
+    
+    if pretrained_xl and os.path.exists(pretrained_xl):
+        logger.info(f"加载XL模型: {pretrained_xl}")
         checkpoint = torch.load(pretrained_xl, map_location='cpu')
         state_dict = checkpoint.get('model', checkpoint)
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
@@ -342,15 +325,21 @@ def train_dit():
         
         if compatible:
             model.load_state_dict(compatible, strict=False)
-            logger.info(f"Loaded {len(compatible)} compatible weights from XL")
+            logger.info(f"✅ 成功加载 {len(compatible)}/{len(state_dict)} 个权重")
+            logger.info(f"   模型总参数: {len(model_state)}")
+            logger.info(f"   匹配率: {len(compatible)/len(model_state)*100:.1f}%")
+        else:
+            logger.warning("⚠️ 没有找到兼容的权重！")
     else:
+        logger.error("\n" + "❌"*30)
         logger.error("❌ 严重错误：未找到预训练权重！")
-        logger.error("模型将使用随机初始化，这会导致生成纯噪声图像。")
-        logger.error("请确保在Kaggle中添加以下数据集之一：")
-        logger.error("  1. 包含lightningdit-xl-imagenet256-64ep.pt的数据集")
-        logger.error("  2. 或下载: https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/")
-        logger.error("❌❌❌ 训练将立即停止以避免时间浪费！❌❌❌")
-        logger.error("📌 请先修复 step2_download_models.py 然后重新下载模型")
+        logger.error("❌ 模型将使用随机初始化，这会导致生成纯噪声图像。")
+        logger.error("❌"*30)
+        logger.error("\n请确保：")
+        logger.error(f"  1. LightningDiT模型存在于: {pretrained_xl}")
+        logger.error("  2. 运行 step2_download_models.py 下载模型")
+        logger.error("  3. 或从 https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/ 手动下载")
+        logger.error("\n训练将立即停止以避免时间浪费！\n")
         raise ValueError("必须加载预训练权重才能正常训练！")
     
     model.to(device)
@@ -1281,6 +1270,40 @@ def prepare_latents_for_training():
     logger.info("=== 准备潜空间数据 ===")
     initial_memory = torch.cuda.memory_allocated(device) / 1024**3
     logger.info(f"初始显存使用: {initial_memory:.2f}GB")
+    
+    # 使用指定的VA-VAE模型路径
+    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+    
+    if Path(vae_checkpoint).exists():
+        logger.info(f"✅ 找到VA-VAE模型: {vae_checkpoint}")
+        # 检查文件大小
+        size_mb = Path(vae_checkpoint).stat().st_size / (1024 * 1024)
+        logger.info(f"   模型大小: {size_mb:.2f} MB")
+    else:
+        logger.error("❌ 未找到VA-VAE模型！")
+        logger.error(f"   请确保文件存在: {vae_checkpoint}")
+        raise FileNotFoundError(f"VA-VAE checkpoint not found at {vae_checkpoint}")
+    
+    # 自动检测数据集路径
+    possible_data_paths = [
+        "/kaggle/input/dataset",  # 标准Kaggle路径
+        "/kaggle/input/micro-doppler-data",  # 替代路径
+        "./dataset",  # 本地路径
+        "G:/micro-doppler-dataset"  # 本地测试路径
+    ]
+    
+    data_dir = None
+    for path in possible_data_paths:
+        if Path(path).exists():
+            data_dir = Path(path)
+            logger.info(f"找到数据集: {path}")
+            break
+    
+    if data_dir is None:
+        logger.error("未找到数据集！请检查以下路径:")
+        for path in possible_data_paths:
+            logger.error(f"  - {path}")
+        raise FileNotFoundError("Dataset not found")
     
     # 修正配置中的checkpoint路径为微调模型
     logger.info("准备VA-VAE配置...")
