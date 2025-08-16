@@ -673,7 +673,7 @@ def get_training_config():
         'sampling_method': 'dopri5',  # 5阶自适应RK，更精确
         'num_steps': 150,  # 较少步数即可达到高质量
         'cfg_interval_start': 0.11,  # 保持官方设置
-        'timestep_shift': 0.1,  # 减小偏移，保留更多低噪声细节以保留微多普勒细节数
+        'timestep_shift': 0.15,  # 平衡稳定性和细节：跳过15%高噪声，保留85%去噪过程
     }
 
 
