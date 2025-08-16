@@ -48,7 +48,7 @@ def is_main_process():
 
 # 导入LightningDiT模块
 from transport import create_transport, Sampler
-from models.lightningdit import LightningDiT_models, LightningDiT_XL_1
+from models.lightningdit import LightningDiT_models, LightningDiT_L_1
 
 # 导入VA-VAE
 from tokenizer.vavae import VA_VAE
@@ -227,6 +227,37 @@ class MicroDopplerLatentDataset(Dataset):
 def train_dit():
     """主训练函数 - DataParallel模式"""
     
+    # ===== 训练配置（针对L模型优化）=====
+    config = {
+        'num_epochs': 10,
+        'batch_size': 1,  # L模型需要更多显存，保持batch_size=1
+        'gradient_accumulation_steps': 4,  # 梯度累积以模拟更大batch
+        'learning_rate': 2e-5,  # L模型使用稍低的学习率
+        'weight_decay': 0.01,
+        'gradient_clip_norm': 1.0,
+        'warmup_steps': 500,
+        'ema_decay': 0.9999,
+        
+        # 采样配置
+        'sampling_method': 'euler',  # 使用euler采样器，更快
+        'num_steps': 250,  # 采样步数
+        'cfg_scale': 10.0,  # CFG强度
+        'cfg_interval_start': 0.11,  # CFG开始时间
+        'timestep_shift': 0.3,  # 时间步偏移
+        
+        # 数据配置
+        'num_workers': 2,  # Kaggle环境
+        'pin_memory': True,
+        'persistent_workers': True,
+    }
+    
+    logger.info("\n" + "="*60)
+    logger.info("🚀 LightningDiT-L 训练配置")
+    logger.info("="*60)
+    for key, value in config.items():
+        logger.info(f"  {key}: {value}")
+    logger.info("="*60 + "\n")
+    
     # 设备设置
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
@@ -281,12 +312,12 @@ def train_dit():
     # VA-VAE的model已经在初始化时调用了.cuda()，不需要.to(device)
     # vae.model已经是eval模式
     
-    # ===== 2. 初始化LightningDiT-XL模型 =====
-    logger.info("=== 初始化LightningDiT-XL ===")
+    # ===== 2. 初始化LightningDiT-L模型 =====
+    logger.info("=== 初始化LightningDiT-L ===")
     latent_size = 16  # 256/16 = 16
     num_users = 31
     
-    model = LightningDiT_XL_1(
+    model = LightningDiT_L_1(
         input_size=latent_size,
         num_classes=num_users,
         in_channels=32,
@@ -295,82 +326,59 @@ def train_dit():
         use_rmsnorm=True
     ).to(device)
     
-    logger.info(f"Model: LightningDiT-XL/1 (1152-dim, 28 layers)")
+    logger.info(f"Model: LightningDiT-L/1 (1024-dim, 24 layers)")
     logger.info(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
-    # 使用指定的LightningDiT模型路径
-    pretrained_xl = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt"
-    pretrained_base = None
+    # 使用官方L模型预训练权重 - 与step2_download_models.py路径保持一致
+    pretrained_l = "/kaggle/working/VA-VAE/models/lightningdit-l-imagenet256-100ep.pt"
     
-    # 检查LightningDiT模型是否存在
-    if os.path.exists(pretrained_xl):
-        logger.info(f"✅ 找到LightningDiT-XL模型: {pretrained_xl}")
-        # 检查文件大小
-        size_gb = os.path.getsize(pretrained_xl) / (1024**3)
+    if os.path.exists(pretrained_l):
+        logger.info(f"✅ 找到官方LightningDiT-L模型: {pretrained_l}")
+        size_gb = os.path.getsize(pretrained_l) / (1024**3)
         logger.info(f"   模型大小: {size_gb:.2f} GB")
-        if size_gb < 5:
-            logger.warning(f"   ⚠️ 模型文件可能不完整（预期约10.8GB）")
     else:
-        logger.error("❌ 未找到LightningDiT-XL模型！")
-        logger.error(f"   请确保文件存在: {pretrained_xl}")
-        logger.error("   运行 python step2_download_models.py 下载模型")
+        logger.warning("⚠️ 未找到L模型权重文件，请先运行 step2_download_models.py")
+        logger.warning(f"   预期路径: {pretrained_l}")
+        raise FileNotFoundError("LightningDiT-L 预训练权重未找到")
     
-    # 如果没找到，尝试下载
-    if pretrained_xl is None or not os.path.exists(pretrained_xl):
-        logger.warning("未找到LightningDiT模型，尝试下载...")
-        import urllib.request
-        # 创建模型目录
-        os.makedirs('/kaggle/working/VA-VAE/LightningDiT/models', exist_ok=True)
-        
-        # 下载XL模型
-        xl_url = "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/resolve/main/lightningdit-xl-imagenet256-64ep.pt"
-        
-        try:
-            logger.info(f"从 HuggingFace 下载LightningDiT-XL模型...")
-            logger.info(f"URL: {xl_url}")
-            logger.info(f"目标路径: {pretrained_xl}")
-            urllib.request.urlretrieve(xl_url, pretrained_xl)
-            logger.info(f"✅ 下载完成")
-            size_gb = os.path.getsize(pretrained_xl) / (1024**3)
-            logger.info(f"   模型大小: {size_gb:.2f} GB")
-        except Exception as e:
-            logger.error(f"❌ 下载失败: {e}")
-            logger.error("请手动下载模型或运行 step2_download_models.py")
     
     # 加载预训练权重
     logger.info("\n" + "="*60)
     logger.info("🎯 加载LightningDiT预训练权重")
     logger.info("="*60)
     
-    if pretrained_xl and os.path.exists(pretrained_xl):
-        logger.info(f"加载XL模型: {pretrained_xl}")
-        checkpoint = torch.load(pretrained_xl, map_location='cpu')
-        state_dict = checkpoint.get('model', checkpoint)
-        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        
-        # 只加载兼容的权重
-        compatible = {}
-        model_state = model.state_dict()
-        for k, v in state_dict.items():
-            if k in model_state and v.shape == model_state[k].shape:
-                compatible[k] = v
-        
-        if compatible:
-            model.load_state_dict(compatible, strict=False)
-            logger.info(f"✅ 成功加载 {len(compatible)}/{len(state_dict)} 个权重")
-            logger.info(f"   模型总参数: {len(model_state)}")
-            logger.info(f"   匹配率: {len(compatible)/len(model_state)*100:.1f}%")
-        else:
-            logger.warning("⚠️ 没有找到兼容的权重！")
+    if pretrained_l and os.path.exists(pretrained_l):
+        try:
+            checkpoint = torch.load(pretrained_l, map_location='cpu')
+            state_dict = checkpoint.get('model', checkpoint)
+            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            
+            # 只加载兼容的权重
+            compatible = {}
+            model_state = model.state_dict()
+            for k, v in state_dict.items():
+                if k in model_state and v.shape == model_state[k].shape:
+                    compatible[k] = v
+            
+            if compatible:
+                model.load_state_dict(compatible, strict=False)
+                logger.info(f"✅ 成功加载 {len(compatible)}/{len(state_dict)} 个权重")
+                logger.info(f"   模型总参数: {len(model_state)}")
+                logger.info(f"   匹配率: {len(compatible)/len(model_state)*100:.1f}%")
+            else:
+                logger.warning("⚠️ 没有找到兼容的权重！")
+        except Exception as e:
+            logger.error(f"❌ 加载预训练权重失败: {e}")
     else:
         logger.error("\n" + "❌"*30)
         logger.error("❌ 严重错误：未找到预训练权重！")
         logger.error("❌ 模型将使用随机初始化，这会导致生成纯噪声图像。")
         logger.error("❌"*30)
         logger.error("\n请确保：")
-        logger.error(f"  1. LightningDiT模型存在于: {pretrained_xl}")
-        logger.error("  2. 运行 step2_download_models.py 下载模型")
-        logger.error("  3. 或从 https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/ 手动下载")
+        logger.error(f"  1. 官方L模型存在于: {pretrained_l_official}")
+        logger.error(f"  2. 或转换的L模型存在于: {pretrained_l_converted}")
+        logger.error("  3. 运行 step2_download_models.py 下载模型")
+        logger.error("  4. 运行 python convert_xl_to_l.py 转换权重")
         logger.error("\n训练将立即停止以避免时间浪费！\n")
         raise ValueError("必须加载预训练权重才能正常训练！")
     
@@ -382,659 +390,11 @@ def train_dit():
         model = DataParallel(model)
         logger.info(f"Model wrapped with DataParallel using {num_gpus} GPUs")
     
-    # 创建EMA模型
-    from copy import deepcopy
-    ema_model = deepcopy(model.module if num_gpus > 1 else model).to(device)
-    for p in ema_model.parameters():
-        p.requires_grad = False
-    
-    # ===== 3. 创建Transport（扩散过程） =====
-    transport = create_transport(
-        path_type="Linear",
-        prediction="velocity",
-        loss_weight=None,
-        train_eps=None,
-        sample_eps=None,
-        use_cosine_loss=True,  # 官方使用cosine loss
-        use_lognorm=True  # 官方使用lognorm
-    )
-    
-    # ===== 4. 准备数据集 =====
-    if is_main_process():
-        logger.info("=== 准备数据集 ===")
-    
-    # 首先尝试生成潜空间（如果需要）
-    # 自动检测数据集路径
-    possible_data_paths = [
-        "/kaggle/input/dataset",  # 标准Kaggle路径
-        "/kaggle/input/micro-doppler-data",  # 替代路径
-        "./dataset",  # 本地路径
-        "G:/micro-doppler-dataset"  # 本地测试路径
-    ]
-    
-    data_dir = None
-    for path in possible_data_paths:
-        if Path(path).exists():
-            data_dir = Path(path)
-            logger.info(f"找到数据集: {path}")
-            break
-    
-    if data_dir is None:
-        logger.error("未找到数据集！请检查以下路径:")
-        for path in possible_data_paths:
-            logger.error(f"  - {path}")
-        raise FileNotFoundError("Dataset not found")
-    latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'  # 保存到可写目录
-    
-    # 只在主进程中预计算潜空间，避免多进程冲突
-    if not latents_file.exists() and is_main_process():
-        logger.info("预计算潜空间表示...")
-        encode_dataset_to_latents(vae, data_dir, device)
-        logger.info("潜空间编码完成，等待文件写入...")
-        # 确保文件已写入磁盘
-        import time
-        time.sleep(2)
-    
-    # DataParallel模式不需要同步
-    
-    # 创建数据采样器（分布式）
-    train_dataset = MicroDopplerLatentDataset(data_dir, split='train')
-    val_dataset = MicroDopplerLatentDataset(data_dir, split='val')
-    
-    # DataParallel模式不需要特殊采样器
-    train_sampler = None
-    val_sampler = None
-    
-    # Kaggle环境数据加载器优化
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],  # 使用配置值
-        shuffle=(train_sampler is None),
-        sampler=train_sampler,
-        num_workers=1,  # Kaggle环境减少worker数量
-        pin_memory=True,
-        persistent_workers=False,  # 避免Kaggle环境中的内存问题
-        prefetch_factor=1
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=4,
-        shuffle=False,
-        sampler=val_sampler,
-        num_workers=1,  # 保持一致
-        pin_memory=True,
-        persistent_workers=False,
-        prefetch_factor=1
-    )
-    
-    # ===== 5. 设置优化器 =====
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=5e-5,  # 平衡保护和学习的学习率
-        weight_decay=0.01,  # 恢复适度正则化
-        betas=(0.9, 0.95)
-    )
-    
-    # 学习率调度器
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=35,  # 对应新的轮数
-        eta_min=1e-7
-    )
-    
-    # ===== 6. 训练循环 =====
-    logger.info("=== 开始训练 ===")
-    
-    num_epochs = 35  # 允许充分学习，用早停控制
-    best_val_loss = float('inf')
-    patience = 8  # 给予更多收敛机会
-    patience_counter = 0
-    
-    # 混合精度训练
-    scaler = torch.cuda.amp.GradScaler()
-    
-    for epoch in range(num_epochs):
-        # DataParallel模式不需要设置epoch
-        
-        # 训练阶段
-        model.train()
-        train_loss = 0
-        train_steps = 0
-        
-        # 只在主进程显示进度条
-        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]', disable=not is_main_process())
-        for batch in pbar:
-            latents = batch[0].to(device)
-            user_ids = batch[1].to(device)
-            
-            # 前向传播（混合精度）
-            with torch.cuda.amp.autocast():
-                # Transport内部自动采样时间
-                model_kwargs = {"y": user_ids}
-                # DataParallel时使用module
-                dit_model = model.module if isinstance(model, DataParallel) else model
-                loss_dict = transport.training_losses(dit_model, latents, model_kwargs)
-                loss = loss_dict["loss"].mean()
-            
-            # 反向传播
-            optimizer.zero_grad()
-            scaler.scale(loss).backward()
-            
-            # 梯度裁剪
-            scaler.unscale_(optimizer)
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'])
-            
-            scaler.step(optimizer)
-            scaler.update()
-            
-            # 定期清理显存
-            if batch_idx % 50 == 0:
-                torch.cuda.empty_cache()
-            
-            # 更新EMA（只在主进程）
-            if is_main_process():
-                ema_decay = 0.9999
-                model_params = model.module.parameters() if isinstance(model, DataParallel) else model.parameters()
-                with torch.no_grad():
-                    for ema_p, p in zip(ema_model.parameters(), model_params):
-                        ema_p.data.mul_(ema_decay).add_(p.data, alpha=1-ema_decay)
-            
-            train_loss += loss.item()
-            train_steps += 1
-            
-            if is_main_process():
-                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
-        
-        avg_train_loss = train_loss / train_steps
-        
-        # 验证阶段
-        model.eval()
-        val_loss = 0
-        val_steps = 0
-        
-        with torch.no_grad():
-            val_pbar = tqdm(val_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Val]', disable=not is_main_process())
-            for batch in val_pbar:
-                latents = batch[0].to(device)
-                user_ids = batch[1].to(device)
-                
-                with torch.cuda.amp.autocast():
-                    model_kwargs = {"y": user_ids}
-                    dit_model = model.module if isinstance(model, DataParallel) else model
-                    loss_dict = transport.training_losses(dit_model, latents, model_kwargs)
-                    loss = loss_dict["loss"].mean()
-                
-                val_loss += loss.item()
-                val_steps += 1
-        
-        avg_val_loss = val_loss / val_steps
-        
-        # 更新学习率
-        scheduler.step()
-        
-        # 同步所有进程的损失（Kaggle优化）
-        if world_size > 1:
-            # 使用更安全的损失同步方式
-            train_loss_tensor = torch.tensor(avg_train_loss, device=device, dtype=torch.float32)
-            val_loss_tensor = torch.tensor(avg_val_loss, device=device, dtype=torch.float32)
-            
-            try:
-                dist.all_reduce(train_loss_tensor, op=dist.ReduceOp.AVG)
-                dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.AVG)
-                avg_train_loss = train_loss_tensor.item()
-                avg_val_loss = val_loss_tensor.item()
-            except Exception as e:
-                if is_main_process():
-                    logger.warning(f"Loss synchronization failed: {e}, using local loss")
-        
-        # 日志记录（只在主进程）
-        if is_main_process():
-            logger.info(f"Epoch {epoch+1}/{num_epochs}")
-            logger.info(f"  Train Loss: {avg_train_loss:.4f}")
-            logger.info(f"  Val Loss: {avg_val_loss:.4f}")
-            logger.info(f"  LR: {scheduler.get_last_lr()[0]:.2e}")
-        
-        # 早停检查（只在主进程）
-        should_stop = False
-        if is_main_process():
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                patience_counter = 0
-                
-                # 保存最佳模型
-                save_path = f"outputs/dit_best_epoch{epoch+1}_val{avg_val_loss:.4f}.pt"
-                os.makedirs("outputs", exist_ok=True)
-                model_state = model.module.state_dict() if isinstance(model, DataParallel) else model.state_dict()
-                
-                try:
-                    torch.save({
-                        'epoch': epoch,
-                        'model_state_dict': model_state,
-                        'ema_state_dict': ema_model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'scheduler_state_dict': scheduler.state_dict(),
-                        'train_loss': avg_train_loss,
-                        'val_loss': avg_val_loss,
-                    }, save_path)
-                    logger.info(f"  ✓ Saved best model to {save_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to save model: {e}")
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    logger.info(f"Early stopping triggered at epoch {epoch+1}")
-                    should_stop = True
-        
-        # DataParallel模式不需要同步早停决策
-        
-        if should_stop:
-            break
-        
-        # 定期生成样本（只在主进程）
-        if (epoch + 1) % 5 == 0 and is_main_process():
-            logger.info("Generating samples...")
-            generate_samples(ema_model, vae, transport, device, epoch+1)
-        
-        # 内存清理
-        torch.cuda.empty_cache()
-    
-    if is_main_process():
-        logger.info("=== 训练完成 ===")
-        logger.info(f"Best validation loss: {best_val_loss:.4f}")
-    
-    # DataParallel模式不需要清理
-
-
-def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
-    """预计算并保存整个数据集的潜空间表示"""
-    logger.info("编码数据集到潜空间...")
-    
-    latents_list = []
-    user_ids_list = []
-    
-    # 遍历所有用户文件夹
-    for user_dir in sorted(data_dir.glob('ID_*')):
-        user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
-        
-        # 收集该用户的所有图像（修正为.jpg格式）
-        image_files = sorted(list(user_dir.glob('*.jpg')))
-        
-        if not image_files:
-            logger.warning(f"用户 {user_dir.name} 没有找到.jpg图像文件")
-            continue
-            
-        logger.info(f"编码用户 {user_dir.name}: {len(image_files)} 张图像")
-        
-        for img_path in image_files:
-            # 加载和预处理图像
-            image = Image.open(img_path).convert('RGB')
-            image = torch.from_numpy(np.array(image)).float() / 127.5 - 1.0
-            image = image.permute(2, 0, 1).unsqueeze(0).to(device)
-            
-            # 编码到潜空间 - 使用实例的encode_images方法
-            with torch.no_grad():
-                latent = vae.encode_images(image)
-            
-            latents_list.append(latent.cpu().numpy())
-            user_ids_list.append(user_id)
-    
-    # 检查是否有数据
-    if not latents_list:
-        logger.error("没有收集到任何潜空间数据！")
-        raise ValueError("No latent data collected")
-    
-    # 保存潜空间数据
-    latents = np.concatenate(latents_list, axis=0)
-    user_ids = np.array(user_ids_list)
-    
-    logger.info(f"准备保存 {len(latents)} 个潜空间样本")
-    logger.info(f"潜空间形状: {latents.shape}")
-    logger.info(f"用户ID数量: {len(user_ids)}, 唯一用户: {len(np.unique(user_ids))}")
-    
-    # 计算潜空间统计信息（用于归一化）
-    mean = latents.mean(axis=(0, 2, 3), keepdims=True)  # [1, C, 1, 1]
-    std = latents.std(axis=(0, 2, 3), keepdims=True)
-    
-    # 保存到可写目录
-    save_path = Path("/kaggle/working") / 'latents_microdoppler.npz'
-    stats_save_path = Path("/kaggle/working") / 'latents_stats.pt'
-    
-    np.savez(save_path, latents=latents, user_ids=user_ids, mean=mean, std=std)
-    torch.save({'mean': torch.from_numpy(mean), 'std': torch.from_numpy(std)}, stats_save_path)
-    
-    logger.info(f"成功保存潜空间数据到 {save_path}")
-    logger.info(f"成功保存统计信息到 {stats_save_path}")
-    logger.info(f"潜空间均值形状: {mean.shape}, 标准差形状: {std.shape}")
-    
-    # 验证保存
-    test_data = np.load(save_path)
-    logger.info(f"验证: 加载了 {len(test_data['latents'])} 个样本")
-
-
-def get_training_config():
-    """获取微调训练配置 - 针对微多普勒细微特征学习优化"""
-    return {
-        'batch_size': 8,           # 增大batch提高稳定性
-        'gradient_accumulation_steps': 2,  # 模拟更大batch=16
-        'num_epochs': 50,          # 延长训练以充分利用VA-VAE语义空间
-        'learning_rate': 3e-5,      # 平衡学习速度与稳定性
-        'weight_decay': 0.005,      # 适度正则化，防止过拟合
-        'num_workers': 1,          # Kaggle环境优化
-        'gradient_accumulation_steps': 4,  # 模拟更大batch
-        'gradient_clip_norm': 2.0, # 略放宽以允许更大梯度更新
-        'warmup_steps': 1000,      # 采样配置 - 对齐官方LightningDiT配置
-        'gradient_checkpointing': True,  # 显存优化
-        'cfg_dropout': 0.15,       # 增强无条件学习
-        'cfg_scale': 7.0,         # 适度CFG，保留更多细节
-        'ema_decay': 0.9995,       # 平衡稳定性与响应速度
-        'sample_steps': 150,       # 采样步数
-        'patience': 10,            # 早停耐心值
-        'sampling_method': 'dopri5',  # 5阶自适应RK，更精确
-        'num_steps': 150,  # 较少步数即可达到高质量
-        'cfg_interval_start': 0.11,  # 保持官方设置
-        'timestep_shift': 0.15,  # 平衡稳定性和细节：跳过15%高噪声，保留85%去噪过程
-    }
-
-
-def print_training_config(model, optimizer, scheduler, config, 
-                         train_size, val_size, num_gpus, train_dataset=None):
-    """输出详细的训练配置信息"""
-    
-    # 计算模型参数
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    
-    # 获取模型配置
-    if hasattr(model, 'module'):  # DDP wrapped
-        model_config = model.module
-    else:
-        model_config = model
-    
-    # 动态获取用户类别数
-    num_classes = 31  # 默认值
-    if train_dataset is not None:
-        try:
-            # 尝试从数据集获取用户数量
-            if hasattr(train_dataset, 'user_ids'):
-                num_classes = len(torch.unique(train_dataset.user_ids))
-            elif hasattr(train_dataset, 'num_classes'):
-                num_classes = train_dataset.num_classes
-        except:
-            pass  # 使用默认值
-    
-    print("\n" + "="*80)
-    print("🚀 DiT微调训练配置")
-    print("="*80)
-    
-    print(f"📊 数据配置:")
-    print(f"  训练样本数: {train_size:,}")
-    print(f"  验证样本数: {val_size:,}")
-    print(f"  每GPU批量大小: {config['batch_size']}")
-    print(f"  总批量大小: {config['batch_size'] * num_gpus}")
-    print(f"  用户类别数: {num_classes}")
-    
-    # 动态获取模型信息
-    model_type = getattr(model_config, '__class__', type(model_config)).__name__
-    input_channels = getattr(model_config, 'in_channels', 'Unknown')
-    input_size = getattr(model_config, 'input_size', 'Unknown')
-    
-    print(f"\n🏗️  模型配置:")
-    print(f"  模型类型: {model_type}")
-    if input_size != 'Unknown':
-        print(f"  输入尺寸: {input_size}×{input_size} (潜空间)")
-    else:
-        print(f"  输入尺寸: 推断为16×16 (潜空间)")
-    print(f"  输入通道: {input_channels}")
-    print(f"  总参数量: {total_params:,}")
-    print(f"  可训练参数: {trainable_params:,}")
-    if hasattr(model_config, 'depth'):
-        print(f"  Transformer层数: {model_config.depth}")
-    if hasattr(model_config, 'hidden_size'):
-        print(f"  隐藏层维度: {model_config.hidden_size}")
-    if hasattr(model_config, 'num_heads'):
-        print(f"  注意力头数: {model_config.num_heads}")
-    
-    print(f"\n⚙️  训练配置:")
-    print(f"  训练轮数: {config['num_epochs']}")
-    print(f"  优化器: {optimizer.__class__.__name__}")
-    print(f"  学习率: {optimizer.param_groups[0]['lr']:.2e}")
-    print(f"  权重衰减: {optimizer.param_groups[0]['weight_decay']:.2e}")
-    print(f"  梯度裁剪: {config['gradient_clip_norm']}")
-    print(f"  数据加载器worker数: {config['num_workers']}")
-    print(f"  调度器: {scheduler.__class__.__name__}")
-    print(f"  混合精度: 启用")
-    
-    print(f"\n🔧 硬件配置:")
-    print(f"  GPU数量: {num_gpus}")
-    print(f"  并行方式: {'DataParallel' if num_gpus > 1 else 'Single GPU'}")
-    
-    print(f"\n📈 评估指标:")
-    print(f"  • 训练/验证损失")
-    print(f"  • 梯度范数")
-    print(f"  • 学习率变化")
-    print(f"  • 每秒处理样本数")
-    print(f"  • GPU内存使用率")
-    
-    print("="*80 + "\n")
-
-
-def calculate_metrics(model, loss, optimizer):
-    """计算训练质量评估指标"""
-    metrics = {}
-    
-    # 基础损失
-    metrics['loss'] = loss.item()
-    
-    # 梯度范数
-    total_norm = 0
-    param_count = 0
-    for p in model.parameters():
-        if p.grad is not None:
-            param_norm = p.grad.data.norm(2)
-            total_norm += param_norm.item() ** 2
-            param_count += 1
-    
-    if param_count > 0:
-        metrics['grad_norm'] = total_norm ** (1. / 2)
-    else:
-        metrics['grad_norm'] = 0.0
-    
-    # 学习率
-    metrics['lr'] = optimizer.param_groups[0]['lr']
-    
-    return metrics
-
-
-def train_dit_kaggle():
-    """Kaggle环境下的DiT微调训练 - 使用DataParallel"""
-    logger.info("开始Kaggle DiT微调训练...")
-    
-    # 检查GPU状态
-    if not torch.cuda.is_available():
-        raise RuntimeError("需要GPU进行训练")
-    
-    # 检测GPU数量
-    n_gpus = torch.cuda.device_count()
-    logger.info(f"检测到 {n_gpus} 个GPU")
-    
-    # 详细GPU信息
-    for i in range(n_gpus):
-        props = torch.cuda.get_device_properties(i)
-        logger.info(f"GPU {i}: {props.name}, 显存: {props.total_memory / 1024**3:.1f}GB")
-        torch.cuda.set_device(i)
-        torch.cuda.empty_cache()
-    
-    # 预处理：确保潜空间数据准备好
-    latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
-    if not latents_file.exists():
-        logger.info("预计算潜空间数据...")
-        prepare_latents_for_training()
-        logger.info("潜空间预计算完成")
-    
-    # 直接使用DataParallel训练，避免DDP的复杂性
-    train_with_dataparallel(n_gpus)
-
-
-def train_with_dataparallel(n_gpus):
-    """使用DataParallel进行训练"""
-    # 获取训练配置
-    config = get_training_config()
-    
-    # 设置主设备
-    device = torch.device('cuda:0')
-    torch.cuda.set_device(0)
-    
-    # 清理显存
-    for i in range(n_gpus):
-        torch.cuda.set_device(i)
-        torch.cuda.empty_cache()
-    torch.cuda.set_device(0)
-    
-    # 初始化VA-VAE用于样本生成（仅在需要时使用）
-    vae = None
-    
-    # 定义模型路径（全局使用）
-    vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
-    
-    # 加载配置
-    config_path = Path("../configs/microdoppler_finetune.yaml")
-    model_config = OmegaConf.load(config_path).model
-    
-    # 从配置文件获取潜空间信息
-    H_latent = model_config.params.latent_size
-    W_latent = model_config.params.latent_size  
-    C_latent = model_config.params.in_channels
-    
-    logger.info(f"潜空间维度: {H_latent}x{W_latent}x{C_latent}")
-    
-    # 自动检测数据集路径
-    possible_data_paths = [
-        "/kaggle/input/dataset",  # 标准Kaggle路径
-        "/kaggle/input/micro-doppler-data",  # 替代路径
-        "/kaggle/working/dataset",  # 工作目录
-        "./dataset",  # 本地路径
-    ]
-    
-    data_dir = None
-    for path in possible_data_paths:
-        if Path(path).exists():
-            data_dir = Path(path)
-            logger.info(f"找到数据集: {path}")
-            break
-    
-    if data_dir is None:
-        logger.error("未找到数据集！请检查以下路径:")
-        for path in possible_data_paths:
-            logger.error(f"  - {path}")
-        raise FileNotFoundError("Dataset not found")
-    
-    # 创建数据集
-    train_dataset = MicroDopplerLatentDataset(
-        data_dir=str(data_dir),
-        split='train'
-    )
-    
-    val_dataset = MicroDopplerLatentDataset(
-        data_dir=str(data_dir), 
-        split='val'
-    )
-    
-    # 创建数据加载器
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'] * n_gpus,  # 总batch size
-        shuffle=True,
-        num_workers=config['num_workers'],
-        pin_memory=True,
-        drop_last=True
-    )
-    
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'] * n_gpus,
-        shuffle=False,
-        num_workers=config['num_workers'],
-        pin_memory=True
-    )
-    
-    # ===== 模型加载检查 =====
-    print("\n" + "="*80)
-    print("🔍 模型加载状态检查")
-    print("="*80)
-    
-    # 检查LightningDiT模型
-    pretrained_xl = "/kaggle/working/VA-VAE/LightningDiT/models/lightningdit-xl-imagenet256-64ep.pt"
-    if os.path.exists(pretrained_xl):
-        print(f"✅ 找到LightningDiT-XL模型: {pretrained_xl}")
-        size_gb = os.path.getsize(pretrained_xl) / (1024**3)
-        print(f"   模型大小: {size_gb:.2f} GB")
-        if size_gb < 5:
-            print(f"   ⚠️ 模型文件可能不完整（预期约10.8GB）")
-    else:
-        print("❌ 未找到LightningDiT-XL模型！")
-        print(f"   请确保文件存在: {pretrained_xl}")
-        print("   运行 python step2_download_models.py 下载模型")
-        
-    # 检查VA-VAE模型  
-    if os.path.exists(vae_checkpoint):
-        print(f"✅ 找到VA-VAE模型: {vae_checkpoint}")
-        size_mb = os.path.getsize(vae_checkpoint) / (1024 * 1024)
-        print(f"   模型大小: {size_mb:.2f} MB")
-    else:
-        print("❌ 未找到VA-VAE模型！")
-        print(f"   请确保文件存在: {vae_checkpoint}")
-    print("="*80)
-    
-    # 创建模型 - 改用XL模型匹配预训练权重
-    print("\n🏗️ 创建LightningDiT-XL模型（匹配预训练权重）...")
-    from models.lightningdit import LightningDiT_XL_1
-    model = LightningDiT_XL_1(
-        input_size=H_latent,
-        in_channels=C_latent,
-        num_classes=31,  # 31个用户，模型会自动添加CFG token
-        use_qknorm=False,
-        use_swiglu=True,  
-        use_rope=True,
-        use_rmsnorm=True
-    ).to(device)
-    
     logger.info(f"✅ 模型创建完成")
     logger.info(f"   参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     
-    # ===== 加载预训练权重 =====
-    print("\n🔄 加载LightningDiT预训练权重...")
-    if os.path.exists(pretrained_xl):
-        print(f"   从: {pretrained_xl}")
-        checkpoint = torch.load(pretrained_xl, map_location='cpu')
-        state_dict = checkpoint.get('model', checkpoint)
-        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-        
-        # 只加载兼容的权重
-        compatible = {}
-        model_state = model.state_dict()
-        for k, v in state_dict.items():
-            if k in model_state and v.shape == model_state[k].shape:
-                compatible[k] = v
-        
-        if compatible:
-            model.load_state_dict(compatible, strict=False)
-            match_rate = len(compatible)/len(model_state)*100
-            print(f"✅ 成功加载 {len(compatible)}/{len(state_dict)} 个权重")
-            print(f"   匹配率: {match_rate:.1f}% ({len(compatible)}/{len(model_state)})")
-            if match_rate < 50:
-                print(f"   ⚠️ 匹配率较低，可能影响生成质量")
-        else:
-            print("❌ 没有找到兼容的权重！模型将使用随机初始化")
-            print("   这会导致生成纯噪声图像")
-    else:
-        print(f"❌ 预训练模型不存在: {pretrained_xl}")
-        print("   模型将使用随机初始化，生成质量会很差")
-    
-    # DataParallel包装
-    if n_gpus > 1:
-        logger.info(f"🔗 使用 DataParallel 在 {n_gpus} 个GPU上训练")
-        model = nn.DataParallel(model, device_ids=list(range(n_gpus)))
+    # ===== 3. 初始化训练组件 =====
+    logger.info("\n=== 初始化训练组件 ===")
     
     # 创建EMA模型 - 用于稳定生成质量
     from copy import deepcopy
@@ -1079,10 +439,66 @@ def train_with_dataparallel(n_gpus):
     # 混合精度训练
     scaler = torch.cuda.amp.GradScaler(init_scale=65536.0, growth_interval=2000)
     
-    # 打印配置信息
-    print_training_config(model, optimizer, scheduler, config, 
-                         len(train_dataset), len(val_dataset), n_gpus, train_dataset)
+    # 自动检测数据集路径
+    possible_data_paths = [
+        "/kaggle/input/dataset",
+        "/kaggle/input/micro-doppler-data",
+        "./dataset",
+    ]
     
+    data_dir = None
+    for path in possible_data_paths:
+        if Path(path).exists():
+            data_dir = Path(path)
+            logger.info(f"找到数据集: {path}")
+            break
+    
+    if data_dir is None:
+        logger.error("未找到数据集！请检查路径")
+        raise FileNotFoundError("Dataset not found")
+    
+    # 创建数据集
+    train_dataset = MicroDopplerLatentDataset(data_dir, split='train')
+    val_dataset = MicroDopplerLatentDataset(data_dir, split='val')
+    
+    logger.info(f"训练集: {len(train_dataset)} 样本")
+    logger.info(f"验证集: {len(val_dataset)} 样本")
+    
+    # 创建数据加载器
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['batch_size'],
+        shuffle=True,
+        num_workers=config['num_workers'],
+        pin_memory=config['pin_memory'],
+        persistent_workers=config['persistent_workers']
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config['batch_size'],
+        shuffle=False,
+        num_workers=config['num_workers'],
+        pin_memory=config['pin_memory'],
+        persistent_workers=config['persistent_workers']
+    )
+    
+    # 打印训练信息
+    logger.info("\n" + "="*60)
+    logger.info("📊 训练信息总览")
+    logger.info("="*60)
+    logger.info(f"模型: LightningDiT-L (1024维, 24层)")
+    logger.info(f"参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    logger.info(f"训练集: {len(train_dataset)} 样本")
+    logger.info(f"验证集: {len(val_dataset)} 样本")
+    logger.info(f"批次大小: {config['batch_size']}")
+    logger.info(f"梯度累积: {config['gradient_accumulation_steps']} 步")
+    logger.info(f"有效批次: {config['batch_size'] * config['gradient_accumulation_steps']}")
+    logger.info(f"训练轮数: {config['num_epochs']}")
+    logger.info(f"GPU数量: {num_gpus}")
+    logger.info("="*60)
+    
+    # ===== 5. 开始训练 =====
     # 训练循环
     best_val_loss = float('inf')
     train_metrics_history = []
@@ -1217,7 +633,7 @@ def train_with_dataparallel(n_gpus):
         
         # GPU使用情况
         print("\n🖥️ GPU资源使用:")
-        for i in range(n_gpus):
+        for i in range(num_gpus):
             mem_allocated = torch.cuda.memory_allocated(i) / 1024**3
             mem_reserved = torch.cuda.memory_reserved(i) / 1024**3
             print(f"  GPU {i}:")
@@ -1325,7 +741,7 @@ def train_with_dataparallel(n_gpus):
                     print("  • VA-VAE初始化完成（使用Stage 3微调模型）")
                 
                 # 使用EMA模型生成样本（质量更好）
-                generate_conditional_samples(ema_model, vae, transport, device, epoch+1, n_gpus, config)
+                generate_conditional_samples(ema_model, vae, transport, device, epoch+1, num_gpus, config)
                 print("  • 条件样本生成完成\n")
             except Exception as e:
                 print(f"  ⚠️ 条件样本生成失败: {e}")
@@ -1347,7 +763,7 @@ def train_with_dataparallel(n_gpus):
             
             # 保存新的最佳模型
             best_model_path = Path("/kaggle/working") / f"best_dit_epoch_{epoch+1}.pt"
-            model_state = model.module.state_dict() if n_gpus > 1 else model.state_dict()
+            model_state = model.module.state_dict() if num_gpus > 1 else model.state_dict()
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model_state,
@@ -1361,7 +777,7 @@ def train_with_dataparallel(n_gpus):
     
     # 保存最终模型
     final_model_path = Path("/kaggle/working") / "final_dit_model.pt"
-    model_state = model.module.state_dict() if n_gpus > 1 else model.state_dict()
+    model_state = model.module.state_dict() if num_gpus > 1 else model.state_dict()
     torch.save({
         'model_state_dict': model_state,
         'optimizer_state_dict': optimizer.state_dict(),
@@ -1467,7 +883,7 @@ def prepare_latents_for_training():
 # DDP训练函数已删除，改用DataParallel
 
 
-def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus, config=None):
+def generate_conditional_samples(model, vae, transport, device, epoch, num_gpus, config=None):
     """生成条件扩散样本用于验证条件控制能力
     
     采样技术说明：
@@ -1500,7 +916,7 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus, c
             z = torch.randn(samples_per_user, 32, 16, 16, device=device)
             
             # 生成样本 - 使用CFG增强条件控制
-            actual_model = model.module if n_gpus > 1 else model
+            actual_model = model.module if num_gpus > 1 else model
             
             # CFG采样：同时计算条件和无条件
             cfg_scale = config.get('cfg_scale', 10.0)  # 官方推荐CFG=10.0
@@ -1626,7 +1042,7 @@ def main():
     logger.info(f"Detected {num_gpus} GPU(s)")
     
     # Kaggle T4x2使用DataParallel，不使用分布式训练
-    train_dit_kaggle()
+    train_dit()
 
 if __name__ == "__main__":
     main()
