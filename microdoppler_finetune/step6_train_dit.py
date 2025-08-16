@@ -914,8 +914,8 @@ def train_with_dataparallel(n_gpus):
         
         with tqdm(val_loader, desc=f"Epoch {epoch+1}/{config['num_epochs']} [Val]") as pbar:
             for batch in pbar:
-                latents = batch['latent'].to(device)
-                user_ids = batch['user_id'].to(device)
+                latents = batch[0].to(device)
+                user_ids = batch[1].to(device)
                 
                 with torch.no_grad():
                     # 传递条件信息
