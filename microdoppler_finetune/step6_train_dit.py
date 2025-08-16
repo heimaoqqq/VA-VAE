@@ -349,6 +349,8 @@ def train_dit():
         logger.error("请确保在Kaggle中添加以下数据集之一：")
         logger.error("  1. 包含lightningdit-xl-imagenet256-64ep.pt的数据集")
         logger.error("  2. 或下载: https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/")
+        logger.error("❌❌❌ 训练将立即停止以避免时间浪费！❌❌❌")
+        logger.error("📌 请先修复 step2_download_models.py 然后重新下载模型")
         raise ValueError("必须加载预训练权重才能正常训练！")
     
     model.to(device)
