@@ -1234,30 +1234,6 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
                 'epoch': epoch
             }, latent_path)
             logger.info(f"  • 潜空间样本保存到: {latent_path}")
-        model_kwargs = {"y": user_ids}
-        
-        # 使用DDIM采样
-        samples = transport.sample_with_model_kwargs(
-            model, z, model_kwargs, 
-            steps=50,  # 采样步数
-            eta=0.0,   # DDIM确定性采样
-            guidance_scale=2.0  # CFG强度
-        )
-        
-        # 解码到图像空间
-        images = vae.decode(samples)
-        images = (images + 1) / 2  # [-1,1] -> [0,1]
-        images = images.clamp(0, 1)
-        
-        # 保存图像
-        save_dir = Path("outputs/samples")
-        save_dir.mkdir(parents=True, exist_ok=True)
-        
-        for i, img in enumerate(images):
-            img_pil = Image.fromarray((img.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8))
-            img_pil.save(save_dir / f"epoch{epoch}_user{user_ids[i].item()}.png")
-        
-        logger.info(f"Saved {num_samples} samples to {save_dir}")
 
 
 def main():
