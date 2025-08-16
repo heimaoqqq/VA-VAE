@@ -458,10 +458,14 @@ def train_dit(rank=0, world_size=1):
             
             # 梯度裁剪
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'])
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'])
             
             scaler.step(optimizer)
             scaler.update()
+            
+            # 定期清理显存缓存
+            if batch_idx % 50 == 0:
+                torch.cuda.empty_cache()
             
             # 更新EMA（只在主进程）
             if is_main_process():
@@ -652,14 +656,15 @@ def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
 def get_training_config():
     """获取训练配置参数"""
     return {
-        'batch_size': 4,           # 每GPU批次大小
+        'batch_size': 2,           # 每GPU批次大小（减少显存占用）
         'num_epochs': 25,          # 训练轮数
         'learning_rate': 1e-4,     # 学习率
         'weight_decay': 0.01,      # 权重衰减
-        'num_workers': 2,          # 数据加载器worker数
+        'num_workers': 1,          # 数据加载器worker数（减少CPU内存）
         'patience': 5,             # 早停耐心
         'gradient_clip_norm': 1.0, # 梯度裁剪
         'warmup_steps': 100,       # 学习率预热步数
+        'gradient_checkpointing': True,  # 启用梯度检查点
     }
 
 def print_training_config(model, optimizer, scheduler, config, 
@@ -808,7 +813,20 @@ def train_worker(rank, world_size):
     # 设备设置
     device = torch.device(f'cuda:{rank}')
     torch.cuda.set_device(rank)
+    
+    # 清理CUDA缓存
+    torch.cuda.empty_cache()
+    
+    # 显存使用优化
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+    
     logger.info(f"进程 {rank}: 使用设备 {device}")
+    
+    # 检查初始显存状态
+    if rank == 0:
+        initial_memory = torch.cuda.memory_allocated(device) / 1024**3
+        logger.info(f"初始显存使用: {initial_memory:.2f}GB")
     
     # 修正配置中的checkpoint路径为微调模型
     logger.info("准备VA-VAE配置...")
@@ -877,16 +895,31 @@ def train_worker(rank, world_size):
     if rank == 0:
         logger.info("初始化DiT模型...")
     
-    from models.lightningdit import LightningDiT_models
     from transport import create_transport
+    from models.lightningdit import LightningDiT
     
-    model = LightningDiT_models["LightningDiT-XL/1"](
-        input_size=16,  # 256/16=16 for 16x downsampling
-        num_classes=31,  # 31个用户
-        in_channels=32  # VA-VAE潜空间通道数
-    )
+    model = LightningDiT(
+        input_size=16,
+        patch_size=1,
+        in_channels=32,
+        hidden_size=1152,
+        depth=28,
+        num_heads=16,
+        mlp_ratio=4.0,
+        class_dropout_prob=0.1,
+        num_classes=31,
+        learn_sigma=False
+    ).to(device)
     
-    model = model.to(device)
+    # 启用梯度检查点以节省显存
+    if config.get('gradient_checkpointing', False):
+        if hasattr(model, 'enable_input_require_grads'):
+            model.enable_input_require_grads()
+        # 为transformer层启用梯度检查点
+        if hasattr(model, 'blocks'):
+            for block in model.blocks:
+                if hasattr(block, 'checkpoint'):
+                    block.checkpoint = True
     
     # DDP包装
     if world_size > 1:
@@ -924,8 +957,17 @@ def train_worker(rank, world_size):
         print_training_config(model, optimizer, scheduler, config, 
                              len(train_dataset), len(val_dataset), world_size, train_dataset)
     
-    # 混合精度训练
-    scaler = torch.cuda.amp.GradScaler()
+    # 混合精度训练（使用更积极的缩放策略）
+    scaler = torch.cuda.amp.GradScaler(
+        init_scale=1024.0,  # 降低初始缩放
+        growth_factor=1.1,   # 减少增长因子
+        backoff_factor=0.8   # 增加回退因子
+    )
+    
+    # 显存监控
+    if rank == 0:
+        model_memory = torch.cuda.memory_allocated(device) / 1024**3
+        logger.info(f"模型加载后显存: {model_memory:.2f}GB")
     
     # 训练循环
     best_val_loss = float('inf')
@@ -985,7 +1027,7 @@ def train_worker(rank, world_size):
             
             # 统计
             train_loss += loss.item()
-            train_grad_norm += grad_norm.item()
+            train_grad_norm += grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm
             train_steps += 1
             train_samples += latents.size(0)
             
@@ -994,12 +1036,19 @@ def train_worker(rank, world_size):
                 current_lr = optimizer.param_groups[0]['lr']
                 samples_per_sec = latents.size(0) / (time.time() - batch_start_time)
                 
+                # 显存监控
+                current_memory = torch.cuda.memory_allocated(device) / 1024**3
+                
                 pbar.set_postfix({
                     'loss': f'{loss.item():.4f}',
-                    'grad': f'{grad_norm:.3f}',
                     'lr': f'{current_lr:.2e}',
-                    'sps': f'{samples_per_sec:.1f}'
+                    'sps': f'{samples_per_sec:.1f}',
+                    'mem': f'{current_memory:.1f}GB'
                 })
+                
+                # 显存警告
+                if current_memory > 13.0:  # T4总显存约14.7GB，警告阈值13GB
+                    logger.warning(f"显存使用过高: {current_memory:.2f}GB")
         
         # 训练阶段统计
         avg_train_loss = train_loss / train_steps
