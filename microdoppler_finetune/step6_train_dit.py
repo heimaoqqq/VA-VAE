@@ -793,6 +793,9 @@ def train_dit_kaggle():
 def train_worker(rank, world_size):
     """DDP训练工作进程"""
     
+    # 获取训练配置
+    config = get_training_config()
+    
     # 初始化分布式环境
     if world_size > 1:
         os.environ['MASTER_ADDR'] = 'localhost'
@@ -828,16 +831,6 @@ def train_worker(rank, world_size):
     # 同步所有进程
     if world_size > 1:
         torch.distributed.barrier()
-    
-    # 初始化VA-VAE（只在rank 0预计算潜空间）
-    if rank == 0:
-        logger.info("加载VA-VAE...")
-        vae = VA_VAE(str(vae_config_path), img_size=256, horizon_flip=False, fp16=True)
-        logger.info("VA-VAE加载完成")
-        
-        # 预计算潜空间
-        data_dir = Path("/kaggle/input/dataset")
-        latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
     
     # 创建数据集
     data_dir = Path("/kaggle/input/dataset")
