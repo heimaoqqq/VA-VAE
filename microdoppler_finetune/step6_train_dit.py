@@ -183,7 +183,12 @@ class MicroDopplerLatentDataset(Dataset):
             
             # 潜空间归一化
             if self.latent_norm and self.latent_mean is not None:
+                # 确保维度匹配
+                if latent.dim() == 3 and self.latent_mean.dim() == 4:
+                    latent = latent.unsqueeze(0)  # 添加batch维度
                 latent = (latent - self.latent_mean) / self.latent_std
+                if latent.dim() == 4 and latent.shape[0] == 1:
+                    latent = latent.squeeze(0)  # 移除临时batch维度
         else:
             # 实时编码（需要VAE模型）
             img_path = self.image_paths[real_idx]
@@ -643,6 +648,180 @@ def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
     logger.info(f"验证: 加载了 {len(test_data['latents'])} 个样本")
 
 
+def train_dit_kaggle():
+    """Kaggle T4x2优化的训练函数 - 使用DataParallel"""
+    
+    # 设备设置
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Using device: {device}")
+    
+    # 初始化VA-VAE
+    logger.info("加载VA-VAE...")
+    vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
+    vae = VA_VAE(str(vae_config_path), img_size=256, horizon_flip=False, fp16=True)
+    
+    # 修正配置中的checkpoint路径
+    with open(vae_config_path, 'r') as f:
+        config_content = f.read()
+    
+    if '/kaggle/input/vavae-pretrained/vavae-ema.pt' not in config_content:
+        config_content = config_content.replace(
+            'ckpt_path: "ckpt_path"',
+            'ckpt_path: "/kaggle/input/vavae-pretrained/vavae-ema.pt"'
+        )
+        with open(vae_config_path, 'w') as f:
+            f.write(config_content)
+    
+    logger.info("VA-VAE加载完成")
+    
+    # 数据集准备
+    data_dir = Path("/kaggle/input/dataset")
+    latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
+    
+    # 预计算潜空间
+    if not latents_file.exists():
+        logger.info("预计算潜空间表示...")
+        encode_dataset_to_latents(vae, data_dir, device)
+    
+    # 创建数据集
+    train_dataset = MicroDopplerLatentDataset(data_dir, split='train')
+    val_dataset = MicroDopplerLatentDataset(data_dir, split='val')
+    
+    # 数据加载器（Kaggle T4x2优化）
+    batch_size = 4  # 适合T4内存
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=2,  # Kaggle环境优化
+        pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2,
+        pin_memory=True
+    )
+    
+    logger.info(f"训练样本: {len(train_dataset)}, 验证样本: {len(val_dataset)}")
+    
+    # 初始化模型
+    logger.info("初始化DiT模型...")
+    from models.lightningdit import LightningDiT_models
+    from transport import create_transport
+    
+    model = LightningDiT_models["LightningDiT-XL/1"](
+        input_size=16,  # 256/16=16 for 16x downsampling
+        num_classes=31,  # 31个用户
+        in_chans=32     # VA-VAE潜空间通道数
+    )
+    
+    # Kaggle多GPU：使用DataParallel
+    if torch.cuda.device_count() > 1:
+        logger.info(f"Using DataParallel with {torch.cuda.device_count()} GPUs")
+        model = torch.nn.DataParallel(model)
+    
+    model = model.to(device)
+    
+    # Transport配置
+    transport = create_transport(
+        path_type='Linear',
+        prediction='velocity',
+        loss_weight=None,
+        use_cosine_loss=True,
+        use_lognorm=True
+    )
+    
+    # 优化器和调度器
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=25)
+    
+    # 混合精度训练
+    scaler = torch.cuda.amp.GradScaler()
+    
+    # 训练循环
+    num_epochs = 25
+    best_val_loss = float('inf')
+    
+    for epoch in range(num_epochs):
+        # 训练
+        model.train()
+        train_loss = 0
+        train_steps = 0
+        
+        pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}/{num_epochs} [Train]')
+        for batch_idx, batch in enumerate(pbar):
+            latents = batch[0].to(device)
+            user_ids = batch[1].to(device)
+            
+            # 调试：检查第一个batch的shape
+            if epoch == 0 and batch_idx == 0:
+                logger.info(f"调试信息:")
+                logger.info(f"  潜空间shape: {latents.shape}")
+                logger.info(f"  用户ID shape: {user_ids.shape}")
+                logger.info(f"  潜空间数据类型: {latents.dtype}")
+                logger.info(f"  潜空间数值范围: [{latents.min():.3f}, {latents.max():.3f}]")
+            
+            # 前向传播
+            with torch.cuda.amp.autocast():
+                model_kwargs = {"y": user_ids}
+                loss_dict = transport.training_losses(model, latents, model_kwargs)
+                loss = loss_dict["loss"].mean()
+            
+            # 反向传播
+            optimizer.zero_grad()
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            
+            train_loss += loss.item()
+            train_steps += 1
+            
+            pbar.set_postfix({'loss': f'{loss.item():.4f}'})
+        
+        avg_train_loss = train_loss / train_steps
+        
+        # 验证
+        model.eval()
+        val_loss = 0
+        val_steps = 0
+        
+        with torch.no_grad():
+            for batch in val_loader:
+                latents = batch[0].to(device)
+                user_ids = batch[1].to(device)
+                
+                with torch.cuda.amp.autocast():
+                    model_kwargs = {"y": user_ids}
+                    loss_dict = transport.training_losses(model, latents, model_kwargs)
+                    loss = loss_dict["loss"].mean()
+                
+                val_loss += loss.item()
+                val_steps += 1
+        
+        avg_val_loss = val_loss / val_steps
+        scheduler.step()
+        
+        logger.info(f"Epoch {epoch+1}/{num_epochs}: Train={avg_train_loss:.4f}, Val={avg_val_loss:.4f}")
+        
+        # 保存最佳模型
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            checkpoint_path = Path("/kaggle/working") / f"dit_best_epoch{epoch+1}.pt"
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': avg_val_loss,
+            }, checkpoint_path)
+            logger.info(f"保存最佳模型: {checkpoint_path}")
+    
+    logger.info("训练完成！")
+
+
 def generate_samples(model, vae, transport, device, epoch):
     """生成样本用于可视化"""
     model.eval()
@@ -682,7 +861,7 @@ def generate_samples(model, vae, transport, device, epoch):
 
 
 def main():
-    """主函数 - 处理分布式训练启动（Kaggle优化）"""
+    """主函数 - Kaggle T4x2优化版本"""
     # Kaggle环境GPU检查
     if not torch.cuda.is_available():
         logger.error("CUDA not available! Please enable GPU accelerator in Kaggle.")
@@ -691,30 +870,8 @@ def main():
     world_size = torch.cuda.device_count()
     logger.info(f"Detected {world_size} GPU(s)")
     
-    # Kaggle双GPU特殊配置
-    if world_size > 1:
-        # Kaggle T4x2需要特殊的环境变量
-        os.environ['NCCL_DEBUG'] = 'WARN'
-        os.environ['NCCL_IB_DISABLE'] = '1'
-        os.environ['NCCL_P2P_DISABLE'] = '1'
-        os.environ['NCCL_SOCKET_IFNAME'] = 'lo'
-        
-        # 使用较短的超时时间快速失败
-        os.environ['NCCL_TIMEOUT'] = '10'
-        
-        logger.info(f"Using {world_size} GPUs with Kaggle optimizations")
-        try:
-            mp.spawn(train_dit, 
-                    args=(world_size,),
-                    nprocs=world_size,
-                    join=True)
-        except Exception as e:
-            logger.error(f"多GPU训练失败: {e}")
-            logger.info("回退到单GPU训练...")
-            train_dit(0, 1)
-    else:
-        logger.info("Using single GPU")
-        train_dit(0, 1)
+    # Kaggle T4x2使用DataParallel，不使用分布式训练
+    train_dit_kaggle()
 
 if __name__ == "__main__":
     main()
