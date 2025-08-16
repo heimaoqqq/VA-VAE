@@ -88,9 +88,9 @@ def download_vavae_models():
     # 只需要LightningDiT模型（VA-VAE使用微调后的）
     models = {
         "LightningDiT XL": {
-            "url": "https://huggingface.co/hustvl/LightningDiT/resolve/main/lightningdit-xl-imagenet256-64ep.pt",
+            "url": "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/resolve/main/lightningdit-xl-imagenet256-64ep.pt",
             "filename": "lightningdit-xl-imagenet256-64ep.pt",
-            "size_mb": 700,
+            "size_mb": 10800,  # 实际文件大小约10.8GB
             "description": "LightningDiT-XL预训练权重 (ImageNet 256x256)",
             "required": True,
             "dest_dir": lightningdit_models_dir
@@ -119,11 +119,16 @@ def download_vavae_models():
     total_size = 0
     for name, info in models.items():
         status = "必需" if info['required'] else "可选"
-        print(f"   {name}: {info['description']} ({info['size_mb']} MB) [{status}]")
+        size_display = f"{info['size_mb'] / 1024:.1f} GB" if info['size_mb'] > 1024 else f"{info['size_mb']} MB"
+        print(f"   {name}: {info['description']} ({size_display}) [{status}]")
         if info['required']:
             total_size += info['size_mb']
     
-    print(f"\n💾 总下载大小: ~{total_size} MB")
+    total_size_gb = total_size / 1024 if total_size > 1024 else 0
+    if total_size_gb > 1:
+        print(f"\n💾 总下载大小: ~{total_size_gb:.1f} GB")
+    else:
+        print(f"\n💾 总下载大小: ~{total_size} MB")
     
     # 下载模型
     success_count = 0
