@@ -1043,10 +1043,10 @@ def train_with_dataparallel(n_gpus):
         
         print("="*80)
         
-        # 每5个epoch生成条件扩散样本
-        if (epoch + 1) % 5 == 0:
+        # 每个epoch生成条件扩散样本
+        if True:  # 每个epoch都生成
             print("\n" + "="*80)
-            print(f"🎨 Epoch {epoch + 1}: 生成条件扩散样本...")
+            print(f"🎨 Epoch {epoch + 1}: 生成条件扩散样本（使用微调后的VA-VAE）...")
             print("="*80)
             
             try:
@@ -1054,13 +1054,15 @@ def train_with_dataparallel(n_gpus):
                 if vae is None:
                     print("  • 初始化VA-VAE用于样本解码...")
                     from tokenizer.vavae import VA_VAE
+                    # 使用微调好的VA-VAE模型
                     vae_config_path = Path("/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml")
                     vae_config = OmegaConf.load(str(vae_config_path))
+                    # 确认使用Stage 3微调后的模型
                     vae_config.ckpt_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
                     temp_config_path = Path("/kaggle/working/temp_vae_config.yaml")
                     OmegaConf.save(vae_config, str(temp_config_path))
                     vae = VA_VAE(str(temp_config_path), img_size=256, horizon_flip=False, fp16=True)
-                    print("  • VA-VAE初始化完成")
+                    print("  • VA-VAE初始化完成（使用Stage 3微调模型）")
                 
                 generate_conditional_samples(model, vae, transport, device, epoch + 1, n_gpus)
                 print("  • 条件样本生成完成\n")
@@ -1235,7 +1237,11 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
             
             # 解码
             print(f"    • 开始VA-VAE解码...")
-            images = vae.decode(samples_cuda0)
+            # VA_VAE使用decode_to_images方法，返回numpy数组
+            images_np = vae.decode_to_images(samples_cuda0)
+            # 转换为torch tensor并调整范围到[-1, 1]
+            images = torch.from_numpy(images_np).float() / 127.5 - 1.0
+            images = images.permute(0, 3, 1, 2)  # NHWC -> NCHW
             print(f"    • 解码完成，图像形状: {images.shape}")
             
             # 保存图像
