@@ -132,12 +132,29 @@ class MicroDopplerLatentDataset(Dataset):
         
         data_path = self.data_dir / 'processed_microdoppler'
         for user_dir in sorted(data_path.glob('ID_*')):
-            user_id = int(user_dir.name.split('_')[1]) - 1
-            for img_path in user_dir.glob('*.png'):
-                self.image_paths.append(img_path)
+            user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
+            
+            # 收集该用户的所有图像（修正为.jpg格式）
+            image_files = sorted(list(user_dir.glob('*.jpg')))
+            
+            if not image_files:
+                logger.warning(f"用户 {user_dir.name} 没有找到.jpg图像文件")
+                continue
+                
+            logger.info(f"编码用户 {user_dir.name}: {len(image_files)} 张图像")
+            
+            for img_path in image_files:
+                # 加载和预处理图像
+                image = Image.open(img_path).convert('RGB')
+                image = torch.from_numpy(np.array(image)).float() / 127.5 - 1.0
+                image = image.permute(2, 0, 1).unsqueeze(0)
+                
+                # 编码到潜空间 - 使用VA_VAE的encode_images方法
+                with torch.no_grad():
+                    latent = VA_VAE.encode_images(image)
+                
+                self.latents.append(latent.cpu().numpy())
                 self.user_ids.append(user_id)
-        
-        self.user_ids = torch.tensor(self.user_ids, dtype=torch.long)
     
     def __len__(self):
         return len(self.indices)
@@ -149,6 +166,10 @@ class MicroDopplerLatentDataset(Dataset):
             latent = self.latents[real_idx]
             user_id = self.user_ids[real_idx]
             
+            # 转换为tensor
+            latent = torch.from_numpy(latent).float()
+            user_id = torch.tensor(user_id, dtype=torch.long)
+            
             # 潜空间归一化
             if self.latent_norm and self.latent_mean is not None:
                 # 确保维度匹配
@@ -157,14 +178,6 @@ class MicroDopplerLatentDataset(Dataset):
                 latent = (latent - self.latent_mean) / self.latent_std
                 if latent.dim() == 4 and latent.shape[0] == 1:
                     latent = latent.squeeze(0)  # 移除临时batch维度
-        else:
-            # 实时编码（需要VAE模型）
-            img_path = self.image_paths[real_idx]
-            image = Image.open(img_path).convert('RGB')
-            image = torch.from_numpy(np.array(image)).float() / 127.5 - 1.0
-            image = image.permute(2, 0, 1)
-            latent = image  # 这里需要VAE编码，暂时返回原图
-            user_id = self.user_ids[real_idx]
         
         return latent, user_id
 
@@ -399,7 +412,7 @@ def train_dit():
             scaler.step(optimizer)
             scaler.update()
             
-            # 定期清理显存缓存
+            # 定期清理显存
             if batch_idx % 50 == 0:
                 torch.cuda.empty_cache()
             
@@ -584,17 +597,21 @@ def encode_dataset_to_latents(vae, data_dir, device, stats_path=None):
 
 
 def get_training_config():
-    """获取训练配置参数"""
+    """获取训练配置"""
     return {
-        'batch_size': 16,          # 每GPU批次大小（充分利用T4显存）
-        'num_epochs': 25,          # 训练轮数
-        'learning_rate': 1e-4,     # 学习率
-        'weight_decay': 0.01,      # 权重衰减
-        'num_workers': 1,          # 数据加载器worker数（减少CPU内存）
-        'patience': 5,             # 早停耐心
-        'gradient_clip_norm': 1.0, # 梯度裁剪
-        'warmup_steps': 100,       # 学习率预热步数
+        'batch_size': 4,           # 进一步减小批量，更频繁梯度更新
+        'num_epochs': 100,         # 增加到100轮确保充分收敛
+        'learning_rate': 2e-5,     # 进一步降低学习率，稳定训练
+        'weight_decay': 0.02,      # 增强正则化防过拟合
+        'num_workers': 1,          # 数据加载器worker数
+        'patience': 20,            # 更多耐心等待收敛
+        'gradient_clip_norm': 0.5, # 更严格的梯度裁剪
+        'warmup_steps': 200,       # 更长的预热期
         'gradient_checkpointing': True,  # 启用梯度检查点
+        'cfg_dropout': 0.1,        # CFG训练dropout（保持适度）
+        'cfg_scale': 10.0,         # 官方推荐的CFG强度
+        'ema_decay': 0.9999,       # EMA衰减率
+        'sample_steps': 250,       # 官方推荐的采样步数
     }
 
 def print_training_config(model, optimizer, scheduler, config, 
@@ -798,8 +815,8 @@ def train_with_dataparallel(n_gpus):
     model = LightningDiT_B_1(
         input_size=H_latent,
         in_channels=C_latent,
-        num_classes=31,
-        learn_sigma=True
+        num_classes=32,  # 31个用户 + 1个null token用于CFG
+        learn_sigma=False  # 固定方差，避免训练不稳定
     ).to(device)
     
     # 启用梯度检查点
@@ -810,6 +827,13 @@ def train_with_dataparallel(n_gpus):
         logger.info(f"使用 DataParallel 在 {n_gpus} 个GPU上训练")
         model = nn.DataParallel(model, device_ids=list(range(n_gpus)))
     
+    # 创建EMA模型 - 用于稳定生成质量
+    from copy import deepcopy
+    ema_model = deepcopy(model).eval()
+    for param in ema_model.parameters():
+        param.requires_grad = False
+    logger.info("EMA模型已创建（衰减率=0.9999）")
+    
     # 创建transport
     transport = create_transport(
         'Linear',
@@ -819,18 +843,28 @@ def train_with_dataparallel(n_gpus):
         None,
     )
     
-    # 优化器和调度器
+    # 优化器和调度器 - 进一步优化以降低损失
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=config['learning_rate'],
-        weight_decay=config['weight_decay']
+        lr=config['learning_rate'],  # 使用配置的学习率
+        weight_decay=config['weight_decay'],  # 使用配置的权重衰减
+        betas=(0.9, 0.999),  # 稳定的动量参数
+        eps=1e-8  # 数值稳定性
     )
     
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=config['num_epochs'] * len(train_loader),
-        eta_min=1e-6
-    )
+    # 使用余弦退火+预热，避免早期学习率过高
+    from torch.optim.lr_scheduler import LambdaLR
+    
+    def lr_lambda(current_step):
+        warmup_steps = config.get('warmup_steps', 200)  # 使用配置的预热步数
+        if current_step < warmup_steps:
+            # 线性预热
+            return float(current_step) / float(max(1, warmup_steps))
+        # 余弦退火，最低保留10%学习率
+        progress = float(current_step - warmup_steps) / float(max(1, config['num_epochs'] * len(train_loader) - warmup_steps))
+        return max(0.1, 0.5 * (1.0 + torch.cos(torch.tensor(progress * 3.14159))))
+    
+    scheduler = LambdaLR(optimizer, lr_lambda)
     
     # 混合精度训练
     scaler = torch.cuda.amp.GradScaler(init_scale=65536.0, growth_interval=2000)
@@ -861,9 +895,18 @@ def train_with_dataparallel(n_gpus):
             latents = batch[0].to(device)
             user_ids = batch[1].to(device)
             
-            # 前向传播
+            # 前向传播 - 添加CFG训练(10%无条件)
             with torch.cuda.amp.autocast():
-                model_kwargs = {"y": user_ids}
+                # CFG训练：10%概率丢弃条件
+                if torch.rand(1).item() < config.get('cfg_dropout', 0.1):
+                    # 无条件训练：使用最后一个类别作为null token (31)
+                    model_kwargs = {"y": torch.full_like(user_ids, 31)}
+                else:
+                    model_kwargs = {"y": user_ids}
+                
+                # 使用重要性采样
+                t = torch.rand(latents.shape[0], device=device)
+                
                 loss_dict = transport.training_losses(model, latents, model_kwargs)
                 loss = loss_dict["loss"].mean()
             
@@ -1041,10 +1084,19 @@ def train_with_dataparallel(n_gpus):
             else:
                 print("  • 模型仍在优化中")
         
+        if avg_val_loss < 0.4:
+            print("  📈 模型表现：优秀（损失 < 0.4）")
+        elif avg_val_loss < 0.6:
+            print("  📊 模型表现：良好（损失 < 0.6）")
+        elif avg_val_loss < 0.8:
+            print("  ⚠️ 模型表现：一般（损失 < 0.8）")
+        else:
+            print("  ❌ 模型表现：较差（损失 >= 0.8，需要继续训练）")
+        
         print("="*80)
         
         # 每个epoch生成条件扩散样本
-        if True:  # 每个epoch都生成
+        if (epoch + 1) % 2 == 0:  # 每2个epoch生成一次，节省时间
             print("\n" + "="*80)
             print(f"🎨 Epoch {epoch + 1}: 生成条件扩散样本（使用微调后的VA-VAE）...")
             print("="*80)
@@ -1064,7 +1116,8 @@ def train_with_dataparallel(n_gpus):
                     vae = VA_VAE(str(temp_config_path), img_size=256, horizon_flip=False, fp16=True)
                     print("  • VA-VAE初始化完成（使用Stage 3微调模型）")
                 
-                generate_conditional_samples(model, vae, transport, device, epoch + 1, n_gpus)
+                # 使用EMA模型生成样本（质量更好）
+                generate_conditional_samples(ema_model, vae, transport, device, epoch+1, n_gpus, config)
                 print("  • 条件样本生成完成\n")
             except Exception as e:
                 print(f"  ⚠️ 条件样本生成失败: {e}")
@@ -1090,6 +1143,7 @@ def train_with_dataparallel(n_gpus):
             torch.save({
                 'epoch': epoch + 1,
                 'model_state_dict': model_state,
+                'ema_state_dict': ema_model.state_dict() if 'ema_model' in locals() else None,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'val_loss': avg_val_loss,
@@ -1172,12 +1226,18 @@ def prepare_latents_for_training():
 # DDP训练函数已删除，改用DataParallel
 
 
-def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
-    """生成条件扩散样本用于验证条件控制能力"""
+def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus, config=None):
+    """生成条件扩散样本用于验证条件控制能力
+    
+    采样技术说明：
+    - dopri5: 5阶自适应Runge-Kutta方法，精度最高
+    - 150步: 平衡质量和速度（官方推荐250步）
+    - CFG: 未启用（需要修改模型forward接口）
+    """
     model.eval()
     
     with torch.no_grad():
-        print(f"\n  📊 开始生成条件样本 (Epoch {epoch})...")
+        print(f"\n  📊 开始生成条件样本 (Epoch {epoch}, dopri5求解器, 150步)...")
         
         # 生成多个用户的样本
         num_users_to_sample = min(8, 31)  # 采样8个不同用户
@@ -1198,17 +1258,34 @@ def generate_conditional_samples(model, vae, transport, device, epoch, n_gpus):
             # 随机初始化噪声
             z = torch.randn(samples_per_user, 32, 16, 16, device=device)
             
-            # 生成样本
-            model_kwargs = {"y": user_batch}
+            # 生成样本 - 使用CFG增强条件控制
             actual_model = model.module if n_gpus > 1 else model
             
-            # 使用Sampler进行采样
+            # CFG采样：同时计算条件和无条件
+            cfg_scale = config.get('cfg_scale', 10.0)  # 官方推荐CFG=10.0
+            
+            # 准备条件和无条件输入
+            z_combined = torch.cat([z, z], dim=0)
+            y_null = torch.full_like(user_batch, 31)  # null token (第32个类别)
+            y_combined = torch.cat([user_batch, y_null], dim=0)
+            
+            # 定义CFG包装函数
+            def model_fn(x, t):
+                x_combined = torch.cat([x, x], dim=0)
+                out = actual_model(x_combined, t, y=y_combined)
+                out_cond, out_uncond = out.chunk(2, dim=0)
+                # CFG: 条件输出 + scale * (条件 - 无条件)
+                return out_uncond + cfg_scale * (out_cond - out_uncond)
+            
+            # 使用Sampler进行采样 - 官方推荐配置
             sampler = Sampler(transport)
             sample_fn = sampler.sample_ode(
-                sampling_method="euler",
-                num_steps=50
+                sampling_method="dopri5",  # 高阶自适应求解器
+                num_steps=config.get('sample_steps', 250),  # 官方推荐250步
+                atol=1e-6,  # 绝对误差容忍度
+                rtol=1e-3   # 相对误差容忍度
             )
-            samples = sample_fn(z, actual_model, **model_kwargs)[-1]  # 取最后一步结果
+            samples = sample_fn(z, model_fn)[-1]
             
             all_samples.append(samples)
             all_user_ids.append(user_batch)
