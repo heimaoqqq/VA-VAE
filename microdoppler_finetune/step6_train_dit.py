@@ -758,12 +758,10 @@ def train_with_dataparallel(n_gpus):
     config_path = Path("../configs/microdoppler_finetune.yaml")
     model_config = OmegaConf.load(config_path).model
     
-    # 计算潜空间信息
-    H_latent = model_config.params.encoder_config.params.resolution // \
-               (2 ** (len(model_config.params.encoder_config.params.ch_mult) - 1))
-    W_latent = H_latent
-    C_latent = model_config.params.encoder_config.params.z_channels * \
-               model_config.params.encoder_config.params.double_z
+    # 从配置文件获取潜空间信息
+    H_latent = model_config.params.latent_size
+    W_latent = model_config.params.latent_size  
+    C_latent = model_config.params.in_channels
     
     logger.info(f"潜空间维度: {H_latent}x{W_latent}x{C_latent}")
     
