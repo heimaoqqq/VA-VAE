@@ -51,7 +51,7 @@ def is_main_process():
 
 # 导入LightningDiT模块
 from transport import create_transport
-from models.lightningdit import LightningDiT_models
+from models.lightningdit import LightningDiT_models, LightningDiT_B_1
 
 # 导入VA-VAE
 from tokenizer.vavae import VA_VAE
@@ -794,8 +794,8 @@ def train_with_dataparallel(n_gpus):
         pin_memory=True
     )
     
-    # 创建模型
-    model = DiT_XL_2(
+    # 创建模型 - 使用B模型以适配T4显存
+    model = LightningDiT_B_1(
         input_size=H_latent,
         in_channels=C_latent,
         num_classes=31,
