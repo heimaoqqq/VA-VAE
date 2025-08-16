@@ -166,9 +166,16 @@ class MicroDopplerLatentDataset(Dataset):
             latent = self.latents[real_idx]
             user_id = self.user_ids[real_idx]
             
-            # 转换为tensor
-            latent = torch.from_numpy(latent).float()
-            user_id = torch.tensor(user_id, dtype=torch.long)
+            # 确保是tensor格式
+            if isinstance(latent, np.ndarray):
+                latent = torch.from_numpy(latent).float()
+            else:
+                latent = latent.float()
+                
+            if isinstance(user_id, np.ndarray):
+                user_id = torch.from_numpy(user_id).long()
+            else:
+                user_id = user_id.long()
             
             # 潜空间归一化
             if self.latent_norm and self.latent_mean is not None:
