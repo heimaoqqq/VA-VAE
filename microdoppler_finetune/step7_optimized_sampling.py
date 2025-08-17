@@ -59,7 +59,7 @@ class OptimizedSamplingConfig:
     num_samples_per_user = 5        # 每个用户生成5个样本
     
     # 路径配置
-    model_checkpoint = '/kaggle/working/dit_outputs/checkpoints/best_model.pt'
+    model_checkpoint = '/kaggle/working/dit_outputs/checkpoints/best_model_epoch20_val0.1888.pt'
     vae_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
     output_dir = '/kaggle/working/optimized_samples'
     
@@ -180,7 +180,6 @@ def generate_samples_optimized(model, vae, config):
                         num_steps=config.num_sampling_steps,
                         atol=config.atol,
                         rtol=config.rtol,
-                        time_shifting_factor=config.timestep_shift,  # 添加时间偏移
                     )
                     
                     # 获取模型函数
@@ -198,7 +197,6 @@ def generate_samples_optimized(model, vae, config):
                         num_steps=config.num_sampling_steps,
                         atol=config.atol,
                         rtol=config.rtol,
-                        time_shifting_factor=config.timestep_shift,
                     )
                     
                     sample = sample_fn(z, model, **model_kwargs)[-1]
