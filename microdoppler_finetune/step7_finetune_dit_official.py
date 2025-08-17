@@ -291,44 +291,13 @@ def do_train(train_config, accelerator):
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {use_checkpoint}")
 
-    # 训练循环 - 先测试数据加载
-    print("=== DEBUG: Testing dataset and DataLoader ===")
-    print(f"Dataset length: {len(dataset)}")
+    # 清理内存
+    torch.cuda.empty_cache()
     
-    # Test first few items manually
-    for i in range(min(3, len(dataset))):
-        try:
-            print(f"Testing dataset item {i}...")
-            item = dataset[i]
-            if item is None:
-                print(f"ERROR: Item {i} is None!")
-            else:
-                print(f"Item {i} type: {type(item)}")
-                if isinstance(item, tuple) and len(item) == 2:
-                    x, y = item
-                    print(f"  x shape: {x.shape if hasattr(x, 'shape') else type(x)}")
-                    print(f"  y value: {y}")
-                else:
-                    print(f"  Item content: {item}")
-        except Exception as e:
-            print(f"ERROR testing item {i}: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    print("=== Starting actual training loop ===")
+    # 训练循环
+    print("Starting training loop...")
     while True:
-        for batch_idx, batch_data in enumerate(loader):
-            print(f"Processing batch {batch_idx}, type: {type(batch_data)}")
-            if batch_data is None:
-                print("ERROR: Batch is None, skipping...")
-                continue
-            
-            try:
-                x, y = batch_data
-            except Exception as e:
-                print(f"ERROR unpacking batch {batch_idx}: {e}")
-                print(f"Batch content: {batch_data}")
-                continue
+        for x, y in loader:
             if accelerator.mixed_precision == 'no':
                 x = x.to(device, dtype=torch.float32)
                 y = y
