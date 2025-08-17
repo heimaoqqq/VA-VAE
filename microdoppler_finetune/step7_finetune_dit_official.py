@@ -111,7 +111,7 @@ def do_train(train_config, accelerator):
         experiment_dir = f"{train_config['train']['output_dir']}/{exp_name}"
         checkpoint_dir = f"{experiment_dir}/checkpoints"
         os.makedirs(checkpoint_dir, exist_ok=True)
-        logger = create_logger(experiment_dir)
+        logger = create_logger(experiment_dir, accelerator)
         logger.info(f"Experiment directory created at {experiment_dir}")
         tensorboard_dir_log = f"tensorboard_logs/{exp_name}"
         os.makedirs(tensorboard_dir_log, exist_ok=True)
@@ -402,11 +402,11 @@ def load_config(config_path):
         config = yaml.safe_load(file)
     return config
 
-def create_logger(logging_dir):
+def create_logger(logging_dir, accelerator):
     """
     Create a logger that writes to a log file and stdout.
     """
-    if dist.get_rank() == 0:  # real logger
+    if accelerator.process_index == 0:  # real logger
         logging.basicConfig(
             level=logging.INFO,
             format='[\033[34m%(asctime)s\033[0m] %(message)s',
