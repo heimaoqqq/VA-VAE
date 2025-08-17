@@ -76,14 +76,168 @@ from models.lightningdit import LightningDiT_models, LightningDiT_L_2
 # 导入VA-VAE（官方方式）
 from tokenizer.autoencoder import AutoencoderKL
 
+# ==================== 预编码功能 ====================
+@torch.no_grad()
+def create_preencoded_dataset(vae, data_dir, output_dir='/kaggle/working/encoded_dataset', device='cuda'):
+    """创建预编码数据集"""
+    
+    print("🚀 开始创建预编码数据集")
+    print("="*50)
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 加载数据集划分信息
+    split_file = Path('/kaggle/working/data_split/dataset_split.json')
+    if not split_file.exists():
+        split_file = Path('data_split/dataset_split.json')
+    
+    if not split_file.exists():
+        print(f"❌ 数据划分文件不存在: {split_file}")
+        return False
+    
+    with open(split_file, 'r') as f:
+        split_data = json.load(f)
+    
+    # 加载用户标签映射
+    labels_file = split_file.parent / 'user_labels.json'
+    if labels_file.exists():
+        with open(labels_file, 'r') as f:
+            user_labels = json.load(f)
+    else:
+        user_labels = {f"ID_{i}": i-1 for i in range(1, 32)}
+    
+    # 统计总图像数
+    total_images = 0
+    for split in ['train', 'val']:
+        if split in split_data:
+            for user_key, image_paths in split_data[split].items():
+                total_images += len(image_paths)
+    
+    print(f"📊 总图像数量: {total_images}")
+    
+    # 预编码每个数据集
+    vae.eval()
+    
+    for split in ['train', 'val']:
+        if split not in split_data:
+            continue
+        
+        print(f"\n📦 编码{split}集...")
+        split_data_list = []
+        
+        # 计算分割的图像数量
+        split_total = sum(len(paths) for paths in split_data[split].values())
+        progress_bar = tqdm(total=split_total, desc=f'🔄 编码{split}集')
+        
+        for user_key, image_paths in split_data[split].items():
+            user_id = user_labels.get(user_key, 0)
+            
+            for img_path in image_paths:
+                try:
+                    # 加载并预处理图像
+                    image = Image.open(img_path).convert('RGB')
+                    image = np.array(image).astype(np.float32) / 255.0
+                    image = torch.from_numpy(image).permute(2, 0, 1)  # HWC -> CHW
+                    image = image * 2.0 - 1.0  # 归一化到[-1, 1]
+                    image = image.unsqueeze(0).to(device)  # 添加batch维度
+                    
+                    # VAE编码
+                    posterior = vae.encode(image)
+                    if hasattr(posterior, 'sample'):
+                        latent = posterior.sample()
+                    else:
+                        latent = posterior
+                    
+                    # 归一化潜空间（与训练时保持一致）
+                    latent = latent * 0.13025
+                    
+                    # 添加到列表
+                    split_data_list.append({
+                        'latent': latent.squeeze(0).cpu(),  # [32, 16, 16]
+                        'user_id': user_id,
+                        'user_key': user_key,
+                        'original_path': img_path
+                    })
+                    
+                    progress_bar.update(1)
+                    
+                except Exception as e:
+                    print(f"⚠️ 编码失败 {img_path}: {e}")
+                    continue
+        
+        progress_bar.close()
+        
+        # 保存编码结果
+        if split_data_list:
+            split_file = output_dir / f'{split}_encoded.pt'
+            torch.save(split_data_list, split_file)
+            print(f"✅ {split}集已保存: {split_file} ({len(split_data_list)} 样本)")
+    
+    # 保存元数据
+    metadata = {
+        'vae_scaling_factor': 0.13025,
+        'latent_shape': [32, 16, 16],
+        'num_users': 31,
+        'user_labels': user_labels,
+        'created_time': time.time()
+    }
+    
+    metadata_file = output_dir / 'metadata.json'
+    with open(metadata_file, 'w') as f:
+        json.dump(metadata, f, indent=2)
+    print(f"✅ 元数据已保存: {metadata_file}")
+    
+    # 计算存储信息
+    total_size = 0
+    for file in output_dir.glob('*.pt'):
+        size = file.stat().st_size
+        total_size += size
+    
+    print(f"\n📊 预编码完成:")
+    print(f"   总大小: {total_size/1024/1024:.1f} MB")
+    print(f"   存储位置: {output_dir}")
+    
+    return True
+
 # ==================== 数据集定义 ====================
 class MicroDopplerDataset(Dataset):
-    """微多普勒数据集 - 兼容step3_prepare_dataset.py输出"""
+    """微多普勒数据集 - 支持原图像和预编码数据"""
     
-    def __init__(self, data_dir, split='train', split_file=None):
+    def __init__(self, data_dir, split='train', split_file=None, use_preencoded=True, encoded_dir='/kaggle/working/encoded_dataset'):
         self.data_dir = Path(data_dir)
         self.split = split
+        self.use_preencoded = use_preencoded
+        self.encoded_dir = Path(encoded_dir)
         
+        # 检查是否有预编码数据
+        encoded_file = self.encoded_dir / f'{split}_encoded.pt'
+        
+        if use_preencoded and encoded_file.exists():
+            print(f"🚀 使用预编码数据: {encoded_file}")
+            self._load_preencoded_data(encoded_file)
+        else:
+            if use_preencoded:
+                print(f"⚠️ 预编码文件不存在: {encoded_file}")
+                print("   回退到实时VAE编码模式")
+            print(f"📥 使用原图像数据")
+            self.use_preencoded = False
+            self._load_image_data(split_file)
+        
+        print(f"📊 {split}集: {len(self.data_list)}个样本")
+    
+    def _load_preencoded_data(self, encoded_file):
+        """加载预编码数据"""
+        print(f"📥 加载预编码数据: {encoded_file}")
+        self.data_list = torch.load(encoded_file, map_location='cpu')
+        
+        if len(self.data_list) > 0:
+            sample = self.data_list[0]
+            print(f"   潜在表示形状: {sample['latent'].shape}")
+            print(f"   用户数量: {len(set([item['user_id'] for item in self.data_list]))}")
+    
+    def _load_image_data(self, split_file):
+        """加载原图像数据"""
         # 使用step3_prepare_dataset.py的输出
         if split_file is None:
             split_file = Path('/kaggle/working/data_split/dataset_split.json')
@@ -105,8 +259,8 @@ class MicroDopplerDataset(Dataset):
                 user_labels = {f"ID_{i}": i-1 for i in range(1, 32)}
             
             # 处理step3格式的数据 
-            if split in split_data and isinstance(split_data[split], dict):
-                for user_key, image_paths in split_data[split].items():
+            if self.split in split_data and isinstance(split_data[self.split], dict):
+                for user_key, image_paths in split_data[self.split].items():
                     user_id = user_labels.get(user_key, 0)
                     for img_path in image_paths:
                         self.data_list.append({
@@ -114,15 +268,13 @@ class MicroDopplerDataset(Dataset):
                             'user_id': user_id
                         })
             else:
-                print(f"⚠️ 未找到{split}数据，尝试自动扫描...")
+                print(f"⚠️ 未找到{self.split}数据，尝试自动扫描...")
                 # 回退到自动扫描
                 self._auto_scan_data()
         else:
             print(f"⚠️ 数据划分文件不存在: {split_file}")
             print("建议先运行: python step3_prepare_dataset.py")
             self._auto_scan_data()
-        
-        print(f"📊 {split}集: {len(self.data_list)}张图像")
     
     def _auto_scan_data(self):
         """自动扫描数据（兼容ID_1到ID_31格式）"""
@@ -153,15 +305,21 @@ class MicroDopplerDataset(Dataset):
     def __getitem__(self, idx):
         item = self.data_list[idx]
         
-        # 加载图像
-        image = Image.open(item['path']).convert('RGB')
-        image = np.array(image).astype(np.float32) / 255.0
-        image = torch.from_numpy(image).permute(2, 0, 1)
-        
-        # 归一化到[-1, 1]
-        image = image * 2.0 - 1.0
-        
-        return image, item['user_id']
+        if self.use_preencoded:
+            # 返回预编码的潜在表示
+            latent = item['latent']  # [32, 16, 16]
+            user_id = item['user_id']
+            return latent, user_id
+        else:
+            # 加载并预处理原图像
+            image = Image.open(item['path']).convert('RGB')
+            image = np.array(image).astype(np.float32) / 255.0
+            image = torch.from_numpy(image).permute(2, 0, 1)
+            
+            # 归一化到[-1, 1]
+            image = image * 2.0 - 1.0
+            
+            return image, item['user_id']
 
 # ==================== 模型初始化 ====================
 def create_dit_model(device='cuda', use_base_model=False):
@@ -313,11 +471,11 @@ class TrainingConfig:
     model_type = 'LightningDiT-L'
     num_classes = 31
     
-    # 训练参数（适配小数据集）
-    batch_size = 4  # 每GPU 4张，总共8张
-    learning_rate = 2e-5  # 较小学习率
+    # 训练参数（适配小数据集+GPU利用率优化）
+    batch_size = 6  # 每GPU 6张，总共12张（从8张提升）
+    learning_rate = 3e-5  # 相应提升学习率（batch size增加50%，lr增加50%）
     weight_decay = 0.01  # 适度正则化
-    num_epochs = 100  # 更多轮数
+    num_epochs = 80   # batch size增大后可以减少轮数
     gradient_clip = 1.0
     ema_decay = 0.9999
     
@@ -345,29 +503,33 @@ class TrainingConfig:
     num_workers = 2
 
 # ==================== 训练函数 ====================
-def train_epoch(model, vae, dataloader, optimizer, transport, config, epoch):
+def train_epoch(model, vae, dataloader, optimizer, transport, config, epoch, use_preencoded=False):
     """训练一个epoch"""
     model.train()
-    vae.eval()
+    if not use_preencoded and vae is not None:
+        vae.eval()
     
     total_loss = 0
     progress_bar = tqdm(dataloader, desc=f'Epoch {epoch+1}/{config.num_epochs}')
     
-    for batch_idx, (images, labels) in enumerate(progress_bar):
-        images = images.to(config.device)
+    for batch_idx, (data, labels) in enumerate(progress_bar):
+        data = data.to(config.device)
         labels = labels.to(config.device)
         
-        # VAE编码
-        with torch.no_grad():
-            # 处理双重z
-            posterior = vae.encode(images)
-            if hasattr(posterior, 'sample'):
-                latents = posterior.sample()
-            else:
-                latents = posterior
-            
-            # 归一化潜空间
-            latents = latents * 0.13025
+        if use_preencoded:
+            # 数据已经是潜在表示
+            latents = data  # [B, 32, 16, 16]
+        else:
+            # 实时VAE编码
+            with torch.no_grad():
+                posterior = vae.encode(data)
+                if hasattr(posterior, 'sample'):
+                    latents = posterior.sample()
+                else:
+                    latents = posterior
+                
+                # 归一化潜空间
+                latents = latents * 0.13025
         
         # 训练步骤
         model_kwargs = dict(y=labels)
@@ -383,36 +545,38 @@ def train_epoch(model, vae, dataloader, optimizer, transport, config, epoch):
         
         optimizer.step()
         
-        # 更新EMA
-        if hasattr(model, 'module'):
-            ema_model = model.module
-        else:
-            ema_model = model
-        
         total_loss += loss.item()
-        progress_bar.set_postfix({'loss': loss.item()})
+        progress_bar.set_postfix({
+            'loss': loss.item(),
+            'mode': 'preenc' if use_preencoded else 'realtime'
+        })
     
     return total_loss / len(dataloader)
 
-def validate_and_sample(model, vae, val_loader, transport, sampler, config, epoch):
+def validate_and_sample(model, vae, val_loader, transport, sampler, config, epoch, use_preencoded=False):
     """验证并生成样本"""
     model.eval()
-    vae.eval()
+    if vae is not None:
+        vae.eval()
     
     # 验证损失
     val_loss = 0
     with torch.no_grad():
-        for images, labels in val_loader:
-            images = images.to(config.device)
+        for data, labels in val_loader:
+            data = data.to(config.device)
             labels = labels.to(config.device)
             
-            # VAE编码
-            posterior = vae.encode(images)
-            if hasattr(posterior, 'sample'):
-                latents = posterior.sample()
+            if use_preencoded:
+                # 数据已经是潜在表示
+                latents = data
             else:
-                latents = posterior
-            latents = latents * 0.13025
+                # 实时VAE编码
+                posterior = vae.encode(data)
+                if hasattr(posterior, 'sample'):
+                    latents = posterior.sample()
+                else:
+                    latents = posterior
+                latents = latents * 0.13025
             
             # 计算损失
             model_kwargs = dict(y=labels)
@@ -440,7 +604,13 @@ def validate_and_sample(model, vae, val_loader, transport, sampler, config, epoc
                 rtol=1e-3,
             )
             
-            sample = sample_fn(z, model.forward_with_cfg, **model_kwargs)[-1]
+            # 处理DataParallel包装的模型
+            if hasattr(model, 'module'):
+                model_fn = model.module.forward_with_cfg
+            else:
+                model_fn = model.forward_with_cfg
+            
+            sample = sample_fn(z, model_fn, **model_kwargs)[-1]
             
             # VAE解码
             sample = sample / 0.13025
@@ -494,8 +664,33 @@ def main():
     gpu_count = torch.cuda.device_count()
     print(f"🖥️ 检测到 {gpu_count} 个GPU")
     
-    # 加载VAE
+    # 加载VAE（用于预编码和验证）
     vae = load_vae(config.vae_checkpoint, config.device)
+    
+    # 检查预编码数据
+    encoded_dir = Path('/kaggle/working/encoded_dataset')
+    use_preencoded = (encoded_dir / 'train_encoded.pt').exists() and (encoded_dir / 'val_encoded.pt').exists()
+    
+    if not use_preencoded:
+        print("⚠️ 预编码数据不存在，开始创建预编码数据集...")
+        print("   这是一次性操作，完成后训练将显著加速")
+        
+        # 创建预编码数据集
+        success = create_preencoded_dataset(vae, config.data_dir, encoded_dir, config.device)
+        
+        if success:
+            use_preencoded = True
+            print("✅ 预编码数据创建成功！")
+        else:
+            print("❌ 预编码失败，回退到实时VAE编码模式")
+            use_preencoded = False
+    
+    if use_preencoded:
+        print("🚀 使用预编码数据，启用加速训练模式")
+        print("   - 无需实时VAE编码")
+        print("   - 显著提升训练速度")
+    else:
+        print("📥 使用实时VAE编码模式")
     
     # 创建模型（默认使用L模型，与step2下载的checkpoint匹配）
     # 只有在明确需要节省内存时才使用Base模型
@@ -524,8 +719,8 @@ def main():
     sampler = Sampler(transport)
     
     # 创建数据集和加载器
-    train_dataset = MicroDopplerDataset(config.data_dir, split='train')
-    val_dataset = MicroDopplerDataset(config.data_dir, split='val')
+    train_dataset = MicroDopplerDataset(config.data_dir, split='train', use_preencoded=use_preencoded)
+    val_dataset = MicroDopplerDataset(config.data_dir, split='val', use_preencoded=use_preencoded)
     
     train_loader = DataLoader(
         train_dataset,
@@ -569,10 +764,10 @@ def main():
     
     for epoch in range(config.num_epochs):
         # 训练
-        train_loss = train_epoch(model, vae, train_loader, optimizer, transport, config, epoch)
+        train_loss = train_epoch(model, vae, train_loader, optimizer, transport, config, epoch, use_preencoded)
         
         # 验证和生成样本
-        val_loss = validate_and_sample(model, vae, val_loader, transport, sampler, config, epoch)
+        val_loss = validate_and_sample(model, vae, val_loader, transport, sampler, config, epoch, use_preencoded)
         
         # 更新学习率
         scheduler.step()
