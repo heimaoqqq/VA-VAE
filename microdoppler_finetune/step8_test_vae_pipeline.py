@@ -244,6 +244,40 @@ class VAEPipelineTest:
         plt.savefig(output_dir / 'vae_test_visualization.png', dpi=150)
         plt.close()
 
+def create_synthetic_test_images(output_dir):
+    """创建合成测试图像"""
+    print("🎨 创建合成微多普勒测试图像...")
+    
+    synthetic_dir = Path(output_dir) / 'synthetic_test_images'
+    synthetic_dir.mkdir(parents=True, exist_ok=True)
+    
+    test_images = []
+    
+    # 创建几个合成的微多普勒样式图像
+    for i in range(3):
+        # 创建256x256的测试图像，模拟时频图特征
+        img = np.zeros((256, 256, 3), dtype=np.uint8)
+        
+        # 添加一些类似时频图的模式
+        x, y = np.meshgrid(np.linspace(0, 10, 256), np.linspace(0, 10, 256))
+        
+        # 创建类似多普勒效应的模式
+        pattern = np.sin(x + i) * np.cos(y + i*0.5) + 0.5
+        pattern = (pattern * 255).astype(np.uint8)
+        
+        img[:, :, 0] = pattern
+        img[:, :, 1] = pattern * 0.8
+        img[:, :, 2] = pattern * 0.6
+        
+        # 保存图像
+        img_path = synthetic_dir / f'synthetic_{i}.png'
+        Image.fromarray(img).save(img_path)
+        test_images.append(img_path)
+        
+        print(f"  ✅ 创建合成图像: {img_path}")
+    
+    return test_images
+
 def run_comprehensive_test():
     """运行全面的VAE测试"""
     
@@ -253,8 +287,39 @@ def run_comprehensive_test():
     
     # 配置
     vae_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
-    test_image_dir = '/kaggle/input/dataset/ID_5'  # 选择一个用户的数据
     output_dir = '/kaggle/working/vae_test_results'
+    
+    # 尝试多个可能的数据路径
+    possible_data_paths = [
+        '/kaggle/input/dataset',
+        '/kaggle/input/microdoppler-dataset',
+        '/kaggle/working/dataset',
+        '/kaggle/working/microdoppler_data'
+    ]
+    
+    test_image_dir = None
+    test_images = []
+    
+    for base_path in possible_data_paths:
+        if Path(base_path).exists():
+            print(f"🔍 检查数据路径: {base_path}")
+            # 尝试找到用户目录
+            for user_id in [1, 2, 3, 4, 5]:
+                user_dir = Path(base_path) / f"ID_{user_id}"
+                if user_dir.exists():
+                    images = list(user_dir.glob('*.png'))
+                    if len(images) >= 2:
+                        test_image_dir = str(user_dir)
+                        test_images = images[:5]
+                        print(f"✅ 找到测试数据: {test_image_dir} ({len(images)}张图像)")
+                        break
+            if test_images:
+                break
+    
+    # 如果没有找到真实数据，创建合成测试数据
+    if not test_images:
+        print("⚠️ 未找到测试图像，创建合成测试数据")
+        test_images = create_synthetic_test_images(output_dir)
     
     # 如果checkpoint不存在，尝试其他路径
     if not Path(vae_checkpoint).exists():
@@ -270,9 +335,6 @@ def run_comprehensive_test():
     # 初始化测试器
     tester = VAEPipelineTest(vae_checkpoint)
     tester.load_vae()
-    
-    # 获取测试图像
-    test_images = list(Path(test_image_dir).glob('*.png'))[:5]
     
     if len(test_images) >= 2:
         # 1. 测试重建
@@ -397,7 +459,7 @@ def main():
     """主函数"""
     
     # 选择测试模式
-    test_mode = 'comprehensive'  # 'comprehensive', 'normalization', 或 'quick'
+    test_mode = 'quick'  # 'comprehensive', 'normalization', 或 'quick'
     
     if test_mode == 'comprehensive':
         # 运行全面测试
@@ -406,16 +468,25 @@ def main():
         # 测试归一化链路
         test_normalization_chain()
     elif test_mode == 'quick':
-        # 快速测试
+        # 快速测试 - 仅测试VAE基本功能
         print("🚀 快速VAE测试")
         tester = VAEPipelineTest(
             '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
         )
-        tester.load_vae()
-        
-        # 测试随机生成
-        samples = tester.test_random_generation(num_samples=2)
-        print(f"✅ 生成了{len(samples)}个样本")
+        if tester.load_vae():
+            # 测试随机生成
+            print("\n📦 测试随机生成...")
+            samples = tester.test_random_generation(num_samples=2)
+            print(f"✅ 生成了{len(samples)}个样本")
+            
+            # 测试归一化链路
+            print("\n🔧 测试归一化链路...")
+            test_normalization_chain()
+            
+            # 生成测试报告
+            tester.visualize_results('/kaggle/working/vae_test_results')
+        else:
+            print("❌ VAE加载失败")
 
 if __name__ == "__main__":
     main()
