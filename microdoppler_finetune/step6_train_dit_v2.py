@@ -620,6 +620,28 @@ class MicroDopplerTrainer:
         self.device = None
         self.use_multi_gpu = False
 
+    def _safe_transport_call(self, transport, dit_model, latents, model_kwargs):
+        """安全的transport调用，确保设备一致性"""
+        device = latents.device
+
+        # 临时设置默认设备
+        original_device = torch.cuda.current_device()
+        try:
+            if device.type == 'cuda':
+                torch.cuda.set_device(device)
+
+            # 确保所有输入在同一设备
+            if hasattr(dit_model, 'module'):
+                # DataParallel情况
+                latents = latents.to('cuda:0')
+                if 'y' in model_kwargs:
+                    model_kwargs['y'] = model_kwargs['y'].to('cuda:0')
+
+            return transport.training_losses(dit_model, latents, model_kwargs)
+        finally:
+            # 恢复原始设备
+            torch.cuda.set_device(original_device)
+
     def train(self):
         """主训练流程"""
         logger.info("\n" + "="*60)
@@ -718,9 +740,6 @@ class MicroDopplerTrainer:
                     autocast_context = torch.cuda.amp.autocast()
 
                 with autocast_context:
-                    # 随机时间步 - 确保在正确设备上
-                    t = torch.rand(latents.shape[0], device=latents.device)
-
                     # 模型预测 - 确保所有张量在同一设备
                     model_kwargs = {"y": labels}
 
@@ -729,10 +748,10 @@ class MicroDopplerTrainer:
                         # DataParallel情况下，确保输入在cuda:0
                         latents = latents.to('cuda:0')
                         labels = labels.to('cuda:0')
-                        t = t.to('cuda:0')
                         model_kwargs = {"y": labels}
 
-                    loss_dict = transport.training_losses(dit_model, latents, model_kwargs, t)
+                    # 使用安全的transport调用
+                    loss_dict = self._safe_transport_call(transport, dit_model, latents, model_kwargs)
 
                     # 损失计算
                     if 'cos_loss' in loss_dict and self.config.use_cosine_loss:
@@ -781,9 +800,10 @@ class MicroDopplerTrainer:
                         latents = latents.to(self.device)
                         labels = labels.to(self.device)
 
-                    t = torch.rand(latents.shape[0], device=latents.device)
                     model_kwargs = {"y": labels}
-                    loss_dict = transport.training_losses(dit_model, latents, model_kwargs, t)
+
+                    # 使用安全的transport调用
+                    loss_dict = self._safe_transport_call(transport, dit_model, latents, model_kwargs)
 
                     if 'cos_loss' in loss_dict and self.config.use_cosine_loss:
                         mse_loss = loss_dict["loss"].mean()
