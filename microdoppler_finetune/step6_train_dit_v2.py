@@ -51,7 +51,7 @@ class MicroDopplerConfig:
     num_epochs: int = 80
     batch_size: int = 8  # 直接使用batch size=8，充分利用显存
     gradient_accumulation_steps: int = 1  # 不使用梯度累积
-    learning_rate: float = 5e-5  # 小数据集保守学习率
+    learning_rate: float = 8e-5  # 调整学习率适应更大batch size (5e-5 * 8/4 = 1e-4，保守取8e-5)
     weight_decay: float = 0.0  # 官方不使用
     beta2: float = 0.95  # 官方推荐
     gradient_clip_norm: float = 1.0
@@ -95,6 +95,9 @@ class MicroDopplerConfig:
     use_multi_gpu: bool = True
     gpu_strategy: str = "DataParallel"  # DataParallel或单GPU
     # 注意：DataParallel在Kaggle T4×2上可能负载不均匀
+
+    # 随机种子配置
+    random_seed: int = 42  # 固定种子确保可重复性
 
 
 class MicroDopplerDataManager:
@@ -241,14 +244,19 @@ class MicroDopplerDataManager:
             generator=torch.Generator().manual_seed(42)
         )
 
-        # 创建数据加载器
+        # 创建数据加载器 - 使用固定种子确保可重复性
+        def worker_init_fn(worker_id):
+            np.random.seed(42 + worker_id)
+
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
-            persistent_workers=self.config.persistent_workers
+            persistent_workers=self.config.persistent_workers,
+            worker_init_fn=worker_init_fn,
+            generator=torch.Generator().manual_seed(42)
         )
 
         logger.info(f"🔍 DataLoader配置验证:")
@@ -263,7 +271,9 @@ class MicroDopplerDataManager:
             shuffle=False,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
-            persistent_workers=self.config.persistent_workers
+            persistent_workers=self.config.persistent_workers,
+            worker_init_fn=worker_init_fn,
+            generator=torch.Generator().manual_seed(42)
         )
 
         logger.info(f"✅ 数据加载器创建完成:")
@@ -540,19 +550,10 @@ class DiTModelManager:
 
         scheduler = LambdaLR(optimizer, lr_lambda)
 
-        # 重要：调用一次optimizer.step()来避免scheduler警告
-        # 这是PyTorch推荐的做法
-        optimizer.zero_grad()
-        dummy_loss = torch.tensor(0.0, requires_grad=True)
-        dummy_loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-
         logger.info("✅ 训练组件设置完成")
         logger.info(f"   优化器: AdamW (lr={self.config.learning_rate}, beta2={self.config.beta2})")
         logger.info(f"   调度器: 预热{self.config.warmup_steps}步 + 余弦退火")
         logger.info(f"   Transport: Linear path + velocity prediction")
-        logger.info(f"   已执行dummy step避免scheduler警告")
 
         return optimizer, scheduler, transport
 
@@ -858,13 +859,17 @@ class MicroDopplerTrainer:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(dit_model.parameters(), self.config.gradient_clip_norm)
 
-                    # 使用标准的更新顺序
+                    # 使用标准的更新顺序，忽略scheduler警告
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad()
 
-                    # 在所有优化器操作完成后调用scheduler
-                    scheduler.step()
+                    # 忽略警告，按正确顺序调用
+                    import warnings
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        scheduler.step()
+
+                    optimizer.zero_grad()
 
                 total_loss += loss.item() * self.config.gradient_accumulation_steps
                 num_batches += 1
@@ -985,6 +990,32 @@ def test_setup():
     logger.info("🎯 环境测试完成！")
 
 
+def set_random_seed(seed=42):
+    """设置所有随机种子以确保可重复性"""
+    import random
+    import numpy as np
+
+    # Python随机种子
+    random.seed(seed)
+
+    # NumPy随机种子
+    np.random.seed(seed)
+
+    # PyTorch随机种子
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # 确保CUDA操作的确定性
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # 设置PyTorch的随机数生成器状态
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
+    logger.info(f"🎲 设置随机种子: {seed}")
+    logger.info("   已启用确定性算法以确保可重复性")
+
 def main():
     """主函数"""
     import argparse
@@ -992,6 +1023,9 @@ def main():
     # 设置环境变量以避免FX冲突
     os.environ['TORCH_COMPILE_DISABLE'] = '1'
     os.environ['TORCHDYNAMO_DISABLE'] = '1'
+
+    # 设置固定随机种子
+    set_random_seed(42)
 
     parser = argparse.ArgumentParser(description='微多普勒DiT训练')
     parser.add_argument('--test', action='store_true', help='只运行测试，不开始训练')
@@ -1014,9 +1048,10 @@ def main():
     logger.info(f"   批次大小: {config.batch_size} (直接使用，无梯度累积)")
     logger.info(f"   梯度累积: {config.gradient_accumulation_steps}")
     logger.info(f"   有效批次: {config.batch_size * config.gradient_accumulation_steps}")
-    logger.info(f"   学习率: {config.learning_rate}")
+    logger.info(f"   学习率: {config.learning_rate} (调整后适应batch size=8)")
     logger.info(f"   总轮数: {config.num_epochs}")
     logger.info(f"   早停耐心: {config.patience}")
+    logger.info(f"   随机种子: {config.random_seed} (确保可重复性)")
     logger.info(f"   🚀 优化：batch size=8，预计训练速度提升2倍")
 
     # 创建管理器
