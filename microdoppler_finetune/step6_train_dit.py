@@ -227,23 +227,23 @@ class MicroDopplerLatentDataset(Dataset):
 def train_dit():
     """主训练函数 - DataParallel模式"""
     
-    # ===== 训练配置（针对L模型优化）=====
+    # ===== 训练配置（L模型 + 智能权重初始化）=====
     config = {
-        'num_epochs': 10,
-        'batch_size': 1,  # L模型需要更多显存，保持batch_size=1
-        'gradient_accumulation_steps': 4,  # 梯度累积以模拟更大batch
-        'learning_rate': 2e-5,  # L模型使用稍低的学习率
-        'weight_decay': 0.01,
+        'num_epochs': 80,  # 更多轮数补偿部分随机初始化
+        'batch_size': 2,  # 保守设置，避免DataParallel的GPU0 OOM
+        'gradient_accumulation_steps': 3,  # 有效batch_size=6
+        'learning_rate': 5e-6,  # 更小学习率防止过拟合
+        'weight_decay': 0.1,   # 更强正则化
         'gradient_clip_norm': 1.0,
-        'warmup_steps': 500,
+        'warmup_steps': 200,  # 较短的预热期
         'ema_decay': 0.9999,
         
-        # 采样配置
-        'sampling_method': 'euler',  # 使用euler采样器，更快
-        'num_steps': 250,  # 采样步数
-        'cfg_scale': 10.0,  # CFG强度
+        # 采样配置（针对时频图优化）
+        'sampling_method': 'dopri5',  # 高精度ODE求解器，适合时频图
+        'num_steps': 150,  # 平衡质量和速度
+        'cfg_scale': 7.0,  # 适度CFG，保留细节
         'cfg_interval_start': 0.11,  # CFG开始时间
-        'timestep_shift': 0.3,  # 时间步偏移
+        'timestep_shift': 0.1,  # 减小偏移保留更多细节
         
         # 数据配置
         'num_workers': 2,  # Kaggle环境
@@ -252,7 +252,7 @@ def train_dit():
     }
     
     logger.info("\n" + "="*60)
-    logger.info("🚀 LightningDiT-L 训练配置")
+    logger.info("🚀 LightningDiT-L 训练配置（T4×2优化）")
     logger.info("="*60)
     for key, value in config.items():
         logger.info(f"  {key}: {value}")
@@ -307,66 +307,93 @@ def train_dit():
         logger.info("✓ VA-VAE loaded successfully with checkpoint")
     else:
         logger.warning(f"⚠️ VA-VAE checkpoint not found at {vae_checkpoint}")
-        logger.warning("Using randomly initialized weights")
     
     # VA-VAE的model已经在初始化时调用了.cuda()，不需要.to(device)
     # vae.model已经是eval模式
     
-    # ===== 2. 初始化LightningDiT-L模型 =====
-    logger.info("=== 初始化LightningDiT-L ===")
-    latent_size = 16  # 256/16 = 16
-    num_users = 31
+    # ==================== 模型初始化 ====================
+    print("\n" + "="*60)
+    print("正在初始化模型...")
+    print("="*60)
     
-    model = LightningDiT_L_2(
-        input_size=latent_size,
-        num_classes=num_users,
-        in_channels=32,
-        use_swiglu=True,  
+    # 1. 初始化LightningDiT-L模型 - 平衡性能和显存
+    print("\n📊 初始化LightningDiT-L...")
+    dit_model = LightningDiT_L_2(
+        in_channels=32,       # VA-VAE潜空间通道数
+        num_classes=31,       # 31个用户条件
+        use_swiglu=True,
         use_rope=True,
         use_rmsnorm=True
     ).to(device)
     
-    logger.info(f"Model: LightningDiT-L/1 (1024-dim, 24 layers)")
-    logger.info(f"Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    logger.info(f"Model: LightningDiT-L (1024-dim, 24 layers)")
+    logger.info(f"Parameters: {sum(p.numel() for p in dit_model.parameters()) / 1e6:.2f}M")
     
-    # 使用官方L模型预训练权重 - 与step2_download_models.py路径保持一致
-    pretrained_l = "/kaggle/working/VA-VAE/models/lightningdit-l-imagenet256-100ep.pt"
+    # 使用XL模型权重进行智能初始化
+    pretrained_xl = "/kaggle/working/VA-VAE/models/lightningdit-xl-imagenet256-64ep.pt"
     
-    if os.path.exists(pretrained_l):
-        logger.info(f"✅ 找到官方LightningDiT-L模型: {pretrained_l}")
-        size_gb = os.path.getsize(pretrained_l) / (1024**3)
-        logger.info(f"   模型大小: {size_gb:.2f} GB")
+    if os.path.exists(pretrained_xl):
+        logger.info(f"✅ 找到LightningDiT-XL权重用于初始化L模型: {pretrained_xl}")
+        size_gb = os.path.getsize(pretrained_xl) / (1024**3)
+        logger.info(f"   XL权重大小: {size_gb:.2f} GB")
+        logger.info("   将从XL权重中提取兼容层初始化L模型")
     else:
-        logger.warning("⚠️ 未找到L模型权重文件，请先运行 step2_download_models.py")
-        logger.warning(f"   预期路径: {pretrained_l}")
-        raise FileNotFoundError("LightningDiT-L 预训练权重未找到")
+        logger.warning("⚠️ 未找到XL模型权重文件，请先运行 step2_download_models.py")
+        logger.warning(f"   预期路径: {pretrained_xl}")
+        logger.warning("   L模型将使用随机初始化（不推荐）")
     
-    
-    # 加载预训练权重
+    # 智能加载XL权重到L模型
     logger.info("\n" + "="*60)
-    logger.info("🎯 加载LightningDiT预训练权重")
+    logger.info("🎯 智能权重初始化策略")
     logger.info("="*60)
     
-    if pretrained_l and os.path.exists(pretrained_l):
+    if pretrained_xl and os.path.exists(pretrained_xl):
         try:
-            checkpoint = torch.load(pretrained_l, map_location='cpu')
-            state_dict = checkpoint.get('model', checkpoint)
-            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+            checkpoint = torch.load(pretrained_xl, map_location='cpu')
+            xl_state_dict = checkpoint.get('model', checkpoint)
+            xl_state_dict = {k.replace('module.', ''): v for k, v in xl_state_dict.items()}
             
-            # 只加载兼容的权重
-            compatible = {}
-            model_state = model.state_dict()
-            for k, v in state_dict.items():
-                if k in model_state and v.shape == model_state[k].shape:
-                    compatible[k] = v
+            # L模型和XL模型的映射策略
+            l_state_dict = dit_model.state_dict()
+            loaded_keys = []
+            skipped_keys = []
             
-            if compatible:
-                model.load_state_dict(compatible, strict=False)
-                logger.info(f"✅ 成功加载 {len(compatible)}/{len(state_dict)} 个权重")
-                logger.info(f"   模型总参数: {len(model_state)}")
-                logger.info(f"   匹配率: {len(compatible)/len(model_state)*100:.1f}%")
-            else:
-                logger.warning("⚠️ 没有找到兼容的权重！")
+            for k, v in l_state_dict.items():
+                if k in xl_state_dict:
+                    # 对于transformer blocks，L有24层，XL有28层
+                    if 'blocks.' in k:
+                        block_idx = int(k.split('.')[1])
+                        if block_idx < 24:  # L模型只有24层
+                            xl_key = k
+                            if xl_key in xl_state_dict and xl_state_dict[xl_key].shape == v.shape:
+                                l_state_dict[k] = xl_state_dict[xl_key]
+                                loaded_keys.append(k)
+                            else:
+                                skipped_keys.append(k)
+                    # 非block层的权重
+                    elif xl_state_dict[k].shape == v.shape:
+                        l_state_dict[k] = xl_state_dict[k]
+                        loaded_keys.append(k)
+                    else:
+                        skipped_keys.append(k)
+            
+            dit_model.load_state_dict(l_state_dict, strict=False)
+            
+            print(f"✅ 智能初始化完成:")
+            print(f"   从XL加载: {len(loaded_keys)} 个权重")
+            print(f"   随机初始化: {len(skipped_keys)} 个权重")
+            print(f"   总参数量: {sum(p.numel() for p in dit_model.parameters()) / 1e6:.1f}M")
+            
+            # 🎯 全参数微调策略 - 充分适应微多普勒域
+            print("   训练策略: 全参数微调 (跨域任务最优)")
+            print("   理由1: 时频图与自然图像域差异极大，需要深层特征重学习")
+            print("   理由2: 用户间微弱差异需要精细特征，冻结会限制判别能力")
+            print("   理由3: XL→L权重映射不完美，需要微调修正")
+            
+            trainable_params = sum(p.numel() for p in dit_model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in dit_model.parameters())
+            print(f"   可训练参数: {trainable_params / 1e6:.1f}M (100%)")
+            print("   过拟合防护: 小学习率 + 强正则化 + 梯度累积")
         except Exception as e:
             logger.error(f"❌ 加载预训练权重失败: {e}")
     else:
@@ -375,30 +402,31 @@ def train_dit():
         logger.error("❌ 模型将使用随机初始化，这会导致生成纯噪声图像。")
         logger.error("❌"*30)
         logger.error("\n请确保：")
-        logger.error(f"  1. 官方L模型存在于: {pretrained_l_official}")
-        logger.error(f"  2. 或转换的L模型存在于: {pretrained_l_converted}")
-        logger.error("  3. 运行 step2_download_models.py 下载模型")
-        logger.error("  4. 运行 python convert_xl_to_l.py 转换权重")
+        logger.error(f"  1. XL权重文件存在于: {pretrained_xl}")
+        logger.error("  2. 运行 step2_download_models.py 下载模型")
         logger.error("\n训练将立即停止以避免时间浪费！\n")
         raise ValueError("必须加载预训练权重才能正常训练！")
     
-    model.to(device)
+    dit_model.to(device)
     
     # 如果是多GPU，使用DataParallel包装
     num_gpus = torch.cuda.device_count()
     if num_gpus > 1:
-        model = DataParallel(model)
-        logger.info(f"Model wrapped with DataParallel using {num_gpus} GPUs")
+        # 使用平衡的GPU分配策略
+        dit_model = DataParallel(dit_model)
+        logger.info(f"✅ 使用 {num_gpus} 个GPU进行DataParallel训练")
+        logger.info("⚠️ 注意: DataParallel在GPU0上会有额外显存开销")
+        logger.info("   建议: 如果OOM，可尝试减小batch_size或使用单GPU")
     
     logger.info(f"✅ 模型创建完成")
-    logger.info(f"   参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    logger.info(f"   参数量: {sum(p.numel() for p in dit_model.parameters()) / 1e6:.2f}M")
     
     # ===== 3. 初始化训练组件 =====
     logger.info("\n=== 初始化训练组件 ===")
     
     # 创建EMA模型 - 用于稳定生成质量
     from copy import deepcopy
-    ema_model = deepcopy(model).eval()
+    ema_model = deepcopy(dit_model).eval()
     for param in ema_model.parameters():
         param.requires_grad = False
     logger.info("EMA模型已创建（衰减率=0.9999）")
@@ -412,9 +440,9 @@ def train_dit():
         None,
     )
     
-    # 优化器 - 按官方推荐配置
+    # 优化器 - 只优化未冻结的参数
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        filter(lambda p: p.requires_grad, dit_model.parameters()),
         lr=config['learning_rate'],
         weight_decay=config['weight_decay'],
         betas=(0.9, 0.95),  # 官方配置：beta2=0.95
@@ -487,8 +515,8 @@ def train_dit():
     logger.info("\n" + "="*60)
     logger.info("📊 训练信息总览")
     logger.info("="*60)
-    logger.info(f"模型: LightningDiT-L (1024维, 24层)")
-    logger.info(f"参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+    logger.info(f"模型: LightningDiT-L (1024维, 24层, 智能初始化)")
+    logger.info(f"参数量: {sum(p.numel() for p in dit_model.parameters()) / 1e6:.2f}M")
     logger.info(f"训练集: {len(train_dataset)} 样本")
     logger.info(f"验证集: {len(val_dataset)} 样本")
     logger.info(f"批次大小: {config['batch_size']}")
@@ -508,7 +536,7 @@ def train_dit():
         epoch_start_time = time.time()
         
         # 训练阶段
-        model.train()
+        dit_model.train()
         train_loss = 0
         train_steps = 0
         train_grad_norm = 0
@@ -531,7 +559,7 @@ def train_dit():
                 # 使用重要性采样
                 t = torch.rand(latents.shape[0], device=device)
                 
-                loss_dict = transport.training_losses(model, latents, model_kwargs)
+                loss_dict = transport.training_losses(dit_model, latents, model_kwargs)
                 loss = loss_dict["loss"].mean()
             
             # 反向传播
@@ -539,8 +567,11 @@ def train_dit():
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
             
-            # 梯度裁剪
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config['gradient_clip_norm'])
+            # 梯度裁剪 - 只对可训练参数
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                filter(lambda p: p.requires_grad, dit_model.parameters()), 
+                config['gradient_clip_norm']
+            )
             
             scaler.step(optimizer)
             scaler.update()
@@ -587,7 +618,7 @@ def train_dit():
                 with torch.no_grad():
                     # 传递条件信息
                     model_kwargs = {"y": user_ids}
-                    loss_dict = transport.training_losses(model, latents, model_kwargs)
+                    loss_dict = transport.training_losses(dit_model, latents, model_kwargs)
                     loss = loss_dict["loss"].mean()
                 
                 val_loss += loss.item()
