@@ -25,6 +25,14 @@ from tqdm import tqdm
 from PIL import Image
 import yaml
 
+# 修复FX符号追踪冲突 - 必须在导入LightningDiT之前
+try:
+    torch._dynamo.config.suppress_errors = True
+    torch._dynamo.config.disable = True
+except AttributeError:
+    # 旧版本PyTorch可能没有_dynamo
+    pass
+
 # 添加LightningDiT路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / 'LightningDiT'))
@@ -436,6 +444,10 @@ class DiTModelManager:
             input_size=self.config.input_size,
             num_classes=self.config.num_classes,
         )
+
+        # 禁用模型编译以避免FX冲突
+        if hasattr(dit_model, '_dynamo_compile'):
+            dit_model._dynamo_compile = False
 
         # XL→L权重迁移
         self._transfer_xl_to_l_weights(dit_model)
@@ -961,6 +973,11 @@ def test_setup():
 def main():
     """主函数"""
     import argparse
+
+    # 设置环境变量以避免FX冲突
+    os.environ['TORCH_COMPILE_DISABLE'] = '1'
+    os.environ['TORCHDYNAMO_DISABLE'] = '1'
+
     parser = argparse.ArgumentParser(description='微多普勒DiT训练')
     parser.add_argument('--test', action='store_true', help='只运行测试，不开始训练')
     args = parser.parse_args()
@@ -970,6 +987,7 @@ def main():
         return
 
     logger.info("🎯 微多普勒DiT条件生成训练")
+    logger.info("   已禁用PyTorch编译优化以避免FX冲突")
 
     # 创建配置
     config = MicroDopplerConfig()
