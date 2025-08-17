@@ -338,22 +338,32 @@ def setup_kaggle_multi_gpu():
     """设置Kaggle T4×2 GPU环境"""
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA不可用！请在Kaggle中启用GPU加速器")
-    
+
     num_gpus = torch.cuda.device_count()
     logger.info(f"🖥️ 检测到 {num_gpus} 个GPU")
-    
+
     for i in range(num_gpus):
         gpu_name = torch.cuda.get_device_name(i)
         gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1024**3
         logger.info(f"   GPU {i}: {gpu_name} ({gpu_memory:.1f} GB)")
-    
+
     if num_gpus < 2:
         logger.warning("⚠️ 只检测到1个GPU，将使用单GPU训练")
         return False, torch.device("cuda:0")
-    
-    # Kaggle T4×2推荐使用DataParallel
+
+    # Kaggle T4×2环境设置
+    # 设置主设备为cuda:0，DataParallel会自动使用所有可用GPU
+    torch.cuda.set_device(0)  # 设置主GPU
     device = torch.device("cuda:0")
+
+    # 清理GPU缓存
+    for i in range(num_gpus):
+        with torch.cuda.device(i):
+            torch.cuda.empty_cache()
+
     logger.info("✅ 将使用DataParallel进行双GPU训练")
+    logger.info(f"   主设备: {device}")
+    logger.info(f"   可用GPU: {list(range(num_gpus))}")
     return True, device
 
 
@@ -422,12 +432,17 @@ class DiTModelManager:
         # XL→L权重迁移
         self._transfer_xl_to_l_weights(dit_model)
 
+        # 确保模型在正确设备上
         dit_model = dit_model.to(device)
 
         # Kaggle T4×2使用DataParallel
         if use_multi_gpu and torch.cuda.device_count() > 1:
-            dit_model = nn.DataParallel(dit_model)
-            logger.info("✅ 启用DataParallel多GPU训练")
+            # 确保模型在cuda:0上，然后包装DataParallel
+            dit_model = dit_model.to('cuda:0')
+            dit_model = nn.DataParallel(dit_model, device_ids=list(range(torch.cuda.device_count())))
+            logger.info(f"✅ 启用DataParallel多GPU训练，使用GPU: {list(range(torch.cuda.device_count()))}")
+        else:
+            logger.info(f"✅ 单GPU训练，使用设备: {device}")
 
         # 统计参数
         total_params = sum(p.numel() for p in dit_model.parameters())
@@ -687,15 +702,36 @@ class MicroDopplerTrainer:
 
         with tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]") as pbar:
             for batch_idx, (latents, labels) in enumerate(pbar):
-                latents = latents.to(self.device)
-                labels = labels.to(self.device)
+                # 确保数据在正确设备上
+                if hasattr(dit_model, 'module'):
+                    # DataParallel情况下，数据必须在cuda:0
+                    latents = latents.to('cuda:0')
+                    labels = labels.to('cuda:0')
+                else:
+                    latents = latents.to(self.device)
+                    labels = labels.to(self.device)
 
-                with torch.cuda.amp.autocast():
-                    # 随机时间步
-                    t = torch.rand(latents.shape[0], device=self.device)
+                # 修复autocast弃用警告
+                try:
+                    autocast_context = torch.amp.autocast('cuda')
+                except AttributeError:
+                    autocast_context = torch.cuda.amp.autocast()
 
-                    # 模型预测
+                with autocast_context:
+                    # 随机时间步 - 确保在正确设备上
+                    t = torch.rand(latents.shape[0], device=latents.device)
+
+                    # 模型预测 - 确保所有张量在同一设备
                     model_kwargs = {"y": labels}
+
+                    # 确保dit_model在正确设备上
+                    if hasattr(dit_model, 'module'):
+                        # DataParallel情况下，确保输入在cuda:0
+                        latents = latents.to('cuda:0')
+                        labels = labels.to('cuda:0')
+                        t = t.to('cuda:0')
+                        model_kwargs = {"y": labels}
+
                     loss_dict = transport.training_losses(dit_model, latents, model_kwargs, t)
 
                     # 损失计算
@@ -736,10 +772,16 @@ class MicroDopplerTrainer:
         with torch.no_grad():
             with tqdm(val_loader, desc=f"Epoch {epoch+1} [Val]") as pbar:
                 for latents, labels in pbar:
-                    latents = latents.to(self.device)
-                    labels = labels.to(self.device)
+                    # 确保所有张量在正确设备上
+                    if hasattr(dit_model, 'module'):
+                        # DataParallel情况下，使用cuda:0
+                        latents = latents.to('cuda:0')
+                        labels = labels.to('cuda:0')
+                    else:
+                        latents = latents.to(self.device)
+                        labels = labels.to(self.device)
 
-                    t = torch.rand(latents.shape[0], device=self.device)
+                    t = torch.rand(latents.shape[0], device=latents.device)
                     model_kwargs = {"y": labels}
                     loss_dict = transport.training_losses(dit_model, latents, model_kwargs, t)
 
