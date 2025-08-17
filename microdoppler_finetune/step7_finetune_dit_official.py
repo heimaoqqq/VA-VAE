@@ -113,46 +113,38 @@ class MicroDopplerLatentDataset(Dataset):
         
         return latent, user_id
 
-def do_train(train_config, accelerator):
+def do_train_dataparallel(train_config, device, gpu_count):
     """
-    训练LightningDiT - 直接从官方train.py复制并修改
+    使用DataParallel的LightningDiT训练函数
     """
-    # Setup accelerator:
-    device = accelerator.device
-
-    # Setup an experiment folder:
-    if accelerator.is_main_process:
-        os.makedirs(train_config['train']['output_dir'], exist_ok=True)
-        experiment_index = len(glob(f"{train_config['train']['output_dir']}/*"))
-        model_string_name = train_config['model']['model_type'].replace("/", "-")
-        if train_config['train']['exp_name'] is None:
-            exp_name = f'{experiment_index:03d}-{model_string_name}'
-        else:
-            exp_name = train_config['train']['exp_name']
-        experiment_dir = f"{train_config['train']['output_dir']}/{exp_name}"
-        checkpoint_dir = f"{experiment_dir}/checkpoints"
-        os.makedirs(checkpoint_dir, exist_ok=True)
-        logger = create_logger(experiment_dir, accelerator)
-        logger.info(f"Experiment directory created at {experiment_dir}")
-        tensorboard_dir_log = f"tensorboard_logs/{exp_name}"
-        os.makedirs(tensorboard_dir_log, exist_ok=True)
-        writer = SummaryWriter(log_dir=tensorboard_dir_log)
-
-        # add configs to tensorboard
-        config_str = json.dumps(train_config, indent=4)
-        writer.add_text('training configs', config_str, global_step=0)
+    print(f"Setting up training with {gpu_count} GPU(s)")
     
-    checkpoint_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/checkpoints"
+    # Setup experiment folder
+    os.makedirs(train_config['train']['output_dir'], exist_ok=True)
+    experiment_index = len(glob(f"{train_config['train']['output_dir']}/*"))
+    model_string_name = train_config['model']['model_type'].replace("/", "-")
+    exp_name = train_config['train']['exp_name'] if 'exp_name' in train_config['train'] else f'{experiment_index:03d}-{model_string_name}'
+    experiment_dir = f"{train_config['train']['output_dir']}/{exp_name}"
+    checkpoint_dir = f"{experiment_dir}/checkpoints"
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # Setup logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='[\033[34m%(asctime)s\033[0m] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[logging.StreamHandler(), logging.FileHandler(f"{experiment_dir}/log.txt")]
+    )
+    logger = logging.getLogger(__name__)
+    logger.info(f"Experiment directory: {experiment_dir}")
+    
+    # Setup TensorBoard
+    tensorboard_dir_log = f"tensorboard_logs/{exp_name}"
+    os.makedirs(tensorboard_dir_log, exist_ok=True)
+    writer = SummaryWriter(tensorboard_dir_log)
 
-    # get rank
-    rank = accelerator.local_process_index
-
-    # Create model:
-    if 'downsample_ratio' in train_config['vae']:
-        downsample_ratio = train_config['vae']['downsample_ratio']
-    else:
-        downsample_ratio = 16
-    assert train_config['data']['image_size'] % downsample_ratio == 0, "Image size must be divisible by downsample ratio"
+    # Model setup
+    downsample_ratio = 16  # VA-VAE f16d32
     latent_size = train_config['data']['image_size'] // downsample_ratio
     
     model = LightningDiT_models[train_config['model']['model_type']](
@@ -167,78 +159,66 @@ def do_train(train_config, accelerator):
         use_checkpoint=train_config['model']['use_checkpoint'] if 'use_checkpoint' in train_config['model'] else False,
     )
 
-    ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
-
-    # Load model:
+    # Load pretrained weights
     if train_config['train']['weight_init'] is not None:
-        logger.info("Loading checkpoint from {}".format(train_config['train']['weight_init']))
-        checkpoint = torch.load(train_config['train']['weight_init'], map_location=lambda storage, loc: storage)
-        if "ema" in checkpoint:  # supports checkpoints from train.py
+        logger.info(f"Loading pretrained weights: {train_config['train']['weight_init']}")
+        checkpoint = torch.load(train_config['train']['weight_init'], map_location='cpu')
+        if "ema" in checkpoint:
             checkpoint = checkpoint["ema"]
         
-        # 处理类别数不匹配的情况（ImageNet 1001类 vs 微多普勒 32类）
+        # Handle class number mismatch (ImageNet 1001 vs MicroDoppler 32)
         if 'y_embedder.embedding_table.weight' in checkpoint:
             checkpoint_classes = checkpoint['y_embedder.embedding_table.weight'].shape[0]
             model_classes = model.y_embedder.embedding_table.weight.shape[0]
             
             if checkpoint_classes != model_classes:
-                logger.info(f"Skipping y_embedder due to class mismatch: checkpoint {checkpoint_classes} vs model {model_classes}")
-                # 保留原始的分类embedding权重（随机初始化）
+                logger.info(f"Class mismatch: checkpoint {checkpoint_classes} vs model {model_classes}, skipping y_embedder")
                 del checkpoint['y_embedder.embedding_table.weight']
         
         model.load_state_dict(checkpoint, strict=False)
-        ema.load_state_dict(checkpoint, strict=False)
-        if accelerator.is_main_process:
-            logger.info(f"Loaded pretrained model from {train_config['train']['weight_init']}")
+        logger.info("Pretrained weights loaded successfully")
+
+    # Move model to GPU and wrap with DataParallel
+    model = model.to(device)
+    if gpu_count > 1:
+        logger.info(f"Using DataParallel on {gpu_count} GPUs")
+        model = torch.nn.DataParallel(model)
     
+    # Create EMA model
+    ema = deepcopy(model.module if gpu_count > 1 else model).to(device)
     requires_grad(ema, False)
+    update_ema(ema, model.module if gpu_count > 1 else model, decay=0)
     
-    # 使用Accelerator处理分布式训练，无需手动DDP
-    model = accelerator.prepare(model)
-    transport = create_transport(
-        train_config['transport']['path_type'],
-        train_config['transport']['prediction'],
-        train_config['transport']['loss_weight'],
-        train_config['transport']['train_eps'],
-        train_config['transport']['sample_eps'],
-        use_cosine_loss=train_config['transport']['use_cosine_loss'] if 'use_cosine_loss' in train_config['transport'] else False,
-        use_lognorm=train_config['transport']['use_lognorm'] if 'use_lognorm' in train_config['transport'] else False,
-    )
+    model.train()
+    ema.eval()
     
-    if accelerator.is_main_process:
-        logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
-        logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
-        logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
-        logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
-    
-    opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, 
-                            betas=(0.9, train_config['optimizer']['beta2']))
-    
-    # Setup data - 使用我们的微多普勒数据集
+    logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Setup optimizer
+    opt = torch.optim.AdamW(model.parameters(), 
+                           lr=train_config['optimizer']['lr'], 
+                           weight_decay=train_config['optimizer']['weight_decay'])
+
+    # Setup datasets
     dataset = MicroDopplerLatentDataset(
         data_dir=train_config['data']['data_path'],
         latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
         latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 0.18215,
     )
     
-    batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
-    global_batch_size = batch_size_per_gpu * accelerator.num_processes
-    
     loader = DataLoader(
         dataset,
-        batch_size=batch_size_per_gpu,
+        batch_size=train_config['train']['global_batch_size'],
         shuffle=True,
         num_workers=train_config['data']['num_workers'],
         pin_memory=True,
         drop_last=True
     )
-    
-    if accelerator.is_main_process:
-        logger.info(f"Dataset contains {len(dataset):,} images {train_config['data']['data_path']}")
-        logger.info(f"Batch size {batch_size_per_gpu} per gpu, with {global_batch_size} global batch size")
-    
-    # 验证集（如果有）
-    if 'valid_path' in train_config['data']:
+    logger.info(f"Training dataset: {len(dataset):,} samples")
+
+    # Setup validation
+    valid_loader = None
+    if 'valid_path' in train_config['data'] and train_config['data']['valid_path'] is not None:
         valid_dataset = MicroDopplerLatentDataset(
             data_dir=train_config['data']['valid_path'],
             latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
@@ -246,134 +226,139 @@ def do_train(train_config, accelerator):
         )
         valid_loader = DataLoader(
             valid_dataset,
-            batch_size=batch_size_per_gpu,
-            shuffle=True,
+            batch_size=train_config['train']['global_batch_size'],
+            shuffle=False,
             num_workers=train_config['data']['num_workers'],
             pin_memory=True,
-            drop_last=True
+            drop_last=False
         )
-        if accelerator.is_main_process:
-            logger.info(f"Validation Dataset contains {len(valid_dataset):,} images {train_config['data']['valid_path']}")
+        logger.info(f"Validation dataset: {len(valid_dataset):,} samples")
 
-    # Prepare models for training:
-    update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
-    model.train()  # important! This enables embedding dropout for classifier-free guidance
-    ema.eval()  # EMA model should always be in eval mode
+    # Setup transport (diffusion process)
+    transport = create_transport(
+        path_type="Linear",
+        prediction="velocity",
+        loss_weight=None,
+        train_eps=None,
+        sample_eps=None,
+    )
     
-    train_config['train']['resume'] = train_config['train']['resume'] if 'resume' in train_config['train'] else False
-
-    if train_config['train']['resume']:
-        # check if the checkpoint exists
-        checkpoint_files = glob(f"{checkpoint_dir}/*.pt")
-        if checkpoint_files:
-            checkpoint_files.sort(key=lambda x: os.path.getsize(x))
-            latest_checkpoint = checkpoint_files[-1]
-            checkpoint = torch.load(latest_checkpoint, map_location=lambda storage, loc: storage)
-            model.load_state_dict(checkpoint['model'])
-            # opt.load_state_dict(checkpoint['opt'])
-            ema.load_state_dict(checkpoint['ema'])
-            train_steps = int(latest_checkpoint.split('/')[-1].split('.')[0])
-            if accelerator.is_main_process:
-                logger.info(f"Resuming training from checkpoint: {latest_checkpoint}")
-        else:
-            if accelerator.is_main_process:
-                logger.info("No checkpoint found. Starting training from scratch.")
-    
-    model, opt, loader = accelerator.prepare(model, opt, loader)
-
-    # Variables for monitoring/logging purposes:
-    if not train_config['train']['resume']:
-        train_steps = 0
+    # Setup training state
+    train_steps = 0
     log_steps = 0
     running_loss = 0
     start_time = time()
-    use_checkpoint = train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True
-    if accelerator.is_main_process:
-        logger.info(f"Using checkpointing: {use_checkpoint}")
+    
+    # Resume from checkpoint if requested
+    if train_config['train'].get('resume', False):
+        checkpoint_files = glob(f"{checkpoint_dir}/*.pt")
+        if checkpoint_files:
+            checkpoint_files.sort(key=lambda x: int(os.path.basename(x).split('.')[0]))
+            latest_checkpoint = checkpoint_files[-1]
+            checkpoint = torch.load(latest_checkpoint, map_location=device)
+            
+            if gpu_count > 1:
+                model.module.load_state_dict(checkpoint['model'])
+            else:
+                model.load_state_dict(checkpoint['model'])
+            
+            ema.load_state_dict(checkpoint['ema'])
+            opt.load_state_dict(checkpoint['opt'])
+            train_steps = int(os.path.basename(latest_checkpoint).split('.')[0])
+            logger.info(f"Resumed from checkpoint: {latest_checkpoint}")
+        else:
+            logger.info("No checkpoint found, starting from scratch")
 
-    # 清理内存
+    # Clear memory
     torch.cuda.empty_cache()
     
-    # 训练循环
-    print("Starting training loop...")
-    while True:
+    logger.info("Starting training loop...")
+    
+    # Training loop
+    while train_steps < train_config['train']['max_steps']:
         for x, y in loader:
-            if accelerator.mixed_precision == 'no':
-                x = x.to(device, dtype=torch.float32)
-                y = y
-            else:
-                x = x.to(device)
-                y = y.to(device)
+            if train_steps >= train_config['train']['max_steps']:
+                break
+                
+            x = x.to(device, dtype=torch.float32)
+            y = y.to(device)
             
             model_kwargs = dict(y=y)
             loss_dict = transport.training_losses(model, x, model_kwargs)
-            
-            if 'cos_loss' in loss_dict:
-                mse_loss = loss_dict["loss"].mean()
-                loss = loss_dict["cos_loss"].mean() + mse_loss
-            else:
-                loss = loss_dict["loss"].mean()
+            loss = loss_dict["loss"].mean()
             
             opt.zero_grad()
-            accelerator.backward(loss)
+            loss.backward()
             
+            # Gradient clipping
             if 'max_grad_norm' in train_config['optimizer']:
-                if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
+                torch.nn.utils.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
             
             opt.step()
-            update_ema(ema, model)
-
-            # Log loss values:
-            if 'cos_loss' in loss_dict:
-                running_loss += mse_loss.item()
+            
+            # Update EMA
+            if gpu_count > 1:
+                update_ema(ema, model.module)
             else:
-                running_loss += loss.item()
+                update_ema(ema, model)
+
+            # Logging
+            running_loss += loss.item()
             log_steps += 1
             train_steps += 1
             
             if train_steps % train_config['train']['log_every'] == 0:
-                # Measure training speed:
                 torch.cuda.synchronize()
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
-                # Reduce loss history over all processes:
-                avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss.item() / dist.get_world_size()
-                if accelerator.is_main_process:
-                    logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
-                    writer.add_scalar('Loss/train', avg_loss, train_steps)
-                # Reset monitoring variables:
+                avg_loss = running_loss / log_steps
+                
+                logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Steps/Sec: {steps_per_sec:.2f}")
+                writer.add_scalar('Loss/train', avg_loss, train_steps)
+                
+                # Reset monitoring variables
                 running_loss = 0
                 log_steps = 0
                 start_time = time()
 
-            # Save checkpoint:
+            # Save checkpoint
             if train_steps % train_config['train']['ckpt_every'] == 0 and train_steps > 0:
-                if accelerator.is_main_process:
-                    checkpoint = {
-                        "model": model.state_dict(),
-                        "ema": ema.state_dict(),
-                        "opt": opt.state_dict(),
-                        "config": train_config,
-                    }
-                    checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
-                    torch.save(checkpoint, checkpoint_path)
-                    if accelerator.is_main_process:
-                        logger.info(f"Saved checkpoint to {checkpoint_path}")
-                dist.barrier()
+                if gpu_count > 1:
+                    model_state = model.module.state_dict()
+                else:
+                    model_state = model.state_dict()
+                    
+                checkpoint = {
+                    "model": model_state,
+                    "ema": ema.state_dict(),
+                    "opt": opt.state_dict(),
+                    "config": train_config,
+                }
+                checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
+                torch.save(checkpoint, checkpoint_path)
+                logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-                # Evaluate on validation set
-                if 'valid_path' in train_config['data']:
-                    if accelerator.is_main_process:
-                        logger.info(f"Start evaluating at step {train_steps}")
-                    val_loss = evaluate(model, valid_loader, device, transport, (0.0, 1.0))
-                    dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
-                    val_loss = val_loss.item() / dist.get_world_size()
-                    if accelerator.is_main_process:
-                        logger.info(f"Validation Loss: {val_loss:.4f}")
-                        writer.add_scalar('Loss/validation', val_loss, train_steps)
+                # Validation evaluation (optional)
+                if valid_loader is not None:
+                    logger.info(f"Evaluating at step {train_steps}")
+                    model.eval()
+                    val_loss = 0.0
+                    val_steps = 0
+                    
+                    with torch.no_grad():
+                        for val_x, val_y in valid_loader:
+                            val_x = val_x.to(device)
+                            val_y = val_y.to(device)
+                            val_model_kwargs = dict(y=val_y)
+                            val_loss_dict = transport.training_losses(model, val_x, val_model_kwargs)
+                            val_loss += val_loss_dict["loss"].mean().item()
+                            val_steps += 1
+                            if val_steps >= 10:  # Limited validation steps
+                                break
+                    
+                    avg_val_loss = val_loss / val_steps
+                    logger.info(f"Validation Loss: {avg_val_loss:.4f}")
+                    writer.add_scalar('Loss/validation', avg_val_loss, train_steps)
                     model.train()
             
             if train_steps >= train_config['train']['max_steps']:
@@ -382,10 +367,26 @@ def do_train(train_config, accelerator):
         if train_steps >= train_config['train']['max_steps']:
             break
 
-    if accelerator.is_main_process:
-        logger.info("Done!")
-
-    return accelerator
+    logger.info("Training completed!")
+    writer.close()
+    
+    # Save final checkpoint
+    if gpu_count > 1:
+        final_model_state = model.module.state_dict()
+    else:
+        final_model_state = model.state_dict()
+        
+    final_checkpoint = {
+        "model": final_model_state,
+        "ema": ema.state_dict(),
+        "opt": opt.state_dict(),
+        "config": train_config,
+    }
+    final_path = f"{checkpoint_dir}/final.pt"
+    torch.save(final_checkpoint, final_path)
+    logger.info(f"Final model saved to {final_path}")
+    
+    return model, ema
 
 def load_weights_with_shape_check(model, checkpoint, rank=0):
     """从官方train.py复制的权重加载函数"""
@@ -481,23 +482,16 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default='config_microdoppler_finetune.yaml')
     args = parser.parse_args()
 
-    # 配置多GPU训练
-    from accelerate import Accelerator, DistributedDataParallelKwargs
+    # 检查GPU数量
+    gpu_count = torch.cuda.device_count()
+    print(f"Available GPUs: {gpu_count}")
     
-    # 设置DDP参数
-    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
-    
-    # Kaggle单GPU训练配置（双GPU在Kaggle中有已知限制）
-    accelerator = Accelerator(
-        gradient_accumulation_steps=2,  # 通过梯度累积补偿小batch size
-        mixed_precision='no'
-    )
-    
-    # 显示GPU信息
-    if accelerator.is_main_process:
-        print(f"Training on {accelerator.num_processes} GPU(s)")
-        print(f"Current device: {accelerator.device}")
-        print("Note: Using gradient accumulation to compensate for small batch size")
+    if gpu_count > 1:
+        print(f"Using DataParallel on {gpu_count} GPUs")
+        device = torch.device('cuda')
+    else:
+        print("Using single GPU")
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
     train_config = load_config(args.config)
-    do_train(train_config, accelerator)
+    do_train_dataparallel(train_config, device, gpu_count)
