@@ -197,7 +197,7 @@ def do_train_dataparallel(train_config, device, gpu_count):
     # Setup optimizer
     opt = torch.optim.AdamW(model.parameters(), 
                            lr=train_config['optimizer']['lr'], 
-                           weight_decay=train_config['optimizer']['weight_decay'])
+                           weight_decay=train_config['optimizer'].get('weight_decay', 0.0))
 
     # Setup datasets
     dataset = MicroDopplerLatentDataset(
