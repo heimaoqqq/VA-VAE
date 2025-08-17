@@ -772,8 +772,8 @@ class MicroDopplerTrainer:
                     torch.nn.utils.clip_grad_norm_(dit_model.parameters(), self.config.gradient_clip_norm)
                     scaler.step(optimizer)
                     scaler.update()
+                    scheduler.step()
                     optimizer.zero_grad()
-                    scheduler.step()  # 在optimizer.step()之后调用
 
                 total_loss += loss.item() * self.config.gradient_accumulation_steps
                 num_batches += 1
