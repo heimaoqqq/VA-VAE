@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-步骤5: 基于官方LightningDiT train.py的微调脚本
+步骤7: 基于官方LightningDiT train.py的微调脚本
 专门用于微多普勒数据集的条件生成训练
 直接复制自LightningDiT/train.py，仅修改数据集部分
 """
@@ -32,10 +32,18 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 # 添加LightningDiT路径
-sys.path.append('/kaggle/working/LightningDiT')
-from diffusers.models import AutoencoderKL
-from models.lightningdit import LightningDiT_models
-from transport import create_transport, Sampler
+sys.path.append('/kaggle/working/VA-VAE/LightningDiT')  # 主路径
+sys.path.append('/kaggle/working/LightningDiT')  # 备用路径
+
+# 导入LightningDiT模块
+try:
+    from models.lightningdit import LightningDiT_models
+    from transport import create_transport, Sampler
+except ImportError as e:
+    print(f"Import错误: {e}")
+    print("请确认LightningDiT路径正确")
+    sys.exit(1)
+
 from accelerate import Accelerator
 
 class MicroDopplerLatentDataset(Dataset):
