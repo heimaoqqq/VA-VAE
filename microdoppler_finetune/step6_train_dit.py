@@ -48,7 +48,7 @@ def is_main_process():
 
 # 导入LightningDiT模块
 from transport import create_transport, Sampler
-from models.lightningdit import LightningDiT_models, LightningDiT_L_1
+from models.lightningdit import LightningDiT_models, LightningDiT_L_2
 
 # 导入VA-VAE
 from tokenizer.vavae import VA_VAE
@@ -317,7 +317,7 @@ def train_dit():
     latent_size = 16  # 256/16 = 16
     num_users = 31
     
-    model = LightningDiT_L_1(
+    model = LightningDiT_L_2(
         input_size=latent_size,
         num_classes=num_users,
         in_channels=32,
