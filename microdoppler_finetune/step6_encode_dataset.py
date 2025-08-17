@@ -17,82 +17,33 @@ import sys
 import gc
 
 # 添加LightningDiT路径
-sys.path.append('/kaggle/input/lightningdit/LightningDiT')
-sys.path.append('/kaggle/input/stage3')
+sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
+sys.path.append('/kaggle/working/LightningDiT')
 
-def load_vavae_model(checkpoint_path, device='cuda'):
-    """加载VA-VAE模型用于编码"""
-    print(f"📦 加载VA-VAE模型: {checkpoint_path}")
+# 导入LightningDiT的VA_VAE
+try:
+    from tokenizer.vavae import VA_VAE
+except ImportError as e:
+    print(f"导入VA_VAE失败: {e}")
+    print("请确认LightningDiT路径正确")
+    sys.exit(1)
+
+def load_vavae_model(config_path, device='cuda'):
+    """使用官方VA_VAE类加载模型"""
+    print(f"📦 加载VA-VAE模型配置: {config_path}")
     
-    # 导入必要的模块
-    from omegaconf import OmegaConf
-    from ldm.util import instantiate_from_config
-    
-    # 加载配置
-    config_path = '/kaggle/input/stage3/vavae_config.yaml'
-    if os.path.exists(config_path):
-        config = OmegaConf.load(config_path)
-    else:
-        # 使用默认配置
-        config = OmegaConf.create({
-            'model': {
-                'target': 'ldm.models.autoencoder.VQModelInterface',
-                'params': {
-                    'embed_dim': 32,
-                    'n_embed': 8192,
-                    'ckpt_path': checkpoint_path,
-                    'ddconfig': {
-                        'double_z': False,
-                        'z_channels': 32,
-                        'resolution': 256,
-                        'in_channels': 3,
-                        'out_ch': 3,
-                        'ch': 128,
-                        'ch_mult': [1, 2, 4, 4],
-                        'num_res_blocks': 2,
-                        'attn_resolutions': [16],
-                        'dropout': 0.0
-                    },
-                    'lossconfig': {
-                        'target': 'ldm.modules.losses.vqperceptual.VQLPIPSWithDiscriminator',
-                        'params': {
-                            'disc_start': 50001,
-                            'disc_weight': 0.8,
-                            'codebook_weight': 1.0
-                        }
-                    }
-                }
-            }
-        })
-    
-    # 加载模型
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
-    # 提取state_dict
-    if 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
-    else:
-        state_dict = checkpoint
-    
-    # 实例化模型
-    model = instantiate_from_config(config.model)
-    model.load_state_dict(state_dict, strict=False)
-    model = model.to(device)
-    model.eval()
+    # 使用官方VA_VAE类
+    vae = VA_VAE(config_path)
+    vae.model = vae.model.to(device)
     
     print("✅ VA-VAE模型加载成功")
-    return model
+    return vae
 
 def encode_images_to_latents(vae_model, image_paths, batch_size=4, device='cuda'):
-    """批量编码图像为latents"""
+    """批量编码图像为latents，使用官方VA_VAE"""
     
-    # 图像预处理
-    transform = transforms.Compose([
-        transforms.Resize(256),
-        transforms.CenterCrop(256),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
+    # 使用官方的图像预处理（无水平翻转）
+    transform = vae_model.img_transform(p_hflip=0.0, img_size=256)
     
     all_latents = []
     
@@ -106,24 +57,17 @@ def encode_images_to_latents(vae_model, image_paths, batch_size=4, device='cuda'
             batch_images.append(img_tensor)
         
         # 堆叠成batch
-        batch_tensor = torch.stack(batch_images).to(device)
+        batch_tensor = torch.stack(batch_images)
         
-        # 编码
-        with torch.no_grad():
-            # VA-VAE编码
-            posterior = vae_model.encode(batch_tensor)
-            if hasattr(posterior, 'sample'):
-                latents = posterior.sample()
-            else:
-                latents = posterior
-            
-            # 应用缩放因子
-            latents = latents * 0.18215
-            
-            all_latents.append(latents.cpu())
+        # 使用官方编码方法
+        latents = vae_model.encode_images(batch_tensor)
+        
+        # 应用缩放因子
+        latents = latents * 0.18215
+        
+        all_latents.append(latents.cpu())
         
         # 清理显存
-        del batch_tensor
         if i % 100 == 0:
             torch.cuda.empty_cache()
     
@@ -153,8 +97,8 @@ def create_latent_dataset():
     print(f"🔧 使用设备: {device}")
     
     # 加载VA-VAE模型
-    vae_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
-    vae_model = load_vavae_model(vae_checkpoint, device)
+    vae_config = '/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml'
+    vae_model = load_vavae_model(vae_config, device)
     
     # 分别处理训练集和验证集
     for split in ['train', 'val']:
