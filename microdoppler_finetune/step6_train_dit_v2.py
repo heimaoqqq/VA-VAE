@@ -55,7 +55,7 @@ class MicroDopplerConfig:
     min_improvement: float = 1e-4
     
     # 模型配置
-    model_type: str = "L"  # LightningDiT-L
+    model_type: str = "L/2"  # LightningDiT-L/2 (正确的模型键名)
     num_classes: int = 31  # 31个用户
     input_size: int = 16  # 256/16=16 (VA-VAE下采样比例)
     
@@ -399,6 +399,7 @@ class DiTModelManager:
         trainable_params = sum(p.numel() for p in dit_model.parameters() if p.requires_grad)
 
         logger.info(f"✅ LightningDiT-{self.config.model_type} 创建完成")
+        logger.info(f"   模型架构: 24层, 1024隐藏维度, patch_size=2")
         logger.info(f"   总参数: {total_params / 1e6:.1f}M")
         logger.info(f"   可训练参数: {trainable_params / 1e6:.1f}M")
 
@@ -802,7 +803,7 @@ def main():
 
     # 显示配置信息
     logger.info("\n📋 训练配置:")
-    logger.info(f"   模型: LightningDiT-{config.model_type}")
+    logger.info(f"   模型: LightningDiT-{config.model_type} (24层, 1024维)")
     logger.info(f"   用户类别: {config.num_classes}")
     logger.info(f"   批次大小: {config.batch_size}")
     logger.info(f"   梯度累积: {config.gradient_accumulation_steps}")
