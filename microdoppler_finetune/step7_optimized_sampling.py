@@ -363,8 +363,9 @@ def compare_sampling_methods():
             img_np = (img_np * 255).astype(np.uint8)
             img = Image.fromarray(img_np)
             
-            img.save(comparison_dir / f"{test_cfg['name']}.png")
-            print(f"   ✅ 保存: {comparison_dir / f'{test_cfg['name']}.png'}")
+            filename = f"{test_cfg['name']}.png"
+            img.save(comparison_dir / filename)
+            print(f"   ✅ 保存: {comparison_dir / filename}")
 
 def main():
     """主函数"""
