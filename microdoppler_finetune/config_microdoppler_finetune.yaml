@@ -42,6 +42,7 @@ train:
 # 优化器配置
 optimizer:
   lr: 0.0001  # 微调使用较小学习率
+  weight_decay: 0.0  # L2正则化权重衰减
   beta2: 0.95
   max_grad_norm: 1.0  # 梯度裁剪
 
