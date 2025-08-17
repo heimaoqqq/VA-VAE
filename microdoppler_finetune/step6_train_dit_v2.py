@@ -226,8 +226,22 @@ def load_vae(checkpoint_path, device='cuda'):
         'dropout': 0.0
     }
     
+    # 损失配置（VAE需要）
+    loss_config = {
+        'target': 'ldm.modules.losses.LPIPSWithDiscriminator',
+        'params': {
+            'disc_factor': 0.5,
+            'perceptual_weight': 1.0,
+            'disc_weight': 0.5
+        }
+    }
+    
     # 创建VAE模型
-    vae = AutoencoderKL(ddconfig=vae_config, embed_dim=vae_config['embed_dim'])
+    vae = AutoencoderKL(
+        ddconfig=vae_config, 
+        lossconfig=loss_config,
+        embed_dim=vae_config['embed_dim']
+    )
     
     # 加载权重
     if os.path.exists(checkpoint_path):
