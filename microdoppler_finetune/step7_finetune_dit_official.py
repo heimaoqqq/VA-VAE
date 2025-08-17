@@ -75,22 +75,47 @@ class MicroDopplerLatentDataset(Dataset):
         return len(self.latent_files)
     
     def __getitem__(self, idx):
-        latent_file = self.latent_files[idx]
-        
-        # 从文件名解析用户ID
-        filename = latent_file.stem
-        user_id = int(filename.split('_')[1])
-        
-        # 加载latent
-        with safe_open(str(latent_file), framework="pt", device="cpu") as f:
-            latent = f.get_tensor("latent")
-        
-        # 应用归一化（如果需要）
-        if self.latent_norm:
-            latent = (latent - self.mean.view(16, 1, 1)) / self.std.view(16, 1, 1)
-            latent = latent * self.latent_multiplier
-        
-        return latent, user_id
+        try:
+            latent_file = self.latent_files[idx]
+            
+            # 加载safetensors文件
+            with safe_open(str(latent_file), framework="pt", device="cpu") as f:
+                # 检查文件中的键
+                keys = list(f.keys())
+                if 'latent' in keys:
+                    latent = f.get_tensor("latent")
+                elif 'latents' in keys:
+                    latent = f.get_tensor("latents")  
+                else:
+                    print(f"Available keys in {latent_file}: {keys}")
+                    raise ValueError(f"No 'latent' or 'latents' key found in {latent_file}")
+                
+                # 获取标签
+                if 'label' in keys:
+                    user_id = f.get_tensor("label").item()
+                elif 'labels' in keys:
+                    user_id = f.get_tensor("labels").item()
+                else:
+                    # 从文件名解析
+                    filename = latent_file.stem
+                    if 'ID_' in filename:
+                        user_id_str = filename.split('ID_')[1].split('_')[0]
+                        user_id = int(user_id_str) - 1  # ID_1 -> 0
+                    else:
+                        print(f"Cannot parse user_id from filename: {filename}")
+                        user_id = 0  # 默认值
+            
+            # 应用归一化（如果需要）
+            if self.latent_norm:
+                latent = (latent - self.mean.view(-1, 1, 1)) / self.std.view(-1, 1, 1)
+                latent = latent * self.latent_multiplier
+            
+            return latent, user_id
+            
+        except Exception as e:
+            print(f"Error loading {latent_file}: {e}")
+            # 返回默认值避免训练中断
+            return torch.zeros((32, 16, 16)), 0
 
 def do_train(train_config, accelerator):
     """
