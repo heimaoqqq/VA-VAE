@@ -57,9 +57,8 @@ setup_taming_path()
 from transport import create_transport, Sampler
 from models.lightningdit import LightningDiT_models, LightningDiT_L_2
 
-# 导入VA-VAE（需要先添加vavae路径）
-sys.path.insert(0, str(project_root / 'LightningDiT' / 'vavae'))
-from ldm.models.autoencoder import AutoencoderKL
+# 导入VA-VAE（官方方式）
+from tokenizer.autoencoder import AutoencoderKL
 
 # ==================== 数据集定义 ====================
 class MicroDopplerDataset(Dataset):
@@ -209,54 +208,22 @@ def create_dit_model(device='cuda'):
     return model.to(device)
 
 def load_vae(checkpoint_path, device='cuda'):
-    """加载微调后的VA-VAE"""
+    """使用官方方式加载VA-VAE（与tokenizer.autoencoder兼容）"""
     
-    # VA-VAE配置
-    vae_config = {
-        'embed_dim': 32,
-        'double_z': True,
-        'z_channels': 32,
-        'resolution': 256,
-        'in_channels': 3,
-        'out_ch': 3,
-        'ch': 128,
-        'ch_mult': [1, 1, 2, 2, 4],
-        'num_res_blocks': 2,
-        'attn_resolutions': [16],
-        'dropout': 0.0
-    }
+    print(f"📥 加载VAE权重: {checkpoint_path}")
     
-    # 损失配置（VAE需要）
-    loss_config = {
-        'target': 'ldm.modules.losses.LPIPSWithDiscriminator',
-        'params': {
-            'disc_factor': 0.5,
-            'perceptual_weight': 1.0,
-            'disc_weight': 0.5
-        }
-    }
-    
-    # 创建VAE模型
-    vae = AutoencoderKL(
-        ddconfig=vae_config, 
-        lossconfig=loss_config,
-        embed_dim=vae_config['embed_dim']
-    )
-    
-    # 加载权重
-    if os.path.exists(checkpoint_path):
-        print(f"📥 加载VAE权重: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        state_dict = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
-        
-        # 移除前缀
-        state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
-        vae.load_state_dict(state_dict, strict=False)
-        print("✅ VAE加载成功")
-    else:
+    if not os.path.exists(checkpoint_path):
         print(f"❌ VAE权重文件不存在: {checkpoint_path}")
+        return None
     
-    vae = vae.to(device).eval()
+    # 使用官方AutoencoderKL（与tokenizer一致）
+    vae = AutoencoderKL(
+        embed_dim=32,
+        ch_mult=(1, 1, 2, 2, 4),
+        ckpt_path=checkpoint_path
+    ).to(device).eval()
+    
+    print("✅ VAE加载成功，已设置为eval模式")
     return vae
 
 # ==================== 训练配置 ====================
