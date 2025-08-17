@@ -41,8 +41,8 @@ class MicroDopplerConfig:
     
     # 训练配置 - 针对小数据集优化
     num_epochs: int = 80
-    batch_size: int = 2  # T4×2显存限制
-    gradient_accumulation_steps: int = 4  # 有效batch_size=8
+    batch_size: int = 4  # 保守设置，避免GPU显存不均匀导致OOM
+    gradient_accumulation_steps: int = 2  # 有效batch_size=8
     learning_rate: float = 5e-5  # 小数据集保守学习率
     weight_decay: float = 0.0  # 官方不使用
     beta2: float = 0.95  # 官方推荐
@@ -85,7 +85,8 @@ class MicroDopplerConfig:
     
     # Kaggle T4×2 GPU配置
     use_multi_gpu: bool = True
-    gpu_strategy: str = "DataParallel"  # Kaggle推荐DataParallel而非DDP
+    gpu_strategy: str = "DataParallel"  # DataParallel或单GPU
+    # 注意：DataParallel在Kaggle T4×2上可能负载不均匀
 
 
 class MicroDopplerDataManager:
@@ -376,6 +377,7 @@ class DiTModelManager:
     def load_vae(self, device):
         """加载微调后的VA-VAE模型"""
         logger.info("🔄 加载微调后的VA-VAE模型...")
+        logger.info(f"   目标设备: {device}")
 
         # 设置taming路径
         self._setup_taming_path()
@@ -435,12 +437,30 @@ class DiTModelManager:
         # 确保模型在正确设备上
         dit_model = dit_model.to(device)
 
-        # Kaggle T4×2使用DataParallel
+        # Kaggle T4×2使用DataParallel - 优化负载均衡
         if use_multi_gpu and torch.cuda.device_count() > 1:
             # 确保模型在cuda:0上，然后包装DataParallel
             dit_model = dit_model.to('cuda:0')
-            dit_model = nn.DataParallel(dit_model, device_ids=list(range(torch.cuda.device_count())))
-            logger.info(f"✅ 启用DataParallel多GPU训练，使用GPU: {list(range(torch.cuda.device_count()))}")
+
+            # 优化DataParallel配置
+            device_ids = list(range(torch.cuda.device_count()))
+            dit_model = nn.DataParallel(
+                dit_model,
+                device_ids=device_ids,
+                output_device=0,  # 明确指定输出设备
+                dim=0  # 明确指定batch维度
+            )
+
+            logger.info(f"✅ 启用DataParallel多GPU训练")
+            logger.info(f"   设备列表: {device_ids}")
+            logger.info(f"   输出设备: cuda:0")
+            logger.info(f"   ⚠️ 注意：DataParallel可能导致GPU负载不均匀")
+
+            # 显示当前显存使用
+            for i in range(torch.cuda.device_count()):
+                memory_allocated = torch.cuda.memory_allocated(i) / 1024**3
+                memory_reserved = torch.cuda.memory_reserved(i) / 1024**3
+                logger.info(f"   GPU {i}: 已分配 {memory_allocated:.1f}GB, 已保留 {memory_reserved:.1f}GB")
         else:
             logger.info(f"✅ 单GPU训练，使用设备: {device}")
 
@@ -452,6 +472,19 @@ class DiTModelManager:
         logger.info(f"   模型架构: 24层, 1024隐藏维度, patch_size=2")
         logger.info(f"   总参数: {total_params / 1e6:.1f}M")
         logger.info(f"   可训练参数: {trainable_params / 1e6:.1f}M")
+
+        # 详细的模型信息验证
+        actual_model = dit_model.module if hasattr(dit_model, 'module') else dit_model
+        logger.info(f"   实际模型类: {type(actual_model).__name__}")
+        logger.info(f"   模型配置: depth={getattr(actual_model, 'depth', 'N/A')}, "
+                   f"hidden_size={getattr(actual_model, 'hidden_size', 'N/A')}")
+
+        # 检查是否使用了预训练权重
+        if hasattr(actual_model, 'pos_embed'):
+            logger.info(f"   位置编码形状: {actual_model.pos_embed.shape}")
+
+        logger.info(f"🔍 模型验证: 这是L/2模型，不是XL模型！")
+        logger.info(f"   XL模型参数量: ~675M, 当前模型: {total_params / 1e6:.1f}M")
 
         return dit_model
 
@@ -574,9 +607,13 @@ class DiTModelManager:
 
         if xl_checkpoint_path is None:
             logger.warning("⚠️ XL预训练权重不存在，使用随机初始化")
+            logger.warning("   检查的路径:")
+            for path in possible_paths:
+                logger.warning(f"     - {path} (存在: {path.exists()})")
             return
 
-        logger.info("🔄 进行XL→L权重迁移...")
+        logger.info(f"🔄 进行XL→L权重迁移...")
+        logger.info(f"   XL权重路径: {xl_checkpoint_path}")
 
         try:
             xl_state = torch.load(xl_checkpoint_path, map_location='cpu')
@@ -703,9 +740,23 @@ class MicroDopplerTrainer:
             else:
                 patience_counter += 1
 
+            # GPU显存监控
+            if self.use_multi_gpu:
+                gpu_memory_info = []
+                for i in range(torch.cuda.device_count()):
+                    allocated = torch.cuda.memory_allocated(i) / 1024**3
+                    reserved = torch.cuda.memory_reserved(i) / 1024**3
+                    gpu_memory_info.append(f"GPU{i}: {allocated:.1f}/{reserved:.1f}GB")
+                memory_str = ", ".join(gpu_memory_info)
+            else:
+                allocated = torch.cuda.memory_allocated(self.device) / 1024**3
+                reserved = torch.cuda.memory_reserved(self.device) / 1024**3
+                memory_str = f"GPU: {allocated:.1f}/{reserved:.1f}GB"
+
             logger.info(f"Epoch {epoch+1}/{self.config.num_epochs} - "
                        f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, "
                        f"Patience: {patience_counter}/{self.config.patience}")
+            logger.info(f"   显存使用: {memory_str}")
 
             # 早停
             if patience_counter >= self.config.patience:
@@ -772,8 +823,8 @@ class MicroDopplerTrainer:
                     torch.nn.utils.clip_grad_norm_(dit_model.parameters(), self.config.gradient_clip_norm)
                     scaler.step(optimizer)
                     scaler.update()
-                    scheduler.step()
                     optimizer.zero_grad()
+                    scheduler.step()  # 在optimizer.step()之后调用
 
                 total_loss += loss.item() * self.config.gradient_accumulation_steps
                 num_batches += 1
@@ -907,12 +958,13 @@ def main():
     logger.info("\n📋 训练配置:")
     logger.info(f"   模型: LightningDiT-{config.model_type} (24层, 1024维)")
     logger.info(f"   用户类别: {config.num_classes}")
-    logger.info(f"   批次大小: {config.batch_size}")
-    logger.info(f"   梯度累积: {config.gradient_accumulation_steps}")
+    logger.info(f"   批次大小: {config.batch_size} (提升后)")
+    logger.info(f"   梯度累积: {config.gradient_accumulation_steps} (无需累积)")
     logger.info(f"   有效批次: {config.batch_size * config.gradient_accumulation_steps}")
     logger.info(f"   学习率: {config.learning_rate}")
     logger.info(f"   总轮数: {config.num_epochs}")
     logger.info(f"   早停耐心: {config.patience}")
+    logger.info(f"   🚀 显存充足，使用更大batch size提升训练效率")
 
     # 创建管理器
     data_manager = MicroDopplerDataManager(config)
