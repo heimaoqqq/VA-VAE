@@ -25,6 +25,13 @@ from tqdm import tqdm
 from PIL import Image
 import yaml
 
+# 禁用torch编译优化以避免FX符号追踪冲突
+torch._dynamo.config.disable = True
+torch._dynamo.config.suppress_errors = True
+
+# 设置环境变量禁用torch编译
+os.environ['TORCH_COMPILE_DISABLE'] = '1'
+
 # 添加LightningDiT路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / 'LightningDiT'))
@@ -435,14 +442,14 @@ class DiTModelManager:
         # 确保模型在正确设备上
         dit_model = dit_model.to(device)
 
-        # Kaggle T4×2使用DataParallel
-        if use_multi_gpu and torch.cuda.device_count() > 1:
-            # 确保模型在cuda:0上，然后包装DataParallel
-            dit_model = dit_model.to('cuda:0')
-            dit_model = nn.DataParallel(dit_model, device_ids=list(range(torch.cuda.device_count())))
-            logger.info(f"✅ 启用DataParallel多GPU训练，使用GPU: {list(range(torch.cuda.device_count()))}")
-        else:
-            logger.info(f"✅ 单GPU训练，使用设备: {device}")
+        # 临时禁用多GPU训练以避免FX符号追踪问题
+        logger.info("⚠️ 临时使用单GPU训练以避免FX符号追踪冲突")
+        logger.info(f"✅ 单GPU训练，使用设备: {device}")
+
+        # 如果需要多GPU，可以后续启用：
+        # if use_multi_gpu and torch.cuda.device_count() > 1:
+        #     dit_model = nn.DataParallel(dit_model, device_ids=list(range(torch.cuda.device_count())))
+        #     logger.info(f"✅ 启用DataParallel多GPU训练，使用GPU: {list(range(torch.cuda.device_count()))}")
 
         # 统计参数
         total_params = sum(p.numel() for p in dit_model.parameters())
