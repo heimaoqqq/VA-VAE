@@ -2,49 +2,50 @@
 """
 步骤7: 基于官方LightningDiT train.py的微调脚本
 专门用于微多普勒数据集的条件生成训练
-直接复制自LightningDiT/train.py，仅修改数据集部分
+使用DataParallel实现Kaggle T4x2双GPU训练
 """
 
-import torch
-import torch.distributed as dist
-import torch.backends.cuda
-import torch.backends.cudnn
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.tensorboard import SummaryWriter
-
-import math
-import yaml
-import json
-import numpy as np
-import logging
 import os
 import sys
 import argparse
-from time import time
+import yaml
+import logging
+import math
+import numpy as np
 from glob import glob
 from copy import deepcopy
-from collections import OrderedDict
-from PIL import Image
-from tqdm import tqdm
+from time import time
 from pathlib import Path
-from safetensors import safe_open
-from safetensors.torch import save_file
 
-# 添加LightningDiT路径
-sys.path.append('/kaggle/working/VA-VAE/LightningDiT')  # 主路径
-sys.path.append('/kaggle/working/LightningDiT')  # 备用路径
+# Suppress CUDA library registration warnings in Kaggle
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 
-# 导入LightningDiT模块
-try:
-    from models.lightningdit import LightningDiT_models
-    from transport import create_transport, Sampler
-except ImportError as e:
-    print(f"Import错误: {e}")
-    print("请确认LightningDiT路径正确")
-    sys.exit(1)
+# Disable torch.compile and FX tracing to avoid conflicts with gradient checkpointing
+os.environ['TORCH_COMPILE_DISABLE'] = '1'
+os.environ['TORCHDYNAMO_DISABLE'] = '1'
 
-from accelerate import Accelerator
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.tensorboard import SummaryWriter
+from omegaconf import OmegaConf
+from PIL import Image
+from torchvision import transforms
+import safetensors.torch as st
+
+# Completely disable torch compile and dynamo
+torch._dynamo.disable()
+torch._dynamo.config.disable = True
+torch._dynamo.config.suppress_errors = True
+
+# Disable torch._inductor optimizations that conflict with checkpointing
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+
+sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
+from models import LightningDiT_models
+from transport import create_transport
 
 class MicroDopplerLatentDataset(Dataset):
     """微多普勒latent数据集 - 处理step6创建的批量格式数据"""
