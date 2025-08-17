@@ -28,16 +28,70 @@ except ImportError as e:
     print("请确认LightningDiT路径正确")
     sys.exit(1)
 
-def load_vavae_model(config_path, device='cuda'):
-    """使用官方VA_VAE类加载模型"""
-    print(f"📦 加载VA-VAE模型配置: {config_path}")
+def load_vavae_model(checkpoint_path, device='cuda'):
+    """使用官方VA_VAE类加载模型，但使用自定义检查点路径"""
+    print(f"📦 加载VA-VAE模型: {checkpoint_path}")
     
-    # 使用官方VA_VAE类
-    vae = VA_VAE(config_path)
-    vae.model = vae.model.to(device)
+    # 创建自定义配置（不修改官方文件）
+    import tempfile
+    import yaml
+    from omegaconf import OmegaConf
     
-    print("✅ VA-VAE模型加载成功")
-    return vae
+    # 基于官方配置创建自定义配置
+    custom_config = {
+        'ckpt_path': checkpoint_path,
+        'model': {
+            'base_learning_rate': 1.0e-04,
+            'target': 'ldm.models.autoencoder.AutoencoderKL',
+            'params': {
+                'monitor': 'val/rec_loss',
+                'embed_dim': 32,
+                'use_vf': 'dinov2',
+                'reverse_proj': True,
+                'lossconfig': {
+                    'target': 'ldm.modules.losses.LPIPSWithDiscriminator',
+                    'params': {
+                        'disc_start': 1,
+                        'kl_weight': 1.0e-06,
+                        'disc_weight': 0.5,
+                        'vf_weight': 0.1,
+                        'adaptive_vf': True,
+                        'vf_loss_type': 'combined_v3',
+                        'distmat_margin': 0.25,
+                        'cos_margin': 0.5
+                    }
+                },
+                'ddconfig': {
+                    'double_z': True,
+                    'z_channels': 32,
+                    'resolution': 256,
+                    'in_channels': 3,
+                    'out_ch': 3,
+                    'ch': 128,
+                    'ch_mult': [1, 1, 2, 2, 4],
+                    'num_res_blocks': 2,
+                    'attn_resolutions': [16],
+                    'dropout': 0.0
+                }
+            }
+        }
+    }
+    
+    # 创建临时配置文件
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+        yaml.dump(custom_config, f, default_flow_style=False)
+        temp_config_path = f.name
+    
+    try:
+        # 使用官方VA_VAE类加载
+        vae = VA_VAE(temp_config_path)
+        vae.model = vae.model.to(device)
+        print("✅ VA-VAE模型加载成功")
+        return vae
+    finally:
+        # 清理临时文件
+        import os
+        os.unlink(temp_config_path)
 
 def encode_images_to_latents(vae_model, image_paths, batch_size=4, device='cuda'):
     """批量编码图像为latents，使用官方VA_VAE"""
@@ -96,9 +150,9 @@ def create_latent_dataset():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"🔧 使用设备: {device}")
     
-    # 加载VA-VAE模型
-    vae_config = '/kaggle/working/VA-VAE/LightningDiT/tokenizer/configs/vavae_f16d32.yaml'
-    vae_model = load_vavae_model(vae_config, device)
+    # 加载VA-VAE模型（使用微调后的检查点）
+    vae_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
+    vae_model = load_vavae_model(vae_checkpoint, device)
     
     # 分别处理训练集和验证集
     for split in ['train', 'val']:
