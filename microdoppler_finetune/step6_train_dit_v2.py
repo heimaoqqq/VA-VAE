@@ -540,10 +540,19 @@ class DiTModelManager:
 
         scheduler = LambdaLR(optimizer, lr_lambda)
 
+        # 重要：调用一次optimizer.step()来避免scheduler警告
+        # 这是PyTorch推荐的做法
+        optimizer.zero_grad()
+        dummy_loss = torch.tensor(0.0, requires_grad=True)
+        dummy_loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
         logger.info("✅ 训练组件设置完成")
         logger.info(f"   优化器: AdamW (lr={self.config.learning_rate}, beta2={self.config.beta2})")
         logger.info(f"   调度器: 预热{self.config.warmup_steps}步 + 余弦退火")
         logger.info(f"   Transport: Linear path + velocity prediction")
+        logger.info(f"   已执行dummy step避免scheduler警告")
 
         return optimizer, scheduler, transport
 
@@ -738,6 +747,8 @@ class MicroDopplerTrainer:
             # 回退到旧版本
             scaler = torch.cuda.amp.GradScaler()
 
+
+
         logger.info(f"\n🎯 开始训练循环:")
         logger.info(f"   总轮数: {self.config.num_epochs}")
         logger.info(f"   早停耐心: {self.config.patience}")
@@ -846,10 +857,14 @@ class MicroDopplerTrainer:
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(dit_model.parameters(), self.config.gradient_clip_norm)
+
+                    # 使用标准的更新顺序
                     scaler.step(optimizer)
                     scaler.update()
-                    scheduler.step()  # 在scaler.update()之后调用
                     optimizer.zero_grad()
+
+                    # 在所有优化器操作完成后调用scheduler
+                    scheduler.step()
 
                 total_loss += loss.item() * self.config.gradient_accumulation_steps
                 num_batches += 1
