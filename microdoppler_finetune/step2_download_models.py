@@ -85,13 +85,13 @@ def download_vavae_models():
     models_dir = base_path / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
     
-    # 下载LightningDiT-L模型（VA-VAE使用微调后的）
+    # 下载LightningDiT-XL模型（只有XL有官方预训练权重）
     models = {
-        "LightningDiT L": {
-            "url": "https://huggingface.co/hustvl/lightningdit-l-imagenet256-100ep/resolve/main/lightningdit-l-imagenet256-100ep.pt",
-            "filename": "lightningdit-l-imagenet256-100ep.pt",
-            "size_mb": 3700,  # L模型约3.7GB
-            "description": "LightningDiT-L预训练权重 (ImageNet 256x256, 100轮)",
+        "LightningDiT XL": {
+            "url": "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/resolve/main/lightningdit-xl-imagenet256-64ep.pt",
+            "filename": "lightningdit-xl-imagenet256-64ep.pt",
+            "size_mb": 10800,  # XL模型约10.8GB
+            "description": "LightningDiT-XL预训练权重 (ImageNet 256x256, 64轮)",
             "required": True,
             "dest_dir": models_dir
         },
