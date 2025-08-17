@@ -497,8 +497,11 @@ def main():
     # 加载VAE
     vae = load_vae(config.vae_checkpoint, config.device)
     
-    # 创建模型（根据内存情况选择Base或L）
-    use_base = gpu_count == 2 and config.batch_size <= 4  # Kaggle双T4环境建议用Base
+    # 创建模型（默认使用L模型，与step2下载的checkpoint匹配）
+    # 只有在明确需要节省内存时才使用Base模型
+    use_base = False  # 默认使用L模型
+    # 如果需要节省内存，可以手动设置为True使用Base模型
+    # use_base = True  # 内存不足时启用
     model = create_dit_model(config.device, use_base_model=use_base)
     
     # 使用DataParallel（Kaggle双GPU）
