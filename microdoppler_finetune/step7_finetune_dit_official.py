@@ -47,91 +47,71 @@ except ImportError as e:
 from accelerate import Accelerator
 
 class MicroDopplerLatentDataset(Dataset):
-    """微多普勒latent数据集 - 兼容官方ImgLatentDataset接口"""
+    """微多普勒latent数据集 - 处理step6创建的批量格式数据"""
     def __init__(self, data_dir, latent_norm=False, latent_multiplier=0.18215):
         self.data_dir = Path(data_dir)
         self.latent_norm = latent_norm
         self.latent_multiplier = latent_multiplier
         
-        # 加载所有latent文件
-        print(f"Looking for safetensors files in: {self.data_dir}")
+        # 加载所有文件并构建索引
+        print(f"Loading batched latent files from: {self.data_dir}")
         self.latent_files = list(self.data_dir.glob('*.safetensors'))
-        print(f"Found files: {[f.name for f in self.latent_files]}")
         
         if not self.latent_files:
             raise ValueError(f"No latent files found in {data_dir}")
         
-        # 加载统计信息（如果存在）
-        stats_file = self.data_dir / 'latent_stats.json'
-        if stats_file.exists():
-            with open(stats_file, 'r') as f:
-                stats = json.load(f)
-                self.mean = torch.tensor(stats['mean'])
-                self.std = torch.tensor(stats['std'])
-        else:
-            self.mean = torch.zeros(16)
-            self.std = torch.ones(16)
+        # 构建全局索引: (file_idx, sample_idx)
+        self.sample_indices = []
+        self.total_samples = 0
         
-        print(f"Dataset initialized with {len(self.latent_files)} latent files")
+        for file_idx, latent_file in enumerate(self.latent_files):
+            with safe_open(str(latent_file), framework="pt", device="cpu") as f:
+                if 'latents' in f.keys():
+                    latents = f.get_tensor("latents")
+                    num_samples = latents.shape[0]
+                    
+                    # 添加该文件中的所有样本索引
+                    for sample_idx in range(num_samples):
+                        self.sample_indices.append((file_idx, sample_idx))
+                    
+                    self.total_samples += num_samples
+                    print(f"File {latent_file.name}: {num_samples} samples")
+        
+        print(f"Dataset initialized with {self.total_samples} total samples from {len(self.latent_files)} files")
+        
+        # 加载统计信息
+        stats_file = self.data_dir / 'latents_stats.pt'
+        if stats_file.exists():
+            stats = torch.load(stats_file)
+            self.mean = stats['mean']
+            self.std = stats['std']
+        else:
+            self.mean = torch.zeros(32)  # VA-VAE f16d32 has 32 channels
+            self.std = torch.ones(32)
     
     def __len__(self):
-        return len(self.latent_files)
+        return self.total_samples
     
     def __getitem__(self, idx):
-        latent_file = self.latent_files[idx]
-        print(f"Loading file {idx}: {latent_file}")
+        # 获取对应的文件和样本索引
+        file_idx, sample_idx = self.sample_indices[idx]
+        latent_file = self.latent_files[file_idx]
         
-        try:
-            # 加载safetensors文件
-            with safe_open(str(latent_file), framework="pt", device="cpu") as f:
-                # 检查文件中的键
-                keys = list(f.keys())
-                print(f"Available keys in {latent_file.name}: {keys}")
-                
-                # 加载latent数据
-                if 'latent' in keys:
-                    latent = f.get_tensor("latent")
-                elif 'latents' in keys:
-                    latent = f.get_tensor("latents")  
-                else:
-                    print(f"ERROR: No 'latent' or 'latents' key found in {latent_file}")
-                    return torch.zeros((32, 16, 16)), 0
-                
-                print(f"Latent shape: {latent.shape}")
-                
-                # 获取标签
-                if 'label' in keys:
-                    user_id = f.get_tensor("label").item()
-                    print(f"Found label: {user_id}")
-                elif 'labels' in keys:
-                    user_id = f.get_tensor("labels").item()
-                    print(f"Found labels: {user_id}")
-                else:
-                    # 从文件名解析
-                    filename = latent_file.stem
-                    print(f"Parsing filename: {filename}")
-                    if 'ID_' in filename:
-                        user_id_str = filename.split('ID_')[1].split('_')[0]
-                        user_id = int(user_id_str) - 1  # ID_1 -> 0
-                        print(f"Parsed user_id: {user_id}")
-                    else:
-                        print(f"Cannot parse user_id from filename: {filename}, using 0")
-                        user_id = 0  # 默认值
+        # 加载该文件的数据
+        with safe_open(str(latent_file), framework="pt", device="cpu") as f:
+            latents = f.get_tensor("latents")  # [N, 32, 16, 16]
+            labels = f.get_tensor("labels")    # [N]
             
-            # 应用归一化（如果需要）
-            if self.latent_norm:
-                latent = (latent - self.mean.view(-1, 1, 1)) / self.std.view(-1, 1, 1)
-                latent = latent * self.latent_multiplier
-            
-            print(f"Returning latent shape {latent.shape}, user_id {user_id}")
-            return latent, user_id
-            
-        except Exception as e:
-            print(f"ERROR loading {latent_file}: {e}")
-            import traceback
-            traceback.print_exc()
-            # 返回默认值避免训练中断
-            return torch.zeros((32, 16, 16)), 0
+            # 提取单个样本
+            latent = latents[sample_idx]  # [32, 16, 16] 
+            user_id = labels[sample_idx].item()  # scalar
+        
+        # 应用归一化
+        if self.latent_norm:
+            latent = (latent - self.mean.view(-1, 1, 1)) / self.std.view(-1, 1, 1)
+            latent = latent * self.latent_multiplier
+        
+        return latent, user_id
 
 def do_train(train_config, accelerator):
     """
