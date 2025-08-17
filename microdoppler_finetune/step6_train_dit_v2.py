@@ -243,6 +243,12 @@ class MicroDopplerDataManager:
             persistent_workers=self.config.persistent_workers
         )
 
+        logger.info(f"🔍 DataLoader配置验证:")
+        logger.info(f"   训练batch_size: {train_loader.batch_size}")
+        logger.info(f"   配置batch_size: {self.config.batch_size}")
+        logger.info(f"   训练数据集大小: {len(train_dataset)}")
+        logger.info(f"   预计步数/epoch: {len(train_loader)}")
+
         val_loader = DataLoader(
             val_dataset,
             batch_size=self.config.batch_size,
@@ -775,6 +781,13 @@ class MicroDopplerTrainer:
 
         with tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]") as pbar:
             for batch_idx, (latents, labels) in enumerate(pbar):
+                # 验证实际batch size（仅第一个batch）
+                if batch_idx == 0:
+                    logger.info(f"🔍 实际batch验证:")
+                    logger.info(f"   latents形状: {latents.shape}")
+                    logger.info(f"   实际batch_size: {latents.shape[0]}")
+                    logger.info(f"   配置batch_size: {self.config.batch_size}")
+
                 # 确保数据在正确设备上
                 if hasattr(dit_model, 'module'):
                     # DataParallel情况下，数据必须在cuda:0
@@ -822,14 +835,21 @@ class MicroDopplerTrainer:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(dit_model.parameters(), self.config.gradient_clip_norm)
                     scaler.step(optimizer)
-                    scheduler.step()  # 在optimizer.step()之后调用
                     scaler.update()
+                    scheduler.step()  # 在scaler.update()之后调用
                     optimizer.zero_grad()
 
                 total_loss += loss.item() * self.config.gradient_accumulation_steps
                 num_batches += 1
 
-                pbar.set_postfix({'loss': f'{loss.item():.6f}'})
+                # 获取当前学习率
+                current_lr = optimizer.param_groups[0]['lr']
+
+                pbar.set_postfix({
+                    'loss': f'{loss.item():.6f}',
+                    'avg_loss': f'{total_loss/num_batches:.6f}',
+                    'lr': f'{current_lr:.2e}'
+                })
 
         return total_loss / num_batches
 
