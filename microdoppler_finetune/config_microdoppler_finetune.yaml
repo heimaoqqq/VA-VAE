@@ -24,13 +24,13 @@ model:
   use_rmsnorm: true
   wo_shift: false
   in_chans: 32  # VA-VAE f16d32的通道数
-  use_checkpoint: false  # T4显存有限，不使用gradient checkpointing
+  use_checkpoint: true   # 启用gradient checkpointing节省内存
 
 # 训练配置
 train:
   weight_init: '/kaggle/working/VA-VAE/models/lightningdit-xl-imagenet256-64ep.pt'  # 预训练权重
   max_steps: 10000  # 微调步数
-  global_batch_size: 32  # 双T4 GPU，每GPU batch_size=16
+  global_batch_size: 16  # DataParallel双GPU，每GPU batch_size=8
   global_seed: 42
   output_dir: '/kaggle/working/microdoppler_dit_finetune'
   exp_name: 'microdoppler_xl_finetune'
