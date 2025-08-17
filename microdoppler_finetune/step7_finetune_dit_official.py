@@ -150,18 +150,18 @@ def do_train(train_config, accelerator):
 
     # Load model:
     if train_config['train']['weight_init'] is not None:
-        print_with_prefix("Loading checkpoint from {}".format(train_config['train']['weight_init']))
+        logger.info("Loading checkpoint from {}".format(train_config['train']['weight_init']))
         checkpoint = torch.load(train_config['train']['weight_init'], map_location=lambda storage, loc: storage)
         if "ema" in checkpoint:  # supports checkpoints from train.py
             checkpoint = checkpoint["ema"]
         
-        # 处理类别数不匹配的情况（ImageNet 1001类 vs 微多普勒 33类）
+        # 处理类别数不匹配的情况（ImageNet 1001类 vs 微多普勒 32类）
         if 'y_embedder.embedding_table.weight' in checkpoint:
             checkpoint_classes = checkpoint['y_embedder.embedding_table.weight'].shape[0]
             model_classes = model.y_embedder.embedding_table.weight.shape[0]
             
             if checkpoint_classes != model_classes:
-                print_with_prefix(f"Skipping y_embedder due to class mismatch: checkpoint {checkpoint_classes} vs model {model_classes}")
+                logger.info(f"Skipping y_embedder due to class mismatch: checkpoint {checkpoint_classes} vs model {model_classes}")
                 # 保留原始的分类embedding权重（随机初始化）
                 del checkpoint['y_embedder.embedding_table.weight']
         
