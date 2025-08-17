@@ -595,22 +595,47 @@ def validate_and_sample(model, vae, val_loader, transport, sampler, config, epoc
             y = torch.tensor([user_id], device=config.device)
             z = torch.randn(1, 32, 16, 16, device=config.device)
             
-            # 采样
-            model_kwargs = dict(y=y, cfg_scale=config.cfg_scale)
-            sample_fn = sampler.sample_ode(
-                sampling_method=config.sampling_method,
-                num_steps=config.num_sampling_steps,
-                atol=1e-6,
-                rtol=1e-3,
-            )
-            
-            # 处理DataParallel包装的模型
-            if hasattr(model, 'module'):
-                model_fn = model.module.forward_with_cfg
+            # 为CFG采样准备双倍batch（条件+无条件）
+            if config.cfg_scale > 1.0:
+                # 使用CFG：需要双倍batch
+                z_double = torch.cat([z, z], dim=0)  # [2, 32, 16, 16]
+                y_cond = y  # 条件标签
+                y_uncond = torch.full_like(y, config.num_classes)  # 无条件标签（用类别数作为无条件标记）
+                y_double = torch.cat([y_cond, y_uncond], dim=0)  # [2]
+                
+                model_kwargs = dict(y=y_double, cfg_scale=config.cfg_scale)
+                sample_fn = sampler.sample_ode(
+                    sampling_method=config.sampling_method,
+                    num_steps=config.num_sampling_steps,
+                    atol=1e-6,
+                    rtol=1e-3,
+                )
+                
+                # 处理DataParallel包装的模型 - 使用forward_with_cfg
+                if hasattr(model, 'module'):
+                    model_fn = model.module.forward_with_cfg
+                else:
+                    model_fn = model.forward_with_cfg
+                
+                sample = sample_fn(z_double, model_fn, **model_kwargs)[-1]
+                # 取前半部分（条件生成结果）
+                sample = sample[:1]  # [1, 32, 16, 16]
             else:
-                model_fn = model.forward_with_cfg
-            
-            sample = sample_fn(z, model_fn, **model_kwargs)[-1]
+                # 不使用CFG：标准采样
+                model_kwargs = dict(y=y)
+                sample_fn = sampler.sample_ode(
+                    sampling_method=config.sampling_method,
+                    num_steps=config.num_sampling_steps,
+                    atol=1e-6,
+                    rtol=1e-3,
+                )
+                
+                if hasattr(model, 'module'):
+                    model_fn = model.module
+                else:
+                    model_fn = model
+                
+                sample = sample_fn(z, model_fn, **model_kwargs)[-1]
             
             # VAE解码
             sample = sample / 0.13025
