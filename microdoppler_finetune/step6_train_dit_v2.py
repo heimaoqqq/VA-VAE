@@ -41,8 +41,8 @@ class MicroDopplerConfig:
     
     # 训练配置 - 针对小数据集优化
     num_epochs: int = 80
-    batch_size: int = 4  # 保守设置，避免GPU显存不均匀导致OOM
-    gradient_accumulation_steps: int = 2  # 有效batch_size=8
+    batch_size: int = 8  # 直接使用batch size=8，充分利用显存
+    gradient_accumulation_steps: int = 1  # 不使用梯度累积
     learning_rate: float = 5e-5  # 小数据集保守学习率
     weight_decay: float = 0.0  # 官方不使用
     beta2: float = 0.95  # 官方推荐
@@ -817,14 +817,14 @@ class MicroDopplerTrainer:
                 # 反向传播
                 scaler.scale(loss).backward()
 
-                # 梯度累积
+                # 梯度累积和优化器更新
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(dit_model.parameters(), self.config.gradient_clip_norm)
                     scaler.step(optimizer)
+                    scheduler.step()  # 在optimizer.step()之后调用
                     scaler.update()
                     optimizer.zero_grad()
-                    scheduler.step()  # 在optimizer.step()之后调用
 
                 total_loss += loss.item() * self.config.gradient_accumulation_steps
                 num_batches += 1
@@ -958,13 +958,13 @@ def main():
     logger.info("\n📋 训练配置:")
     logger.info(f"   模型: LightningDiT-{config.model_type} (24层, 1024维)")
     logger.info(f"   用户类别: {config.num_classes}")
-    logger.info(f"   批次大小: {config.batch_size} (提升后)")
-    logger.info(f"   梯度累积: {config.gradient_accumulation_steps} (无需累积)")
+    logger.info(f"   批次大小: {config.batch_size} (直接使用，无梯度累积)")
+    logger.info(f"   梯度累积: {config.gradient_accumulation_steps}")
     logger.info(f"   有效批次: {config.batch_size * config.gradient_accumulation_steps}")
     logger.info(f"   学习率: {config.learning_rate}")
     logger.info(f"   总轮数: {config.num_epochs}")
     logger.info(f"   早停耐心: {config.patience}")
-    logger.info(f"   🚀 显存充足，使用更大batch size提升训练效率")
+    logger.info(f"   🚀 优化：batch size=8，预计训练速度提升2倍")
 
     # 创建管理器
     data_manager = MicroDopplerDataManager(config)
