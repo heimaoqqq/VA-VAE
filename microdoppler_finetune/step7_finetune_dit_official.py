@@ -75,34 +75,44 @@ class MicroDopplerLatentDataset(Dataset):
         return len(self.latent_files)
     
     def __getitem__(self, idx):
+        latent_file = self.latent_files[idx]
+        print(f"Loading file {idx}: {latent_file}")
+        
         try:
-            latent_file = self.latent_files[idx]
-            
             # 加载safetensors文件
             with safe_open(str(latent_file), framework="pt", device="cpu") as f:
                 # 检查文件中的键
                 keys = list(f.keys())
+                print(f"Available keys in {latent_file.name}: {keys}")
+                
+                # 加载latent数据
                 if 'latent' in keys:
                     latent = f.get_tensor("latent")
                 elif 'latents' in keys:
                     latent = f.get_tensor("latents")  
                 else:
-                    print(f"Available keys in {latent_file}: {keys}")
-                    raise ValueError(f"No 'latent' or 'latents' key found in {latent_file}")
+                    print(f"ERROR: No 'latent' or 'latents' key found in {latent_file}")
+                    return torch.zeros((32, 16, 16)), 0
+                
+                print(f"Latent shape: {latent.shape}")
                 
                 # 获取标签
                 if 'label' in keys:
                     user_id = f.get_tensor("label").item()
+                    print(f"Found label: {user_id}")
                 elif 'labels' in keys:
                     user_id = f.get_tensor("labels").item()
+                    print(f"Found labels: {user_id}")
                 else:
                     # 从文件名解析
                     filename = latent_file.stem
+                    print(f"Parsing filename: {filename}")
                     if 'ID_' in filename:
                         user_id_str = filename.split('ID_')[1].split('_')[0]
                         user_id = int(user_id_str) - 1  # ID_1 -> 0
+                        print(f"Parsed user_id: {user_id}")
                     else:
-                        print(f"Cannot parse user_id from filename: {filename}")
+                        print(f"Cannot parse user_id from filename: {filename}, using 0")
                         user_id = 0  # 默认值
             
             # 应用归一化（如果需要）
@@ -110,10 +120,13 @@ class MicroDopplerLatentDataset(Dataset):
                 latent = (latent - self.mean.view(-1, 1, 1)) / self.std.view(-1, 1, 1)
                 latent = latent * self.latent_multiplier
             
+            print(f"Returning latent shape {latent.shape}, user_id {user_id}")
             return latent, user_id
             
         except Exception as e:
-            print(f"Error loading {latent_file}: {e}")
+            print(f"ERROR loading {latent_file}: {e}")
+            import traceback
+            traceback.print_exc()
             # 返回默认值避免训练中断
             return torch.zeros((32, 16, 16)), 0
 
