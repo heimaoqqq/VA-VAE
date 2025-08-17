@@ -25,14 +25,6 @@ from tqdm import tqdm
 from PIL import Image
 import yaml
 
-# 修复FX符号追踪冲突 - 必须在导入LightningDiT之前
-try:
-    torch._dynamo.config.suppress_errors = True
-    torch._dynamo.config.disable = True
-except AttributeError:
-    # 旧版本PyTorch可能没有_dynamo
-    pass
-
 # 添加LightningDiT路径
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root / 'LightningDiT'))
@@ -49,9 +41,9 @@ class MicroDopplerConfig:
     
     # 训练配置 - 针对小数据集优化
     num_epochs: int = 80
-    batch_size: int = 8  # 直接使用batch size=8，充分利用显存
-    gradient_accumulation_steps: int = 1  # 不使用梯度累积
-    learning_rate: float = 8e-5  # 调整学习率适应更大batch size (5e-5 * 8/4 = 1e-4，保守取8e-5)
+    batch_size: int = 2  # T4×2显存限制
+    gradient_accumulation_steps: int = 4  # 有效batch_size=8
+    learning_rate: float = 5e-5  # 小数据集保守学习率
     weight_decay: float = 0.0  # 官方不使用
     beta2: float = 0.95  # 官方推荐
     gradient_clip_norm: float = 1.0
@@ -93,11 +85,7 @@ class MicroDopplerConfig:
     
     # Kaggle T4×2 GPU配置
     use_multi_gpu: bool = True
-    gpu_strategy: str = "DataParallel"  # DataParallel或单GPU
-    # 注意：DataParallel在Kaggle T4×2上可能负载不均匀
-
-    # 随机种子配置
-    random_seed: int = 42  # 固定种子确保可重复性
+    gpu_strategy: str = "DataParallel"  # Kaggle推荐DataParallel而非DDP
 
 
 class MicroDopplerDataManager:
@@ -244,26 +232,15 @@ class MicroDopplerDataManager:
             generator=torch.Generator().manual_seed(42)
         )
 
-        # 创建数据加载器 - 使用固定种子确保可重复性
-        def worker_init_fn(worker_id):
-            np.random.seed(42 + worker_id)
-
+        # 创建数据加载器
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.config.batch_size,
             shuffle=True,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
-            persistent_workers=self.config.persistent_workers,
-            worker_init_fn=worker_init_fn,
-            generator=torch.Generator().manual_seed(42)
+            persistent_workers=self.config.persistent_workers
         )
-
-        logger.info(f"🔍 DataLoader配置验证:")
-        logger.info(f"   训练batch_size: {train_loader.batch_size}")
-        logger.info(f"   配置batch_size: {self.config.batch_size}")
-        logger.info(f"   训练数据集大小: {len(train_dataset)}")
-        logger.info(f"   预计步数/epoch: {len(train_loader)}")
 
         val_loader = DataLoader(
             val_dataset,
@@ -271,9 +248,7 @@ class MicroDopplerDataManager:
             shuffle=False,
             num_workers=self.config.num_workers,
             pin_memory=self.config.pin_memory,
-            persistent_workers=self.config.persistent_workers,
-            worker_init_fn=worker_init_fn,
-            generator=torch.Generator().manual_seed(42)
+            persistent_workers=self.config.persistent_workers
         )
 
         logger.info(f"✅ 数据加载器创建完成:")
@@ -401,7 +376,6 @@ class DiTModelManager:
     def load_vae(self, device):
         """加载微调后的VA-VAE模型"""
         logger.info("🔄 加载微调后的VA-VAE模型...")
-        logger.info(f"   目标设备: {device}")
 
         # 设置taming路径
         self._setup_taming_path()
@@ -455,40 +429,18 @@ class DiTModelManager:
             num_classes=self.config.num_classes,
         )
 
-        # 禁用模型编译以避免FX冲突
-        if hasattr(dit_model, '_dynamo_compile'):
-            dit_model._dynamo_compile = False
-
         # XL→L权重迁移
         self._transfer_xl_to_l_weights(dit_model)
 
         # 确保模型在正确设备上
         dit_model = dit_model.to(device)
 
-        # Kaggle T4×2使用DataParallel - 优化负载均衡
+        # Kaggle T4×2使用DataParallel
         if use_multi_gpu and torch.cuda.device_count() > 1:
             # 确保模型在cuda:0上，然后包装DataParallel
             dit_model = dit_model.to('cuda:0')
-
-            # 优化DataParallel配置
-            device_ids = list(range(torch.cuda.device_count()))
-            dit_model = nn.DataParallel(
-                dit_model,
-                device_ids=device_ids,
-                output_device=0,  # 明确指定输出设备
-                dim=0  # 明确指定batch维度
-            )
-
-            logger.info(f"✅ 启用DataParallel多GPU训练")
-            logger.info(f"   设备列表: {device_ids}")
-            logger.info(f"   输出设备: cuda:0")
-            logger.info(f"   ⚠️ 注意：DataParallel可能导致GPU负载不均匀")
-
-            # 显示当前显存使用
-            for i in range(torch.cuda.device_count()):
-                memory_allocated = torch.cuda.memory_allocated(i) / 1024**3
-                memory_reserved = torch.cuda.memory_reserved(i) / 1024**3
-                logger.info(f"   GPU {i}: 已分配 {memory_allocated:.1f}GB, 已保留 {memory_reserved:.1f}GB")
+            dit_model = nn.DataParallel(dit_model, device_ids=list(range(torch.cuda.device_count())))
+            logger.info(f"✅ 启用DataParallel多GPU训练，使用GPU: {list(range(torch.cuda.device_count()))}")
         else:
             logger.info(f"✅ 单GPU训练，使用设备: {device}")
 
@@ -500,19 +452,6 @@ class DiTModelManager:
         logger.info(f"   模型架构: 24层, 1024隐藏维度, patch_size=2")
         logger.info(f"   总参数: {total_params / 1e6:.1f}M")
         logger.info(f"   可训练参数: {trainable_params / 1e6:.1f}M")
-
-        # 详细的模型信息验证
-        actual_model = dit_model.module if hasattr(dit_model, 'module') else dit_model
-        logger.info(f"   实际模型类: {type(actual_model).__name__}")
-        logger.info(f"   模型配置: depth={getattr(actual_model, 'depth', 'N/A')}, "
-                   f"hidden_size={getattr(actual_model, 'hidden_size', 'N/A')}")
-
-        # 检查是否使用了预训练权重
-        if hasattr(actual_model, 'pos_embed'):
-            logger.info(f"   位置编码形状: {actual_model.pos_embed.shape}")
-
-        logger.info(f"🔍 模型验证: 这是L/2模型，不是XL模型！")
-        logger.info(f"   XL模型参数量: ~675M, 当前模型: {total_params / 1e6:.1f}M")
 
         return dit_model
 
@@ -635,13 +574,9 @@ class DiTModelManager:
 
         if xl_checkpoint_path is None:
             logger.warning("⚠️ XL预训练权重不存在，使用随机初始化")
-            logger.warning("   检查的路径:")
-            for path in possible_paths:
-                logger.warning(f"     - {path} (存在: {path.exists()})")
             return
 
-        logger.info(f"🔄 进行XL→L权重迁移...")
-        logger.info(f"   XL权重路径: {xl_checkpoint_path}")
+        logger.info("🔄 进行XL→L权重迁移...")
 
         try:
             xl_state = torch.load(xl_checkpoint_path, map_location='cpu')
@@ -748,8 +683,6 @@ class MicroDopplerTrainer:
             # 回退到旧版本
             scaler = torch.cuda.amp.GradScaler()
 
-
-
         logger.info(f"\n🎯 开始训练循环:")
         logger.info(f"   总轮数: {self.config.num_epochs}")
         logger.info(f"   早停耐心: {self.config.patience}")
@@ -770,23 +703,9 @@ class MicroDopplerTrainer:
             else:
                 patience_counter += 1
 
-            # GPU显存监控
-            if self.use_multi_gpu:
-                gpu_memory_info = []
-                for i in range(torch.cuda.device_count()):
-                    allocated = torch.cuda.memory_allocated(i) / 1024**3
-                    reserved = torch.cuda.memory_reserved(i) / 1024**3
-                    gpu_memory_info.append(f"GPU{i}: {allocated:.1f}/{reserved:.1f}GB")
-                memory_str = ", ".join(gpu_memory_info)
-            else:
-                allocated = torch.cuda.memory_allocated(self.device) / 1024**3
-                reserved = torch.cuda.memory_reserved(self.device) / 1024**3
-                memory_str = f"GPU: {allocated:.1f}/{reserved:.1f}GB"
-
             logger.info(f"Epoch {epoch+1}/{self.config.num_epochs} - "
                        f"Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}, "
                        f"Patience: {patience_counter}/{self.config.patience}")
-            logger.info(f"   显存使用: {memory_str}")
 
             # 早停
             if patience_counter >= self.config.patience:
@@ -805,13 +724,6 @@ class MicroDopplerTrainer:
 
         with tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]") as pbar:
             for batch_idx, (latents, labels) in enumerate(pbar):
-                # 验证实际batch size（仅第一个batch）
-                if batch_idx == 0:
-                    logger.info(f"🔍 实际batch验证:")
-                    logger.info(f"   latents形状: {latents.shape}")
-                    logger.info(f"   实际batch_size: {latents.shape[0]}")
-                    logger.info(f"   配置batch_size: {self.config.batch_size}")
-
                 # 确保数据在正确设备上
                 if hasattr(dit_model, 'module'):
                     # DataParallel情况下，数据必须在cuda:0
@@ -854,34 +766,19 @@ class MicroDopplerTrainer:
                 # 反向传播
                 scaler.scale(loss).backward()
 
-                # 梯度累积和优化器更新
+                # 梯度累积
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(dit_model.parameters(), self.config.gradient_clip_norm)
-
-                    # 使用标准的更新顺序，忽略scheduler警告
                     scaler.step(optimizer)
                     scaler.update()
-
-                    # 忽略警告，按正确顺序调用
-                    import warnings
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore")
-                        scheduler.step()
-
                     optimizer.zero_grad()
+                    scheduler.step()  # 在optimizer.step()之后调用
 
                 total_loss += loss.item() * self.config.gradient_accumulation_steps
                 num_batches += 1
 
-                # 获取当前学习率
-                current_lr = optimizer.param_groups[0]['lr']
-
-                pbar.set_postfix({
-                    'loss': f'{loss.item():.6f}',
-                    'avg_loss': f'{total_loss/num_batches:.6f}',
-                    'lr': f'{current_lr:.2e}'
-                })
+                pbar.set_postfix({'loss': f'{loss.item():.6f}'})
 
         return total_loss / num_batches
 
@@ -990,43 +887,9 @@ def test_setup():
     logger.info("🎯 环境测试完成！")
 
 
-def set_random_seed(seed=42):
-    """设置所有随机种子以确保可重复性"""
-    import random
-    import numpy as np
-
-    # Python随机种子
-    random.seed(seed)
-
-    # NumPy随机种子
-    np.random.seed(seed)
-
-    # PyTorch随机种子
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    # 确保CUDA操作的确定性
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    # 设置PyTorch的随机数生成器状态
-    torch.use_deterministic_algorithms(True, warn_only=True)
-
-    logger.info(f"🎲 设置随机种子: {seed}")
-    logger.info("   已启用确定性算法以确保可重复性")
-
 def main():
     """主函数"""
     import argparse
-
-    # 设置环境变量以避免FX冲突
-    os.environ['TORCH_COMPILE_DISABLE'] = '1'
-    os.environ['TORCHDYNAMO_DISABLE'] = '1'
-
-    # 设置固定随机种子
-    set_random_seed(42)
-
     parser = argparse.ArgumentParser(description='微多普勒DiT训练')
     parser.add_argument('--test', action='store_true', help='只运行测试，不开始训练')
     args = parser.parse_args()
@@ -1036,7 +899,6 @@ def main():
         return
 
     logger.info("🎯 微多普勒DiT条件生成训练")
-    logger.info("   已禁用PyTorch编译优化以避免FX冲突")
 
     # 创建配置
     config = MicroDopplerConfig()
@@ -1045,14 +907,12 @@ def main():
     logger.info("\n📋 训练配置:")
     logger.info(f"   模型: LightningDiT-{config.model_type} (24层, 1024维)")
     logger.info(f"   用户类别: {config.num_classes}")
-    logger.info(f"   批次大小: {config.batch_size} (直接使用，无梯度累积)")
+    logger.info(f"   批次大小: {config.batch_size}")
     logger.info(f"   梯度累积: {config.gradient_accumulation_steps}")
     logger.info(f"   有效批次: {config.batch_size * config.gradient_accumulation_steps}")
-    logger.info(f"   学习率: {config.learning_rate} (调整后适应batch size=8)")
+    logger.info(f"   学习率: {config.learning_rate}")
     logger.info(f"   总轮数: {config.num_epochs}")
     logger.info(f"   早停耐心: {config.patience}")
-    logger.info(f"   随机种子: {config.random_seed} (确保可重复性)")
-    logger.info(f"   🚀 优化：batch size=8，预计训练速度提升2倍")
 
     # 创建管理器
     data_manager = MicroDopplerDataManager(config)
