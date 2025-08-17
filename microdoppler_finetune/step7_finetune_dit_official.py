@@ -44,7 +44,7 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
-from models import LightningDiT_models
+from models.lightningdit import LightningDiT_models
 from transport import create_transport
 
 class MicroDopplerLatentDataset(Dataset):
