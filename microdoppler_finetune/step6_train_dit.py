@@ -472,23 +472,22 @@ def train_dit():
     from torch.optim.lr_scheduler import LambdaLR
     
     # 先创建数据集和数据加载器
-    # 自动检测数据集路径
-    possible_data_paths = [
-        "/kaggle/input/dataset",
-        "/kaggle/input/micro-doppler-data",
-        "./dataset",
-    ]
+    # 使用step3处理后的数据路径配置
+    # step3将原始数据(/kaggle/input/dataset)的划分信息保存到/kaggle/working/data_split/
+    data_dir = Path("/kaggle/input/dataset")  # 原始数据位置
+    split_file = Path("/kaggle/working/data_split/dataset_split.json")  # step3生成的划分信息
 
-    data_dir = None
-    for path in possible_data_paths:
-        if Path(path).exists():
-            data_dir = Path(path)
-            logger.info(f"找到数据集: {path}")
-            break
+    if not data_dir.exists():
+        logger.error(f"原始数据集不存在: {data_dir}")
+        raise FileNotFoundError(f"Dataset not found at {data_dir}")
 
-    if data_dir is None:
-        logger.error("未找到数据集！请检查路径")
-        raise FileNotFoundError("Dataset not found")
+    if not split_file.exists():
+        logger.error(f"数据划分文件不存在: {split_file}")
+        logger.error("请先运行 step3_prepare_dataset.py 创建数据划分")
+        raise FileNotFoundError(f"Split file not found at {split_file}")
+
+    logger.info(f"✅ 找到原始数据集: {data_dir}")
+    logger.info(f"✅ 找到数据划分文件: {split_file}")
 
     # 创建数据集 - 使用官方推荐的归一化策略
     train_dataset = MicroDopplerLatentDataset(
@@ -949,9 +948,19 @@ def prepare_latents_for_training():
     # 初始化VA-VAE进行潜空间编码
     from tokenizer.vavae import VA_VAE
     logger.info("加载VA-VAE模型...")
-    vae = VA_VAE(str(vae_config_path), img_size=256, horizon_flip=False, fp16=True)
-    vae_memory = torch.cuda.memory_allocated(device) / 1024**3
-    logger.info(f"VA-VAE加载完成，显存: {vae_memory:.2f}GB")
+    try:
+        vae = VA_VAE(str(vae_config_path), img_size=256, horizon_flip=False, fp16=True)
+        vae_memory = torch.cuda.memory_allocated(device) / 1024**3
+        logger.info(f"VA-VAE加载完成，显存: {vae_memory:.2f}GB")
+
+        # 检查VA-VAE的可用方法
+        logger.info(f"VA-VAE可用方法: {[m for m in dir(vae) if not m.startswith('_') and 'encode' in m.lower()]}")
+
+    except Exception as e:
+        logger.error(f"VA-VAE加载失败: {e}")
+        import traceback
+        logger.error(f"详细错误: {traceback.format_exc()}")
+        raise
     
     # 预计算潜空间（使用已检测的数据路径）
     latents_file = Path("/kaggle/working") / 'latents_microdoppler.npz'
@@ -970,52 +979,90 @@ def prepare_latents_for_training():
 
 
 def encode_dataset_to_latents(vae, data_dir, device):
-    """将数据集编码到潜空间并保存"""
+    """将数据集编码到潜空间并保存 - 使用step3的划分信息"""
     logger.info("开始编码数据集到潜空间...")
+    logger.info(f"原始数据目录: {data_dir}")
+
+    # 读取step3生成的数据划分信息
+    split_file = Path("/kaggle/working/data_split/dataset_split.json")
+    if not split_file.exists():
+        logger.error(f"数据划分文件不存在: {split_file}")
+        logger.error("请先运行 step3_prepare_dataset.py 创建数据划分")
+        raise FileNotFoundError(f"Split file not found at {split_file}")
+
+    with open(split_file, 'r') as f:
+        split_data = json.load(f)
+
+    logger.info(f"✅ 加载数据划分信息: {split_file}")
+    logger.info(f"   训练图像: {split_data['statistics']['train_images']}")
+    logger.info(f"   验证图像: {split_data['statistics']['val_images']}")
+    logger.info(f"   总用户数: {split_data['statistics']['total_users']}")
 
     all_latents = []
     all_user_ids = []
+    total_processed = 0
 
-    # 遍历所有用户目录
-    for user_dir in sorted(data_dir.glob('ID_*')):
-        user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
+    # 处理训练集和验证集
+    for split_name in ['train', 'val']:
+        logger.info(f"\n🔄 处理 {split_name} 集...")
+        split_images = split_data[split_name]
 
-        # 收集该用户的所有图像
-        image_files = sorted(list(user_dir.glob('*.jpg')))
+        for user_key, image_paths in split_images.items():
+            user_id = int(user_key.split('_')[1]) - 1  # ID_1 -> 0
 
-        if not image_files:
-            logger.warning(f"用户 {user_dir.name} 没有找到.jpg图像文件")
-            continue
-
-        logger.info(f"编码用户 {user_dir.name}: {len(image_files)} 张图像")
-
-        user_latents = []
-        for img_path in image_files:
-            try:
-                # 加载并预处理图像
-                from PIL import Image
-                img = Image.open(img_path).convert('RGB')
-                img = img.resize((256, 256), Image.LANCZOS)
-
-                # 转换为tensor并归一化
-                img_array = np.array(img).astype(np.float32) / 255.0
-                img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)  # NCHW
-                img_tensor = img_tensor * 2.0 - 1.0  # 归一化到[-1,1]
-                img_tensor = img_tensor.to(device)
-
-                # 编码到潜空间
-                with torch.no_grad():
-                    latent = vae.encode_to_latents(img_tensor)
-                    user_latents.append(latent.cpu())
-
-            except Exception as e:
-                logger.warning(f"编码图像失败 {img_path}: {e}")
+            if not image_paths:
+                logger.warning(f"用户 {user_key} 在 {split_name} 集中没有图像")
                 continue
 
-        if user_latents:
-            user_latents = torch.cat(user_latents, dim=0)
-            all_latents.append(user_latents)
-            all_user_ids.extend([user_id] * len(user_latents))
+            logger.info(f"  编码用户 {user_key} ({split_name}): {len(image_paths)} 张图像")
+
+            user_latents = []
+            for img_path in image_paths:
+                try:
+                    # 确保路径是Path对象
+                    img_path = Path(img_path)
+                    if not img_path.exists():
+                        logger.warning(f"图像文件不存在: {img_path}")
+                        continue
+
+                    # 加载并预处理图像
+                    from PIL import Image
+                    img = Image.open(img_path).convert('RGB')
+                    img = img.resize((256, 256), Image.LANCZOS)
+
+                    # 转换为tensor并归一化
+                    img_array = np.array(img).astype(np.float32) / 255.0
+                    img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)  # NCHW
+                    img_tensor = img_tensor * 2.0 - 1.0  # 归一化到[-1,1]
+                    img_tensor = img_tensor.to(device)
+
+                    # 编码到潜空间
+                    with torch.no_grad():
+                        # 检查VA-VAE是否有encode_to_latents方法
+                        if hasattr(vae, 'encode_to_latents'):
+                            latent = vae.encode_to_latents(img_tensor)
+                        elif hasattr(vae, 'encode'):
+                            latent = vae.encode(img_tensor)
+                        elif hasattr(vae, 'model') and hasattr(vae.model, 'encode'):
+                            latent = vae.model.encode(img_tensor)
+                        else:
+                            logger.error(f"VA-VAE对象没有找到编码方法！")
+                            logger.error(f"可用方法: {[m for m in dir(vae) if not m.startswith('_')]}")
+                            raise AttributeError("VA-VAE encode method not found")
+
+                        user_latents.append(latent.cpu())
+                        total_processed += 1
+
+                except Exception as e:
+                    logger.warning(f"编码图像失败 {img_path}: {e}")
+                    import traceback
+                    logger.warning(f"详细错误: {traceback.format_exc()}")
+                    continue
+
+            if user_latents:
+                user_latents = torch.cat(user_latents, dim=0)
+                all_latents.append(user_latents)
+                all_user_ids.extend([user_id] * len(user_latents))
 
     # 合并所有潜空间数据
     if all_latents:
@@ -1039,11 +1086,19 @@ def encode_dataset_to_latents(vae, data_dir, device):
             'std': latent_std
         }, stats_file)
 
-        logger.info(f"编码完成: {len(all_latents)} 个样本")
-        logger.info(f"潜空间形状: {all_latents.shape}")
-        logger.info(f"保存到: {latents_file}")
+        logger.info(f"\n✅ 编码完成!")
+        logger.info(f"   处理图像: {total_processed} 张")
+        logger.info(f"   潜空间样本: {len(all_latents)} 个")
+        logger.info(f"   潜空间形状: {all_latents.shape}")
+        logger.info(f"   用户分布: {np.bincount(all_user_ids)}")
+        logger.info(f"   保存到: {latents_file}")
+        logger.info(f"   统计信息: {stats_file}")
     else:
         logger.error("没有成功编码任何图像！")
+        logger.error("请检查:")
+        logger.error("1. 数据路径是否正确")
+        logger.error("2. step3_prepare_dataset.py 是否正确运行")
+        logger.error("3. VA-VAE模型是否正确加载")
         raise ValueError("Failed to encode any images")
 
 
