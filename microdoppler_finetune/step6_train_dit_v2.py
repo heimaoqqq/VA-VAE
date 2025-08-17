@@ -156,6 +156,11 @@ class MicroDopplerDataManager:
                         with torch.no_grad():
                             # VA_VAE使用encode_images方法
                             latent = vae.encode_images(img_tensor)
+
+                            # 调试信息：检查第一个潜空间的形状
+                            if total_processed == 0:
+                                logger.info(f"第一个潜空间形状: {latent.shape}")
+
                             all_latents.append(latent.cpu())
                             all_labels.append(user_id)
                             total_processed += 1
@@ -171,9 +176,14 @@ class MicroDopplerDataManager:
         all_latents = torch.cat(all_latents, dim=0)
         all_labels = torch.tensor(all_labels, dtype=torch.long)
         
-        # 计算统计信息
-        latent_mean = all_latents.mean(dim=[0, 2, 3], keepdim=True)
-        latent_std = all_latents.std(dim=[0, 2, 3], keepdim=True)
+        # 计算统计信息 - 修复维度问题
+        logger.info(f"计算潜空间统计信息，形状: {all_latents.shape}")
+
+        # 计算每个通道的均值和标准差
+        latent_mean = all_latents.mean(dim=0, keepdim=True)  # [1, C, H, W]
+        latent_std = all_latents.std(dim=0, keepdim=True)    # [1, C, H, W]
+
+        logger.info(f"统计信息形状 - mean: {latent_mean.shape}, std: {latent_std.shape}")
         
         # 保存为safetensors格式（兼容官方ImgLatentDataset）
         try:
@@ -279,9 +289,12 @@ class MicroDopplerLatentDataset(Dataset):
             stats = torch.load(self.stats_file)
             self.latent_mean = stats['mean']
             self.latent_std = stats['std']
+            logger.info(f"加载统计信息 - mean: {self.latent_mean.shape}, std: {self.latent_std.shape}")
         else:
             self.latent_mean = None
             self.latent_std = None
+
+        logger.info(f"数据集大小: {len(self.latents)}, 潜空间形状: {self.latents[0].shape if len(self.latents) > 0 else 'N/A'}")
 
     def __len__(self):
         return len(self.latents)
@@ -290,9 +303,31 @@ class MicroDopplerLatentDataset(Dataset):
         latent = self.latents[idx].clone()
         label = self.labels[idx].clone()
 
-        # 归一化
+        # 归一化 - 修复维度不匹配问题
         if self.latent_norm and self.latent_mean is not None:
-            latent = (latent - self.latent_mean.squeeze()) / self.latent_std.squeeze()
+            # 确保统计信息的维度与潜空间数据匹配
+            if self.latent_mean.dim() == 4:  # [1, C, H, W]
+                mean = self.latent_mean.squeeze(0)  # [C, H, W]
+                std = self.latent_std.squeeze(0)    # [C, H, W]
+            else:
+                mean = self.latent_mean
+                std = self.latent_std
+
+            # 确保维度匹配
+            if latent.shape != mean.shape:
+                logger.warning(f"维度不匹配: latent {latent.shape} vs mean {mean.shape}")
+                # 如果统计信息是通道维度的，需要广播到空间维度
+                if mean.dim() == 1:  # 只有通道维度
+                    mean = mean.view(-1, 1, 1)
+                    std = std.view(-1, 1, 1)
+                elif mean.dim() == 3 and latent.dim() == 3:
+                    # 都是3维，检查空间维度
+                    if mean.shape[1:] != latent.shape[1:]:
+                        # 只使用通道维度的统计信息
+                        mean = mean.mean(dim=[1, 2], keepdim=True)
+                        std = std.mean(dim=[1, 2], keepdim=True)
+
+            latent = (latent - mean) / (std + 1e-8)  # 添加小值避免除零
 
         latent = latent * self.latent_multiplier
 
@@ -604,7 +639,12 @@ class MicroDopplerTrainer:
         """训练循环"""
         best_val_loss = float('inf')
         patience_counter = 0
-        scaler = torch.cuda.amp.GradScaler()
+        # 修复GradScaler弃用警告
+        try:
+            scaler = torch.amp.GradScaler('cuda')
+        except AttributeError:
+            # 回退到旧版本
+            scaler = torch.cuda.amp.GradScaler()
 
         logger.info(f"\n🎯 开始训练循环:")
         logger.info(f"   总轮数: {self.config.num_epochs}")
