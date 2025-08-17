@@ -28,7 +28,7 @@ model:
 
 # 训练配置
 train:
-  weight_init: '/kaggle/working/LightningDiT/checkpoints/lightningdit_xl_vavae_f16d32.pt'  # 预训练权重
+  weight_init: '/kaggle/input/lightningdit-pretrained/lightningdit-xl-imagenet256-64ep.pt'  # 预训练权重
   max_steps: 10000  # 微调步数
   global_batch_size: 32  # 双T4 GPU，每GPU batch_size=16
   global_seed: 42
