@@ -440,7 +440,7 @@ def evaluate(model, loader, device, transport, t_range):
 if __name__ == "__main__":
     # 读取配置
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='config_finetune.yaml')
+    parser.add_argument('--config', type=str, default='config_microdoppler_finetune.yaml')
     args = parser.parse_args()
 
     accelerator = Accelerator()
