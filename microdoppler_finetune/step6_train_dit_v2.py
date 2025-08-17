@@ -171,6 +171,9 @@ def create_dit_model(device='cuda'):
         print("📥 加载XL预训练权重并智能映射到L模型...")
         checkpoint = torch.load(xl_checkpoint, map_location='cpu')
         
+        # 调试：检查checkpoint结构
+        print(f"📋 Checkpoint keys: {list(checkpoint.keys())}")
+        
         # 获取XL状态字典
         if 'ema' in checkpoint:
             xl_state_dict = checkpoint['ema']
@@ -179,11 +182,17 @@ def create_dit_model(device='cuda'):
         else:
             xl_state_dict = checkpoint
         
+        print(f"📋 XL权重数量: {len(xl_state_dict)}")
+        print(f"📋 前5个XL权重键: {list(xl_state_dict.keys())[:5]}")
+        
         # 移除module.前缀
         xl_state_dict = {k.replace('module.', ''): v for k, v in xl_state_dict.items()}
         
         # 智能映射到L模型
         l_state_dict = model.state_dict()
+        print(f"📋 L模型权重数量: {len(l_state_dict)}")
+        print(f"📋 前5个L模型权重键: {list(l_state_dict.keys())[:5]}")
+        
         loaded_keys = []
         
         for k, v in l_state_dict.items():
@@ -195,13 +204,20 @@ def create_dit_model(device='cuda'):
                         if xl_state_dict[k].shape == v.shape:
                             l_state_dict[k] = xl_state_dict[k]
                             loaded_keys.append(k)
+                        else:
+                            print(f"⚠️ 形状不匹配: {k} XL:{xl_state_dict[k].shape} vs L:{v.shape}")
                 # 处理其他层
                 elif xl_state_dict[k].shape == v.shape:
                     l_state_dict[k] = xl_state_dict[k]
                     loaded_keys.append(k)
+                else:
+                    print(f"⚠️ 形状不匹配: {k} XL:{xl_state_dict[k].shape} vs L:{v.shape}")
         
-        model.load_state_dict(l_state_dict, strict=False)
-        print(f"✅ 成功加载 {len(loaded_keys)}/{len(l_state_dict)} 个权重")
+        if loaded_keys:
+            model.load_state_dict(l_state_dict, strict=False)
+            print(f"✅ 成功加载 {len(loaded_keys)}/{len(l_state_dict)} 个权重")
+        else:
+            print("❌ 没有找到匹配的权重，使用随机初始化")
     else:
         print("⚠️ 未找到预训练权重，使用随机初始化")
     
