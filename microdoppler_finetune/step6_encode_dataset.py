@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-步骤4: 将微多普勒图像通过VA-VAE编码成latent并保存为safetensors格式
+步骤6: 将微多普勒图像通过VA-VAE编码成latent并保存为safetensors格式
 这样训练时不需要加载VA-VAE，节省显存
 """
 
@@ -135,16 +135,16 @@ def create_latent_dataset():
     """创建latent数据集"""
     
     # 路径设置
-    data_root = Path('/kaggle/working/microdoppler_dataset')
+    data_root = Path('/kaggle/working/microdoppler_dataset') 
     output_dir = Path('/kaggle/working/latent_dataset')
     output_dir.mkdir(exist_ok=True)
     
-    # 加载数据划分信息
-    split_file = data_root / 'dataset_split.json'
+    # 加载数据划分信息（从正确的位置）
+    split_file = Path('/kaggle/working/data_split/dataset_split.json')
     with open(split_file, 'r') as f:
         dataset_split = json.load(f)
     
-    labels_file = data_root / 'user_labels.json'
+    labels_file = Path('/kaggle/working/data_split/user_labels.json')
     with open(labels_file, 'r') as f:
         user_labels = json.load(f)
     
