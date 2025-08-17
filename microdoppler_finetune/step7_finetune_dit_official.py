@@ -481,6 +481,23 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default='config_microdoppler_finetune.yaml')
     args = parser.parse_args()
 
-    accelerator = Accelerator()
+    # 配置多GPU训练
+    from accelerate import Accelerator, DistributedDataParallelKwargs
+    
+    # 设置DDP参数
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+    
+    # 初始化Accelerator时指定多GPU配置
+    accelerator = Accelerator(
+        gradient_accumulation_steps=1,
+        mixed_precision='no',
+        kwargs_handlers=[ddp_kwargs]
+    )
+    
+    # 显示GPU信息
+    if accelerator.is_main_process:
+        print(f"Training on {accelerator.num_processes} GPU(s)")
+        print(f"Current device: {accelerator.device}")
+        
     train_config = load_config(args.config)
     do_train(train_config, accelerator)
