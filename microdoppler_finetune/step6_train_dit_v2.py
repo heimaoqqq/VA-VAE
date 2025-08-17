@@ -154,7 +154,8 @@ class MicroDopplerDataManager:
                         
                         # 编码到潜空间
                         with torch.no_grad():
-                            latent = vae.encode_to_latents(img_tensor)
+                            # VA_VAE使用encode_images方法
+                            latent = vae.encode_images(img_tensor)
                             all_latents.append(latent.cpu())
                             all_labels.append(user_id)
                             total_processed += 1
@@ -343,12 +344,27 @@ class DiTModelManager:
 
         # 加载VA-VAE
         from tokenizer.vavae import VA_VAE
-        vae = VA_VAE(
-            config=str(temp_config_path),
-            img_size=256,
-            horizon_flip=0.0,  # 不使用数据增强
-            fp16=True
-        )
+        try:
+            # 尝试使用配置文件路径
+            vae = VA_VAE(
+                config=str(temp_config_path),
+                img_size=256,
+                horizon_flip=0.0,  # 不使用数据增强
+                fp16=True
+            )
+        except Exception as e:
+            logger.warning(f"使用配置文件加载失败: {e}")
+            # 尝试直接使用checkpoint路径
+            try:
+                vae = VA_VAE(
+                    config=self.config.vae_checkpoint,
+                    img_size=256,
+                    horizon_flip=0.0,
+                    fp16=True
+                )
+            except Exception as e2:
+                logger.error(f"VA-VAE加载失败: {e2}")
+                raise RuntimeError(f"无法加载VA-VAE模型: {e2}")
 
         # 清理临时文件
         temp_config_path.unlink()
@@ -450,15 +466,30 @@ class DiTModelManager:
                     return
 
     def _create_vae_config(self):
-        """创建VA-VAE配置"""
+        """创建VA-VAE配置 - 基于官方格式"""
         return {
+            'ckpt_path': self.config.vae_checkpoint,
             'model': {
+                'base_learning_rate': 1.0e-04,
                 'target': 'ldm.models.autoencoder.AutoencoderKL',
                 'params': {
                     'monitor': 'val/rec_loss',
                     'embed_dim': 32,
                     'use_vf': 'dinov2',
                     'reverse_proj': True,
+                    'lossconfig': {
+                        'target': 'ldm.modules.losses.LPIPSWithDiscriminator',
+                        'params': {
+                            'disc_start': 1,
+                            'kl_weight': 1.0e-06,
+                            'disc_weight': 0.5,
+                            'vf_weight': 0.1,
+                            'adaptive_vf': True,
+                            'vf_loss_type': 'combined_v3',
+                            'distmat_margin': 0.25,
+                            'cos_margin': 0.5
+                        }
+                    },
                     'ddconfig': {
                         'double_z': True,
                         'z_channels': 32,
@@ -470,14 +501,6 @@ class DiTModelManager:
                         'num_res_blocks': 2,
                         'attn_resolutions': [16],
                         'dropout': 0.0
-                    },
-                    'lossconfig': {
-                        'target': 'ldm.modules.losses.LPIPSWithDiscriminator',
-                        'params': {
-                            'disc_start': 50001,
-                            'kl_weight': 0.000001,
-                            'disc_weight': 0.5
-                        }
                     }
                 }
             }
@@ -727,6 +750,8 @@ def test_setup():
 
     # 测试GPU
     use_multi_gpu, device = setup_kaggle_multi_gpu()
+    logger.info(f"   多GPU支持: {use_multi_gpu}")
+    logger.info(f"   主设备: {device}")
 
     # 测试配置
     config = MicroDopplerConfig()
@@ -739,6 +764,9 @@ def test_setup():
     # 测试模型管理器
     model_manager = DiTModelManager(config)
     logger.info(f"✅ 模型管理器创建成功")
+
+    # 避免未使用变量警告
+    _ = data_manager, model_manager
 
     # 检查必要文件
     required_files = [
