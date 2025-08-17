@@ -148,19 +148,32 @@ def do_train(train_config, accelerator):
 
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
 
-    # load pretrained model
-    if 'weight_init' in train_config['train']:
+    # Load model:
+    if train_config['train']['weight_init'] is not None:
+        print_with_prefix("Loading checkpoint from {}".format(train_config['train']['weight_init']))
         checkpoint = torch.load(train_config['train']['weight_init'], map_location=lambda storage, loc: storage)
-        # remove the prefix 'module.' from the keys
-        checkpoint['model'] = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
-        model = load_weights_with_shape_check(model, checkpoint, rank=rank)
-        ema = load_weights_with_shape_check(ema, checkpoint, rank=rank)
+        if "ema" in checkpoint:  # supports checkpoints from train.py
+            checkpoint = checkpoint["ema"]
+        
+        # 处理类别数不匹配的情况（ImageNet 1001类 vs 微多普勒 33类）
+        if 'y_embedder.embedding_table.weight' in checkpoint:
+            checkpoint_classes = checkpoint['y_embedder.embedding_table.weight'].shape[0]
+            model_classes = model.y_embedder.embedding_table.weight.shape[0]
+            
+            if checkpoint_classes != model_classes:
+                print_with_prefix(f"Skipping y_embedder due to class mismatch: checkpoint {checkpoint_classes} vs model {model_classes}")
+                # 保留原始的分类embedding权重（随机初始化）
+                del checkpoint['y_embedder.embedding_table.weight']
+        
+        model.load_state_dict(checkpoint, strict=False)
+        ema.load_state_dict(checkpoint, strict=False)
         if accelerator.is_main_process:
             logger.info(f"Loaded pretrained model from {train_config['train']['weight_init']}")
     
     requires_grad(ema, False)
     
-    model = DDP(model.to(device), device_ids=[rank])
+    # 使用Accelerator处理分布式训练，无需手动DDP
+    model = accelerator.prepare(model)
     transport = create_transport(
         train_config['transport']['path_type'],
         train_config['transport']['prediction'],
