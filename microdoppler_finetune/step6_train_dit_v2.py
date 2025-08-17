@@ -30,6 +30,22 @@ sys.path.insert(0, str(project_root))
 # Kaggle T4内存优化
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
+# 彻底禁用torch.compile和Dynamo（解决DataParallel FX tracing错误）
+os.environ['TORCH_COMPILE_DISABLE'] = '1'
+os.environ['TORCHDYNAMO_DISABLE'] = '1'
+try:
+    import torch._dynamo
+    torch._dynamo.disable()
+    torch._dynamo.config.suppress_errors = True
+except:
+    pass
+try:
+    import torch._inductor
+    torch._inductor.config.disable_progress = True
+    torch._inductor.config.disable_cpp_codegen = True
+except:
+    pass
+
 # 设置taming路径（必须在导入VAE之前）
 def setup_taming_path():
     """设置taming路径"""
@@ -148,31 +164,49 @@ class MicroDopplerDataset(Dataset):
         return image, item['user_id']
 
 # ==================== 模型初始化 ====================
-def create_dit_model(device='cuda'):
-    """创建并初始化LightningDiT-L模型"""
+def create_dit_model(device='cuda', use_base_model=False):
+    """创建并初始化LightningDiT模型
     
-    # 创建L模型
-    model = LightningDiT_L_2(
-        input_size=16,  # 16×16潜空间
-        num_classes=31,  # 31个用户
-        in_channels=32,  # VA-VAE的32通道
-        use_qknorm=True,
-        use_swiglu=True,
-        use_rope=True,
-        use_rmsnorm=True,
-    )
+    Args:
+        device: 设备
+        use_base_model: 是否使用Base模型（768维，内存更小，与XL部分兼容）
+    """
     
-    # 智能加载XL预训练权重
+    if use_base_model:
+        # 使用Base模型 - 内存更小，可能与XL有部分兼容性
+        from models.lightningdit import LightningDiT_B_2
+        print("📦 创建LightningDiT-Base模型（768维，12层）")
+        model = LightningDiT_B_2(
+            input_size=16,
+            num_classes=31,
+            in_channels=32,
+            use_qknorm=True,
+            use_swiglu=True,
+            use_rope=True,
+            use_rmsnorm=True,
+        )
+    else:
+        # 创建L模型
+        print("📦 创建LightningDiT-L模型（1024维，24层）")
+        model = LightningDiT_L_2(
+            input_size=16,  # 16×16潜空间
+            num_classes=31,  # 31个用户
+            in_channels=32,  # VA-VAE的32通道
+            use_qknorm=True,
+            use_swiglu=True,
+            use_rope=True,
+            use_rmsnorm=True,
+        )
+    
+    # 尝试智能加载XL预训练权重
     xl_checkpoint = Path('/kaggle/working/VA-VAE/models/lightningdit-xl-imagenet256-64ep.pt')
     if not xl_checkpoint.exists():
         xl_checkpoint = project_root / 'models' / 'lightningdit-xl-imagenet256-64ep.pt'
     
     if xl_checkpoint.exists():
-        print("📥 加载XL预训练权重并智能映射到L模型...")
+        model_name = "Base" if use_base_model else "L"
+        print(f"📥 尝试从XL预训练权重智能初始化{model_name}模型...")
         checkpoint = torch.load(xl_checkpoint, map_location='cpu')
-        
-        # 调试：检查checkpoint结构
-        print(f"📋 Checkpoint keys: {list(checkpoint.keys())}")
         
         # 获取XL状态字典
         if 'ema' in checkpoint:
@@ -182,44 +216,73 @@ def create_dit_model(device='cuda'):
         else:
             xl_state_dict = checkpoint
         
-        print(f"📋 XL权重数量: {len(xl_state_dict)}")
-        print(f"📋 前5个XL权重键: {list(xl_state_dict.keys())[:5]}")
-        
         # 移除module.前缀
         xl_state_dict = {k.replace('module.', ''): v for k, v in xl_state_dict.items()}
         
-        # 智能映射到L模型
-        l_state_dict = model.state_dict()
-        print(f"📋 L模型权重数量: {len(l_state_dict)}")
-        print(f"📋 前5个L模型权重键: {list(l_state_dict.keys())[:5]}")
+        # 智能权重转换策略
+        target_state_dict = model.state_dict()
+        converted_weights = {}
         
-        loaded_keys = []
+        print(f"🔄 开始智能权重转换（XL→{model_name}）...")
         
-        for k, v in l_state_dict.items():
-            if k in xl_state_dict:
-                # 处理transformer blocks
-                if 'blocks.' in k:
-                    block_idx = int(k.split('.')[1])
-                    if block_idx < 24:  # L模型只有24层
-                        if xl_state_dict[k].shape == v.shape:
-                            l_state_dict[k] = xl_state_dict[k]
-                            loaded_keys.append(k)
-                        else:
-                            print(f"⚠️ 形状不匹配: {k} XL:{xl_state_dict[k].shape} vs L:{v.shape}")
-                # 处理其他层
-                elif xl_state_dict[k].shape == v.shape:
-                    l_state_dict[k] = xl_state_dict[k]
-                    loaded_keys.append(k)
-                else:
-                    print(f"⚠️ 形状不匹配: {k} XL:{xl_state_dict[k].shape} vs L:{v.shape}")
+        for key, target_tensor in target_state_dict.items():
+            # 1. 尝试直接匹配
+            if key in xl_state_dict and xl_state_dict[key].shape == target_tensor.shape:
+                converted_weights[key] = xl_state_dict[key]
+                continue
+            
+            # 2. 对于不同维度的权重，使用智能初始化策略
+            if key in xl_state_dict:
+                xl_tensor = xl_state_dict[key]
+                
+                # 位置编码：裁剪或插值
+                if 'pos_embed' in key:
+                    # XL: [1, 256, 1152], L: [1, 64, 1024], B: [1, 64, 768]
+                    if len(xl_tensor.shape) == 3 and len(target_tensor.shape) == 3:
+                        # 裁剪序列长度
+                        seq_len = min(xl_tensor.shape[1], target_tensor.shape[1])
+                        # 裁剪特征维度
+                        feat_dim = min(xl_tensor.shape[2], target_tensor.shape[2])
+                        converted_weights[key] = xl_tensor[:, :seq_len, :feat_dim].contiguous()
+                        print(f"  ✂️ 裁剪位置编码: {key} {xl_tensor.shape}→{converted_weights[key].shape}")
+                
+                # 线性层权重：裁剪或填充
+                elif 'weight' in key and len(xl_tensor.shape) == 2:
+                    out_dim = min(xl_tensor.shape[0], target_tensor.shape[0])
+                    in_dim = min(xl_tensor.shape[1], target_tensor.shape[1])
+                    
+                    # 初始化目标张量
+                    new_weight = torch.nn.init.xavier_uniform_(target_tensor.clone())
+                    # 复制可用部分
+                    new_weight[:out_dim, :in_dim] = xl_tensor[:out_dim, :in_dim]
+                    converted_weights[key] = new_weight
+                    
+                # 偏置：裁剪
+                elif 'bias' in key and len(xl_tensor.shape) == 1:
+                    dim = min(xl_tensor.shape[0], target_tensor.shape[0])
+                    converted_weights[key] = xl_tensor[:dim]
+                
+                # Layer Norm参数：裁剪
+                elif ('ln' in key or 'norm' in key) and len(xl_tensor.shape) == 1:
+                    dim = min(xl_tensor.shape[0], target_tensor.shape[0])
+                    converted_weights[key] = xl_tensor[:dim]
         
-        if loaded_keys:
-            model.load_state_dict(l_state_dict, strict=False)
-            print(f"✅ 成功加载 {len(loaded_keys)}/{len(l_state_dict)} 个权重")
+        # 加载转换后的权重
+        if converted_weights:
+            # 只更新成功转换的权重
+            for k, v in converted_weights.items():
+                if v.shape == target_state_dict[k].shape:
+                    target_state_dict[k] = v
+            
+            model.load_state_dict(target_state_dict, strict=False)
+            print(f"✅ 成功智能初始化 {len(converted_weights)}/{len(target_state_dict)} 个权重")
+            print(f"   包括：位置编码、线性层、归一化层等关键组件")
         else:
-            print("❌ 没有找到匹配的权重，使用随机初始化")
+            print("⚠️ 无法从XL权重初始化，使用随机初始化")
+            print("   建议：考虑使用Base模型或从头训练")
     else:
-        print("⚠️ 未找到预训练权重，使用随机初始化")
+        print("⚠️ 未找到XL预训练权重，使用随机初始化")
+        print(f"   期望路径: {xl_checkpoint}")
     
     return model.to(device)
 
@@ -434,13 +497,17 @@ def main():
     # 加载VAE
     vae = load_vae(config.vae_checkpoint, config.device)
     
-    # 创建模型
-    model = create_dit_model(config.device)
+    # 创建模型（根据内存情况选择Base或L）
+    use_base = gpu_count == 2 and config.batch_size <= 4  # Kaggle双T4环境建议用Base
+    model = create_dit_model(config.device, use_base_model=use_base)
     
     # 使用DataParallel（Kaggle双GPU）
     if gpu_count > 1:
+        # 确保模型在包装前已经在正确设备上
+        model = model.to(config.device)
         model = nn.DataParallel(model)
         print("✅ 启用DataParallel多GPU训练")
+        print("   注意：已禁用torch.compile以避免FX tracing错误")
     
     # 创建Transport和Sampler
     transport = create_transport(
