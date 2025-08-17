@@ -487,17 +487,17 @@ if __name__ == "__main__":
     # 设置DDP参数
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
     
-    # 初始化Accelerator时指定多GPU配置
+    # Kaggle单GPU训练配置（双GPU在Kaggle中有已知限制）
     accelerator = Accelerator(
-        gradient_accumulation_steps=1,
-        mixed_precision='no',
-        kwargs_handlers=[ddp_kwargs]
+        gradient_accumulation_steps=2,  # 通过梯度累积补偿小batch size
+        mixed_precision='no'
     )
     
     # 显示GPU信息
     if accelerator.is_main_process:
         print(f"Training on {accelerator.num_processes} GPU(s)")
         print(f"Current device: {accelerator.device}")
+        print("Note: Using gradient accumulation to compensate for small batch size")
         
     train_config = load_config(args.config)
     do_train(train_config, accelerator)
