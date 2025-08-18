@@ -30,7 +30,7 @@ model:
 train:
   weight_init: '/kaggle/working/VA-VAE/models/lightningdit-xl-imagenet256-64ep.pt'  # 预训练权重
   max_steps: 10000  # 微调步数
-  global_batch_size: 16  # DataParallel双GPU，每GPU batch_size=8
+  global_batch_size: 8   # DataParallel双GPU，每GPU batch_size=4 (减少内存使用)
   global_seed: 42
   output_dir: '/kaggle/working/microdoppler_dit_finetune'
   exp_name: 'microdoppler_xl_finetune'
