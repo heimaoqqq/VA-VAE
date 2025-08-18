@@ -2,6 +2,8 @@
 """
 步骤6: 将微多普勒图像通过VA-VAE编码成latent并保存为safetensors格式
 这样训练时不需要加载VA-VAE，节省显存
+
+包含集成的MicroDopplerLatentDataset类，用于后续DiT训练
 """
 
 import os
@@ -12,7 +14,8 @@ from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 import torchvision.transforms as transforms
-from safetensors.torch import save_file
+from safetensors.torch import save_file, load_file
+from torch.utils.data import Dataset, DataLoader
 import sys
 import gc
 
@@ -188,10 +191,10 @@ def create_latent_dataset():
             # 编码图像
             latents = encode_images_to_latents(vae_model, batch_paths, batch_size=8, device=device)
             
-            # 准备保存数据
+            # 准备保存数据（使用与数据集类兼容的格式）
             save_dict = {
-                'latents': latents,
-                'labels': torch.tensor(batch_labels, dtype=torch.long)
+                'latents': latents,  # [B, C, H, W] batch格式
+                'labels': torch.tensor(batch_labels, dtype=torch.long)  # [B] 标签
             }
             
             # 保存为safetensors
@@ -258,6 +261,120 @@ def create_latent_dataset():
     torch.cuda.empty_cache()
     
     return output_dir
+
+# ============================================================================
+# 集成的MicroDopplerLatentDataset类（原microdoppler_latent_dataset.py内容）
+# ============================================================================
+
+class MicroDopplerLatentDataset(Dataset):
+    """
+    微多普勒潜在编码数据集
+    加载预编码的latent和对应的用户类别标签
+    """
+    
+    def __init__(self, data_path, latent_norm=True, latent_multiplier=1.0):
+        """
+        Args:
+            data_path: 包含latent文件的目录路径
+            latent_norm: 是否对latent进行归一化
+            latent_multiplier: latent缩放因子
+        """
+        self.data_path = Path(data_path)
+        self.latent_norm = latent_norm
+        self.latent_multiplier = latent_multiplier
+        
+        # 获取所有latent文件
+        self.latent_files = sorted(list(self.data_path.glob("*.safetensors")))
+        
+        if len(self.latent_files) == 0:
+            raise ValueError(f"No safetensors files found in {data_path}")
+        
+        print(f"Found {len(self.latent_files)} latent files in {data_path}")
+        
+        # 预加载所有数据到内存（数据量不大）
+        self.latents = []
+        self.labels = []
+        
+        for file_path in self.latent_files:
+            # 加载safetensors文件
+            data = load_file(str(file_path))
+            
+            # 获取latent（支持多种键名）
+            if 'latents' in data:  # 我们生成的格式
+                latent = data['latents']
+            elif 'latent' in data:
+                latent = data['latent']
+            elif 'z' in data:
+                latent = data['z']
+            else:
+                raise KeyError(f"No 'latents', 'latent' or 'z' key found in {file_path}")
+            
+            # 获取标签（支持多种键名）
+            if 'labels' in data:  # 我们生成的格式
+                labels_batch = data['labels']
+            elif 'label' in data:
+                labels_batch = data['label']
+            elif 'user_id' in data:
+                labels_batch = data['user_id']
+            elif 'class' in data:
+                labels_batch = data['class']
+            else:
+                raise KeyError(f"No label key found in {file_path}")
+            
+            # 确保是batch格式，添加每个样本
+            if latent.dim() == 4:  # [B, C, H, W]
+                for i in range(latent.shape[0]):
+                    sample_latent = latent[i]  # [C, H, W]
+                    sample_label = labels_batch[i] if labels_batch.dim() > 0 else labels_batch
+                    
+                    # 应用归一化和缩放
+                    if self.latent_norm:
+                        sample_latent = (sample_latent - sample_latent.mean()) / (sample_latent.std() + 1e-8)
+                    sample_latent = sample_latent * self.latent_multiplier
+                    
+                    self.latents.append(sample_latent)
+                    self.labels.append(sample_label.long())
+            else:
+                raise ValueError(f"Expected 4D latent tensor, got {latent.dim()}D")
+        
+        # 统计类别分布
+        unique_labels = torch.stack(self.labels).unique()
+        print(f"Dataset contains {len(self.latents)} samples with {len(unique_labels)} unique classes: {unique_labels.tolist()}")
+        
+    def __len__(self):
+        return len(self.latents)
+    
+    def __getitem__(self, idx):
+        """
+        返回(latent, label)对
+        latent: [C, H, W] 潜在编码
+        label: 用户类别标签（0-30）
+        """
+        return self.latents[idx], self.labels[idx]
+
+
+def create_latent_dataloader(data_path, batch_size, num_workers=4, shuffle=True, 
+                            latent_norm=True, latent_multiplier=1.0):
+    """
+    创建潜在编码数据加载器的便捷函数
+    """
+    dataset = MicroDopplerLatentDataset(
+        data_path=data_path,
+        latent_norm=latent_norm,
+        latent_multiplier=latent_multiplier
+    )
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True if shuffle else False
+    )
+    
+    return dataloader
+
 
 if __name__ == "__main__":
     create_latent_dataset()
