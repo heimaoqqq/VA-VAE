@@ -259,9 +259,6 @@ def do_train(train_config, accelerator):
     if 'valid_path' in train_config['data']:
         valid_loader = accelerator.prepare(valid_loader)
 
-    # 确保EMA模型在正确的设备上（accelerator.prepare后）
-    ema = ema.to(model.device)
-
     # Variables for monitoring/logging purposes:
     if not train_config['train']['resume']:
         train_steps = 0
@@ -269,6 +266,10 @@ def do_train(train_config, accelerator):
         best_val_loss = float('inf')
         patience_counter = 0
 
+    # 重新创建EMA模型确保设备同步（accelerator.prepare后）
+    ema = deepcopy(model).to(accelerator.device)
+    requires_grad(ema, False)
+    
     # Prepare models for training:
     update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
     if accelerator.is_main_process:
@@ -482,8 +483,13 @@ def update_ema(ema_model, model, decay=0.9999):
 
     for name, param in model_params.items():
         name = name.replace("module.", "")
-        # TODO: Consider applying only to params that require_grad to avoid small numerical changes of pos_embed
-        ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
+        # 确保EMA参数与模型参数在同一设备上
+        if name in ema_params:
+            ema_param = ema_params[name]
+            # 如果设备不匹配，将EMA参数移动到模型参数的设备
+            if ema_param.device != param.device:
+                ema_param.data = ema_param.data.to(param.device)
+            ema_param.mul_(decay).add_(param.data, alpha=1 - decay)
 
 
 def requires_grad(model, flag=True):
