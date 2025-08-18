@@ -99,20 +99,22 @@ class MicroDopplerLatentDataset(Dataset):
             # 将所有latent堆叠并计算统计
             all_latents = torch.stack(self.latents)  # [N, C, H, W]
             # 计算原始数据的统计信息（用于反归一化）
-            self.latent_mean = all_latents.mean(dim=[0, 2, 3])  # [C]
-            self.latent_std = all_latents.std(dim=[0, 2, 3])    # [C]
+            # 使用keepdim=True保持维度[1, C, 1, 1]与官方一致
+            self.latent_mean = all_latents.mean(dim=[0, 2, 3], keepdim=True)  # [1, C, 1, 1]
+            self.latent_std = all_latents.std(dim=[0, 2, 3], keepdim=True)    # [1, C, 1, 1]
             
             # 如果需要归一化，现在对所有数据进行归一化
             if self.latent_norm:
                 # 使用全局统计进行归一化
                 for i in range(len(self.latents)):
                     # 归一化: (x - mean) / std * multiplier
-                    self.latents[i] = (self.latents[i] - self.latent_mean.view(-1, 1, 1)) / (self.latent_std.view(-1, 1, 1) + 1e-8)
+                    # latent_mean和latent_std已经是[1, C, 1, 1]形状，可以直接广播
+                    self.latents[i] = (self.latents[i] - self.latent_mean.squeeze(0)) / (self.latent_std.squeeze(0) + 1e-8)
                     self.latents[i] = self.latents[i] * self.latent_multiplier
         else:
-            # 默认值
-            self.latent_mean = torch.zeros(32)  # 假设32维latent
-            self.latent_std = torch.ones(32)
+            # 默认值，保持[1, C, 1, 1]形状
+            self.latent_mean = torch.zeros(1, 32, 1, 1)  # 假设32维latent
+            self.latent_std = torch.ones(1, 32, 1, 1)
     
     def get_latent_stats(self):
         """返回latent的均值和标准差统计"""
@@ -391,7 +393,11 @@ def do_train(train_config, accelerator):
                     if accelerator.sync_gradients:
                         accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
                 opt.step()
-                update_ema(ema, model)
+                # accelerator包装后的模型需要通过.module访问原始模型
+                if hasattr(model, 'module'):
+                    update_ema(ema, model.module)
+                else:
+                    update_ema(ema, model)
 
                 # Log loss values:
                 if 'cos_loss' in loss_dict:
@@ -567,7 +573,7 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
     dataset = MicroDopplerLatentDataset(
         data_dir=train_config['data']['data_path'],
         latent_norm=train_config['data']['latent_norm'],
-        latent_multiplier=train_config['data']['latent_multiplier'],
+        latent_multiplier=train_config['data'].get('latent_multiplier', 0.18215),  # 使用官方默认值
     )
     latent_mean, latent_std = dataset.get_latent_stats()
     
@@ -607,11 +613,9 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
             # 反归一化 - 修复维度匹配问题
-            # latent_std: [C], samples: [1, C, H, W] 
-            # 需要调整维度以进行广播
-            latent_std_reshaped = latent_std.view(1, -1, 1, 1)  # [1, C, 1, 1]
-            latent_mean_reshaped = latent_mean.view(1, -1, 1, 1)  # [1, C, 1, 1]
-            samples = (samples * latent_std_reshaped) / latent_multiplier + latent_mean_reshaped
+            # latent_mean和latent_std已经是[1, C, 1, 1]形状，可以直接使用
+            # 反归一化: x * std / multiplier + mean
+            samples = (samples * latent_std) / latent_multiplier + latent_mean
             
             # VAE解码为图像
             with torch.no_grad():
