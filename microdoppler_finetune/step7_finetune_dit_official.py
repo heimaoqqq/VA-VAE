@@ -49,6 +49,7 @@ from collections import OrderedDict
 from omegaconf import OmegaConf
 from safetensors import safe_open
 from PIL import Image
+from pathlib import Path
 
 # Completely disable torch compile and dynamo
 torch._dynamo.disable()
@@ -62,6 +63,29 @@ torch.backends.cudnn.allow_tf32 = True
 sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
 from models.lightningdit import LightningDiT_models
 from transport import create_transport
+
+def setup_distributed(rank, world_size):
+    """设置分布式训练环境"""
+    os.environ['MASTER_ADDR'] = 'localhost'  
+    os.environ['MASTER_PORT'] = '12355'
+    
+    # 初始化进程组
+    dist.init_process_group(
+        backend="nccl",
+        rank=rank, 
+        world_size=world_size
+    )
+    
+    # 设置当前进程的GPU设备
+    torch.cuda.set_device(rank)
+
+def cleanup_distributed():
+    """清理分布式训练环境"""
+    dist.destroy_process_group()
+
+def requires_grad(model, flag=True):
+    for p in model.parameters():
+        p.requires_grad = flag
 
 class MicroDopplerLatentDataset(Dataset):
     """微多普勒latent数据集 - 处理step6创建的批量格式数据"""
