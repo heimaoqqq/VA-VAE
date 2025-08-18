@@ -166,7 +166,9 @@ def do_train(train_config, accelerator):
     
     # 创建并加载我们微调的VA-VAE
     from tokenizer.vavae import VA_VAE
-    vae = VA_VAE('tokenizer/configs/vavae_f16d32.yaml')
+    # 使用专门为DiT训练准备的配置文件（不包含adaptive_vf）
+    vae_config_path = '/kaggle/working/VA-VAE/microdoppler_finetune/vavae_config_for_dit.yaml'
+    vae = VA_VAE(vae_config_path)
     
     # 加载微调的VA-VAE权重
     vae_checkpoint_path = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
