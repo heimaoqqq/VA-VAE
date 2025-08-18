@@ -222,7 +222,7 @@ def do_train(train_config, accelerator):
             logger.info(f"Validation Dataset contains {len(valid_dataset):,} images {train_config['data']['valid_path']}")
 
     # Prepare models for training:
-    update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
+    update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
     ema.eval()  # EMA model should always be in eval mode
     
@@ -306,7 +306,7 @@ def do_train(train_config, accelerator):
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
             opt.step()
-            update_ema(ema, model.module)
+            update_ema(ema, model)
 
             # Log loss values:
             if 'cos_loss' in loss_dict:
@@ -361,7 +361,7 @@ def do_train(train_config, accelerator):
                     patience_counter = 0
                     # 保存最佳模型
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": accelerator.unwrap_model(model).state_dict(),
                         "ema": ema.state_dict(),
                         "opt": opt.state_dict(),
                         "config": train_config,
@@ -385,7 +385,7 @@ def do_train(train_config, accelerator):
         if (epoch + 1) % train_config['train'].get('ckpt_every_epoch', 10) == 0:
             if accelerator.is_main_process:
                 checkpoint = {
-                    "model": model.module.state_dict(),
+                    "model": accelerator.unwrap_model(model).state_dict(),
                     "ema": ema.state_dict(),
                     "opt": opt.state_dict(),
                     "config": train_config,
