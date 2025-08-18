@@ -6,10 +6,10 @@ Training LightningDiT-Base with VA-VAE on micro-Doppler dataset
 """
 
 import torch
-import torch.distributed as dist
+# import torch.distributed as dist  # 使用accelerator替代
 import torch.backends.cuda
 import torch.backends.cudnn
-from torch.nn.parallel import DistributedDataParallel as DDP
+# from torch.nn.parallel import DistributedDataParallel as DDP  # 使用accelerator替代
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -113,7 +113,7 @@ def do_train(train_config, accelerator):
             logger.info(f"Loaded pretrained model from {train_config['train']['weight_init']}")
     requires_grad(ema, False)
     
-    model = DDP(model.to(device), device_ids=[rank])
+    # 创建transport和优化器（在accelerator.prepare之前）
     transport = create_transport(
         train_config['transport']['path_type'],
         train_config['transport']['prediction'],
@@ -123,12 +123,14 @@ def do_train(train_config, accelerator):
         use_cosine_loss = train_config['transport']['use_cosine_loss'] if 'use_cosine_loss' in train_config['transport'] else False,
         use_lognorm = train_config['transport']['use_lognorm'] if 'use_lognorm' in train_config['transport'] else False,
     )  # default: velocity; 
+    
+    opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, betas=(0.9, train_config['optimizer']['beta2']))
+    
     if accelerator.is_main_process:
         logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
         logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
         logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
         logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
-    opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, betas=(0.9, train_config['optimizer']['beta2']))
     
     # Setup data - 使用我们的微多普勒latent数据集
     dataset = MicroDopplerLatentDataset(
@@ -202,8 +204,10 @@ def do_train(train_config, accelerator):
         start_epoch = 0
         best_val_loss = float('inf')
         patience_counter = 0
-        
+
     model, opt, loader = accelerator.prepare(model, opt, loader)
+    if 'valid_path' in train_config['data']:
+        valid_loader = accelerator.prepare(valid_loader)
 
     # Variables for monitoring/logging purposes:
     if not train_config['train']['resume']:
@@ -237,6 +241,7 @@ def do_train(train_config, accelerator):
                 y = y.to(device, dtype=torch.long)
             
             model_kwargs = dict(y=y)
+            # 使用accelerator包装后的模型
             loss_dict = transport.training_losses(model, x, model_kwargs)
             if 'cos_loss' in loss_dict:
                 mse_loss = loss_dict["loss"].mean()
@@ -271,8 +276,8 @@ def do_train(train_config, accelerator):
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss.item() / dist.get_world_size()
+                avg_loss = accelerator.gather(avg_loss).mean()  # 使用accelerator替代dist
+                avg_loss = avg_loss.item()
                 if accelerator.is_main_process:
                     logger.info(f"(epoch={epoch+1:03d}, step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
                     writer.add_scalar('Loss/train', avg_loss, train_steps)
