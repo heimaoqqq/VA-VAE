@@ -175,17 +175,16 @@ def do_train(train_config, accelerator):
     if os.path.exists(vae_checkpoint_path):
         vae_checkpoint = torch.load(vae_checkpoint_path, map_location=device)
         if 'state_dict' in vae_checkpoint:
-            vae.load_state_dict(vae_checkpoint['state_dict'])
+            vae.model.load_state_dict(vae_checkpoint['state_dict'])
         else:
-            vae.load_state_dict(vae_checkpoint)
+            vae.model.load_state_dict(vae_checkpoint)
         if accelerator.is_main_process:
             logger.info(f"Loaded custom VA-VAE from {vae_checkpoint_path}")
     else:
         if accelerator.is_main_process:
             logger.warning(f"VA-VAE checkpoint not found at {vae_checkpoint_path}, using default weights")
     
-    vae.to(device)
-    vae.eval()
+    # VA_VAE类内部已经处理了.cuda()和.eval()，不需要额外调用
     
     # 创建transport和优化器（在accelerator.prepare之前）
     transport = create_transport(
