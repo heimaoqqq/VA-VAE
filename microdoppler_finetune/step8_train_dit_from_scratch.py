@@ -218,6 +218,11 @@ def do_train(train_config, accelerator):
             logger.warning(f"VA-VAE checkpoint not found at {vae_checkpoint_path}, using default weights")
     
     # VA_VAE类内部已经处理了.cuda()和.eval()，不需要额外调用
+    # 冻结VA-VAE权重，仅用于编码解码
+    for param in vae.model.parameters():
+        param.requires_grad = False
+    if accelerator.is_main_process:
+        logger.info("VA-VAE weights frozen for inference only")
     
     # 创建transport和优化器（在accelerator.prepare之前）
     transport = create_transport(
