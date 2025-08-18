@@ -595,8 +595,12 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # 反归一化
-            samples = (samples * latent_std) / latent_multiplier + latent_mean
+            # 反归一化 - 修复维度匹配问题
+            # latent_std: [C], samples: [1, C, H, W] 
+            # 需要调整维度以进行广播
+            latent_std_reshaped = latent_std.view(1, -1, 1, 1)  # [1, C, 1, 1]
+            latent_mean_reshaped = latent_mean.view(1, -1, 1, 1)  # [1, C, 1, 1]
+            samples = (samples * latent_std_reshaped) / latent_multiplier + latent_mean_reshaped
             
             # VAE解码为图像
             with torch.no_grad():
