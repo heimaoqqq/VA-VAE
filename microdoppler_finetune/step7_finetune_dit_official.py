@@ -294,56 +294,49 @@ def do_train_dataparallel(train_config, device, gpu_count):
             torch.cuda.memory.set_per_process_memory_fraction(0.45)  
     logger.info("Starting training loop...")
     
-    # Training loop
+    # Training loop with gradient accumulation
+    gradient_accumulation_steps = train_config['train'].get('gradient_accumulation_steps', 1)
+    
     while train_steps < train_config['train']['max_steps']:
-        for x, y in loader:
+        for batch_idx, (x, y) in enumerate(loader):
             if train_steps >= train_config['train']['max_steps']:
                 break
                 
             # Memory management
             torch.cuda.empty_cache()
-                
-            # Move tensors to primary device (cuda:0) for DataParallel
-            # Use FP16 to save memory
+            
+            # Move data to device
             x = x.to('cuda:0', dtype=torch.float16)
             y = y.to('cuda:0')
             
-            model_kwargs = dict(y=y)
-            
-            # Use proper mixed precision training with GradScaler
+            # Forward pass with mixed precision
             with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
-                loss_dict = transport.training_losses(model, x, model_kwargs)
-                loss = loss_dict["loss"].mean()
+                loss_dict = transport.training_losses(model, x, dict(y=y))
+                loss = loss_dict["loss"].mean() / gradient_accumulation_steps  # 归一化梯度
             
-            opt.zero_grad()
-            
-            # Scale loss for backward pass
+            # Backward pass with gradient scaling
             scaler.scale(loss).backward()
             
-            # Gradient clipping with scaler
-            if 'max_grad_norm' in train_config['optimizer']:
+            # Only step optimizer after accumulating enough gradients
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
                 scaler.unscale_(opt)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
+                torch.nn.utils.clip_grad_norm_(model.parameters(), train_config['optimizer'].get('grad_clip_norm', 1.0))
+                
+                scaler.step(opt)
+                scaler.update()
+                opt.zero_grad()
+                
+                # Update EMA after optimizer step
+                update_ema(ema, model.module if gpu_count > 1 else model, decay=0.9999)
+                
+                train_steps += 1
             
-            # Step with scaler
-            scaler.step(opt)
-            scaler.update()
-            
-            # Update EMA
-            if gpu_count > 1:
-                update_ema(ema, model.module)
-            else:
-                update_ema(ema, model)
-            
-            # Clear cache after each step
-            torch.cuda.empty_cache()
-
-            # Logging
-            running_loss += loss.item()
+            # Logging (accumulate loss for all micro-batches)
+            running_loss += loss.item() * gradient_accumulation_steps  # 反归一化用于显示
             log_steps += 1
-            train_steps += 1
             
-            if train_steps % train_config['train']['log_every'] == 0:
+            # Only log after optimizer step
+            if (batch_idx + 1) % gradient_accumulation_steps == 0 and train_steps % train_config['train']['log_every'] == 0:
                 torch.cuda.synchronize()
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
