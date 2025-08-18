@@ -42,7 +42,11 @@ from diffusers.models import AutoencoderKL
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from accelerate import Accelerator
-from datasets.img_latent_dataset import ImgLatentDataset
+# from datasets.img_latent_dataset import ImgLatentDataset  # 官方数据集
+
+# 导入我们自己的微多普勒数据集类
+sys.path.append('/kaggle/working/microdoppler_finetune')
+from step6_encode_dataset import MicroDopplerLatentDataset
 
 def do_train(train_config, accelerator):
     """
@@ -126,10 +130,9 @@ def do_train(train_config, accelerator):
         logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
     opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, betas=(0.9, train_config['optimizer']['beta2']))
     
-    # Setup data - 修改为使用微多普勒数据集
+    # Setup data - 使用我们的微多普勒latent数据集
     dataset = MicroDopplerLatentDataset(
-        data_dir=train_config['data']['data_path'],
-        split='train',
+        data_path=train_config['data']['data_path'],  # 使用data_path而不是data_dir
         latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
         latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 1.0,
     )
@@ -150,8 +153,7 @@ def do_train(train_config, accelerator):
     # 验证集
     if 'valid_path' in train_config['data']:
         valid_dataset = MicroDopplerLatentDataset(
-            data_dir=train_config['data']['valid_path'],
-            split='val',
+            data_path=train_config['data']['valid_path'],  # 使用data_path而不是data_dir
             latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
             latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 1.0,
         )
