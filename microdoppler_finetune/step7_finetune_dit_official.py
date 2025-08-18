@@ -83,6 +83,21 @@ def cleanup_distributed():
     """清理分布式训练环境"""
     dist.destroy_process_group()
 
+def create_logger(logging_dir, rank):
+    """创建日志记录器（仅主进程输出到文件）"""
+    if rank == 0:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='[\033[34m%(asctime)s\033[0m] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
+        )
+        logger = logging.getLogger(__name__)
+    else:
+        logger = logging.getLogger(__name__)
+        logger.addHandler(logging.NullHandler())
+    return logger
+
 def requires_grad(model, flag=True):
     for p in model.parameters():
         p.requires_grad = flag
