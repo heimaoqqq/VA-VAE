@@ -254,9 +254,12 @@ def do_train_ddp(rank, world_size, train_config):
         requires_grad(ema, False)
         update_ema(ema, model.module, decay=0)
         ema.eval()
+    else:
+        ema = None
     
     model.train()
-    ema.eval()
+    if rank == 0 and ema is not None:
+        ema.eval()
     
     if rank == 0:
         logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -338,7 +341,8 @@ def do_train_ddp(rank, world_size, train_config):
             else:
                 model.load_state_dict(checkpoint['model'])
             
-            ema.load_state_dict(checkpoint['ema'])
+            if rank == 0:
+                ema.load_state_dict(checkpoint['ema'])
             opt.load_state_dict(checkpoint['opt'])
             train_steps = int(os.path.basename(latest_checkpoint).split('.')[0])
             if rank == 0:
@@ -385,7 +389,7 @@ def do_train_ddp(rank, world_size, train_config):
                 opt.zero_grad()
                 
                 # Update EMA after optimizer step (仅主进程)
-                if rank == 0:
+                if rank == 0 and ema is not None:
                     update_ema(ema, model.module, decay=0.9999)
                 
                 train_steps += 1
@@ -418,7 +422,7 @@ def do_train_ddp(rank, world_size, train_config):
                 checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
                 checkpoint_data = {
                     'model': model_state,
-                    'ema': ema.state_dict(),
+                    'ema': ema.state_dict() if ema is not None else None,
                     'opt': opt.state_dict(),
                     'config': train_config
                 }
@@ -455,15 +459,15 @@ def do_train_ddp(rank, world_size, train_config):
         if train_steps >= train_config['train']['max_steps']:
             break
 
-    logger.info("Training completed!")
-    writer.close()
-    
-    # Save final checkpoint (仅主进程)
     if rank == 0:
+        logger.info("Training completed!")
+        writer.close()
+        
+        # Save final checkpoint (仅主进程)
         final_checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}_final.pt"
         final_checkpoint_data = {
             'model': model.module.state_dict(),
-            'ema': ema.state_dict(),
+            'ema': ema.state_dict() if ema is not None else None,
             'opt': opt.state_dict(),
             'config': train_config
         }
