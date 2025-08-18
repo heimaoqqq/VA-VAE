@@ -174,12 +174,26 @@ def do_train(train_config, accelerator):
     vae_checkpoint_path = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
     if os.path.exists(vae_checkpoint_path):
         vae_checkpoint = torch.load(vae_checkpoint_path, map_location=device)
+        
+        # 从checkpoint中提取state_dict
         if 'state_dict' in vae_checkpoint:
-            vae.model.load_state_dict(vae_checkpoint['state_dict'])
+            state_dict = vae_checkpoint['state_dict']
         else:
-            vae.model.load_state_dict(vae_checkpoint)
+            state_dict = vae_checkpoint
+        
+        # 过滤出只属于VAE的权重（排除loss、foundation_model等）
+        vae_state_dict = {}
+        for key, value in state_dict.items():
+            # 只保留不以loss、foundation_model、linear_proj开头的权重
+            if not key.startswith('loss.') and not key.startswith('foundation_model.') and key != 'linear_proj.weight':
+                vae_state_dict[key] = value
+        
+        # 加载过滤后的权重
+        vae.model.load_state_dict(vae_state_dict, strict=True)
+        
         if accelerator.is_main_process:
             logger.info(f"Loaded custom VA-VAE from {vae_checkpoint_path}")
+            logger.info(f"Filtered {len(state_dict) - len(vae_state_dict)} non-VAE keys from checkpoint")
     else:
         if accelerator.is_main_process:
             logger.warning(f"VA-VAE checkpoint not found at {vae_checkpoint_path}, using default weights")
