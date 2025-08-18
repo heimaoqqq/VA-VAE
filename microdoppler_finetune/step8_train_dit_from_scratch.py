@@ -284,6 +284,7 @@ def do_train(train_config, accelerator):
     for epoch in range(start_epoch, max_epochs):
         if accelerator.is_main_process:
             logger.info(f"Starting Epoch {epoch+1}/{max_epochs}")
+            print(f"🔄 Training loader has {len(loader)} batches")
             
         epoch_loss = 0
         epoch_steps = 0
@@ -291,7 +292,13 @@ def do_train(train_config, accelerator):
         log_steps = 0
         start_time = time()
         
-        for x, y in loader:
+        if accelerator.is_main_process:
+            print(f"🚀 Starting training loop for epoch {epoch+1}")
+        
+        for batch_idx, (x, y) in enumerate(loader):
+            if batch_idx == 0 and accelerator.is_main_process:
+                print(f"🔄 Training epoch {epoch+1}, batch shape: {x.shape}, labels: {y.shape}")
+                
             if accelerator.mixed_precision == 'no':
                 x = x.to(device, dtype=torch.float32)
                 y = y.to(device, dtype=torch.long)  # 确保标签是long类型
@@ -534,6 +541,11 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default='config_dit_base.yaml')
     args = parser.parse_args()
 
-    accelerator = Accelerator()
+    accelerator = Accelerator(mixed_precision='bf16')  # 启用混合精度和多GPU
     train_config = load_config(args.config)
+    
+    # 打印accelerator信息
+    if accelerator.is_main_process:
+        print(f"🚀 Accelerator setup - Devices: {accelerator.num_processes}, Mixed precision: {accelerator.mixed_precision}")
+    
     do_train(train_config, accelerator)
