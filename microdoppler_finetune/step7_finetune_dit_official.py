@@ -26,6 +26,9 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
 os.environ['TORCH_COMPILE_DISABLE'] = '1'
 os.environ['TORCHDYNAMO_DISABLE'] = '1'
 
+# Memory optimization for Kaggle T4x2
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
@@ -272,8 +275,13 @@ def do_train_dataparallel(train_config, device, gpu_count):
         else:
             logger.info("No checkpoint found, starting from scratch")
 
-    # Clear memory
+    # Clear memory and set memory fraction
     torch.cuda.empty_cache()
+    
+    # Force memory balancing for DataParallel
+    if gpu_count > 1:
+        torch.cuda.set_per_process_memory_fraction(0.45, device=0)
+        torch.cuda.set_per_process_memory_fraction(0.45, device=1)
     
     logger.info("Starting training loop...")
     
@@ -283,12 +291,18 @@ def do_train_dataparallel(train_config, device, gpu_count):
             if train_steps >= train_config['train']['max_steps']:
                 break
                 
+            # Memory management
+            torch.cuda.empty_cache()
+                
             x = x.to(device, dtype=torch.float32)
             y = y.to(device)
             
             model_kwargs = dict(y=y)
-            loss_dict = transport.training_losses(model, x, model_kwargs)
-            loss = loss_dict["loss"].mean()
+            
+            # Use gradient scaling for memory efficiency
+            with torch.cuda.amp.autocast():
+                loss_dict = transport.training_losses(model, x, model_kwargs)
+                loss = loss_dict["loss"].mean()
             
             opt.zero_grad()
             loss.backward()
@@ -304,6 +318,9 @@ def do_train_dataparallel(train_config, device, gpu_count):
                 update_ema(ema, model.module)
             else:
                 update_ema(ema, model)
+            
+            # Clear cache after each step
+            torch.cuda.empty_cache()
 
             # Logging
             running_loss += loss.item()
