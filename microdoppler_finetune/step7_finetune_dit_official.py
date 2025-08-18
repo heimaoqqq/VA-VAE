@@ -30,14 +30,25 @@ os.environ['TORCHDYNAMO_DISABLE'] = '1'
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
+import torchvision
+import math
+import logging
+import os
+import argparse
+from time import time
+from glob import glob
+from copy import deepcopy
+from collections import OrderedDict
 from omegaconf import OmegaConf
-from PIL import Image
-from torchvision import transforms
-import safetensors.torch as st
 from safetensors import safe_open
+from PIL import Image
 
 # Completely disable torch compile and dynamo
 torch._dynamo.disable()
@@ -119,11 +130,16 @@ class MicroDopplerLatentDataset(Dataset):
         
         return latent, user_id
 
-def do_train_dataparallel(train_config, device, gpu_count):
+def do_train_ddp(rank, world_size, train_config):
     """
-    使用DataParallel的LightningDiT训练函数
+    使用DDP的LightningDiT训练函数
     """
-    print(f"Setting up training with {gpu_count} GPU(s)")
+    # 设置分布式环境
+    setup_distributed(rank, world_size)
+    device = f'cuda:{rank}'
+    
+    if rank == 0:
+        print(f"Setting up DDP training with {world_size} GPU(s)")
     
     # Setup experiment folder
     os.makedirs(train_config['train']['output_dir'], exist_ok=True)
@@ -141,14 +157,15 @@ def do_train_dataparallel(train_config, device, gpu_count):
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=[logging.StreamHandler(), logging.FileHandler(f"{experiment_dir}/log.txt")]
     )
-    logger = logging.getLogger(__name__)
+    logger = create_logger(experiment_dir, rank)
     logger.info(f"Experiment directory: {experiment_dir}")
     
     # Setup TensorBoard
     tensorboard_dir_log = f"tensorboard_logs/{exp_name}"
     os.makedirs(tensorboard_dir_log, exist_ok=True)
-    writer = SummaryWriter(tensorboard_dir_log)
-
+    if rank == 0:
+        writer = SummaryWriter(log_dir=f"{experiment_dir}/tensorboard")
+    
     # Model setup
     downsample_ratio = 16  # VA-VAE f16d32
     latent_size = train_config['data']['image_size'] // downsample_ratio
@@ -185,22 +202,25 @@ def do_train_dataparallel(train_config, device, gpu_count):
         logger.info("Pretrained weights loaded successfully")
 
     # Move model to GPU
-    model = model.to('cuda:0')  # 明确指定主设备
+    # 移动模型到GPU并包装为DDP
+    model = model.to(device)
+    model = DDP(model, device_ids=[rank], output_device=rank, find_unused_parameters=False)
     
-    if gpu_count > 1:
-        logger.info(f"Using DataParallel on {gpu_count} GPUs with device_ids=[0,1]")
-        # 显式指定设备ID，确保负载均衡
-        model = torch.nn.DataParallel(model, device_ids=[0, 1], output_device=0)
+    if rank == 0:
+        logger.info(f"Using DDP on {world_size} GPUs")
     
-    # Create EMA model
-    ema = deepcopy(model.module if gpu_count > 1 else model).to(device)
-    requires_grad(ema, False)
-    update_ema(ema, model.module if gpu_count > 1 else model, decay=0)
+    # Create EMA model (只在主进程创建)
+    if rank == 0:
+        ema = deepcopy(model.module).to(device)
+        requires_grad(ema, False)
+        update_ema(ema, model.module, decay=0)
+        ema.eval()
     
     model.train()
     ema.eval()
     
-    logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    if rank == 0:
+        logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer and scaler for mixed precision training
     opt = torch.optim.AdamW(model.parameters(), 
@@ -215,33 +235,41 @@ def do_train_dataparallel(train_config, device, gpu_count):
         latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 0.18215,
     )
     
+    # 使用DistributedSampler确保数据在进程间正确分布
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    
     loader = DataLoader(
         dataset,
         batch_size=train_config['train']['global_batch_size'],
-        shuffle=True,
+        sampler=sampler,
         num_workers=train_config['data']['num_workers'],
         pin_memory=True,
         drop_last=True
     )
-    logger.info(f"Training dataset: {len(dataset):,} samples")
+    
+    if rank == 0:
+        logger.info(f"Training dataset: {len(dataset):,} samples")
+        logger.info(f"Samples per GPU: {len(dataset) // world_size}")
 
     # Setup validation
     valid_loader = None
     if 'valid_path' in train_config['data'] and train_config['data']['valid_path'] is not None:
-        valid_dataset = MicroDopplerLatentDataset(
-            data_dir=train_config['data']['valid_path'],
-            latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
-            latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 0.18215,
-        )
-        valid_loader = DataLoader(
-            valid_dataset,
-            batch_size=train_config['train']['global_batch_size'],
-            shuffle=False,
-            num_workers=train_config['data']['num_workers'],
-            pin_memory=True,
-            drop_last=False
-        )
-        logger.info(f"Validation dataset: {len(valid_dataset):,} samples")
+        # 验证数据集（仅主进程）
+        if rank == 0:
+            val_dataset = MicroDopplerLatentDataset(
+                data_dir=train_config['data']['val_data_path'],
+                latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
+                latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 0.18215,
+            )
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=train_config['train']['global_batch_size'],
+                shuffle=False,
+                num_workers=train_config['data']['num_workers'],
+                pin_memory=True,
+                drop_last=False
+            )
+            logger.info(f"Validation dataset: {len(val_dataset):,} samples")
 
     # Setup transport (diffusion process)
     transport = create_transport(
@@ -274,40 +302,31 @@ def do_train_dataparallel(train_config, device, gpu_count):
             ema.load_state_dict(checkpoint['ema'])
             opt.load_state_dict(checkpoint['opt'])
             train_steps = int(os.path.basename(latest_checkpoint).split('.')[0])
-            logger.info(f"Resumed from checkpoint: {latest_checkpoint}")
+            if rank == 0:
+                logger.info(f"Resumed from checkpoint: {latest_checkpoint}")
         else:
-            logger.info("No checkpoint found, starting from scratch")
+            if rank == 0:
+                logger.info("No checkpoint found, starting from scratch")
 
-    # Clear memory and set memory fraction
+    # Clear memory
     torch.cuda.empty_cache()
     
-    # Set memory fraction for balanced GPU usage - 更保守的内存分配
-    if gpu_count > 1:
-        torch.cuda.set_per_process_memory_fraction(0.40, device=0)  # 主GPU更保守
-        torch.cuda.set_per_process_memory_fraction(0.45, device=1)  # 从GPU也保守一些
-        
-        # 预分配内存以避免碎片化
-        torch.cuda.empty_cache()
-        with torch.cuda.device(0):
-            torch.cuda.memory.set_per_process_memory_fraction(0.40)
-        with torch.cuda.device(1):
-            torch.cuda.memory.set_per_process_memory_fraction(0.45)  
-    logger.info("Starting training loop...")
+    if rank == 0:
+        logger.info("Starting DDP training loop...")
     
-    # Training loop with gradient accumulation
+    # DDP training loop with gradient accumulation
     gradient_accumulation_steps = train_config['train'].get('gradient_accumulation_steps', 1)
     
     while train_steps < train_config['train']['max_steps']:
+        sampler.set_epoch(train_steps // len(loader))  # 确保每个epoch的数据不同
+        
         for batch_idx, (x, y) in enumerate(loader):
             if train_steps >= train_config['train']['max_steps']:
                 break
                 
-            # Memory management
-            torch.cuda.empty_cache()
-            
             # Move data to device
-            x = x.to('cuda:0', dtype=torch.float16)
-            y = y.to('cuda:0')
+            x = x.to(device, dtype=torch.float16)
+            y = y.to(device)
             
             # Forward pass with mixed precision
             with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
@@ -326,8 +345,9 @@ def do_train_dataparallel(train_config, device, gpu_count):
                 scaler.update()
                 opt.zero_grad()
                 
-                # Update EMA after optimizer step
-                update_ema(ema, model.module if gpu_count > 1 else model, decay=0.9999)
+                # Update EMA after optimizer step (仅主进程)
+                if rank == 0:
+                    update_ema(ema, model.module, decay=0.9999)
                 
                 train_steps += 1
             
@@ -335,8 +355,8 @@ def do_train_dataparallel(train_config, device, gpu_count):
             running_loss += loss.item() * gradient_accumulation_steps  # 反归一化用于显示
             log_steps += 1
             
-            # Only log after optimizer step
-            if (batch_idx + 1) % gradient_accumulation_steps == 0 and train_steps % train_config['train']['log_every'] == 0:
+            # Only log after optimizer step (仅主进程)
+            if rank == 0 and (batch_idx + 1) % gradient_accumulation_steps == 0 and train_steps % train_config['train']['log_every'] == 0:
                 torch.cuda.synchronize()
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
@@ -350,21 +370,21 @@ def do_train_dataparallel(train_config, device, gpu_count):
                 log_steps = 0
                 start_time = time()
 
-            # Save checkpoint
-            if train_steps % train_config['train']['ckpt_every'] == 0 and train_steps > 0:
+            # Save checkpoint and validate (仅主进程)
+            if rank == 0 and train_steps > 0 and train_steps % train_config['train']['ckpt_every'] == 0:
                 if gpu_count > 1:
                     model_state = model.module.state_dict()
                 else:
                     model_state = model.state_dict()
-                    
-                checkpoint = {
-                    "model": model_state,
-                    "ema": ema.state_dict(),
-                    "opt": opt.state_dict(),
-                    "config": train_config,
-                }
                 checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
-                torch.save(checkpoint, checkpoint_path)
+                checkpoint_data = {
+                    'model': model_state,
+                    'ema': ema.state_dict(),
+                    'opt': opt.state_dict(),
+                    'config': train_config
+                }
+                torch.save(checkpoint_data, checkpoint_path)
+                logger.info(f"Saved checkpoint: {checkpoint_path}")
                 logger.info(f"Saved checkpoint to {checkpoint_path}")
 
                 # Validation evaluation (optional)
@@ -399,23 +419,23 @@ def do_train_dataparallel(train_config, device, gpu_count):
     logger.info("Training completed!")
     writer.close()
     
-    # Save final checkpoint
-    if gpu_count > 1:
-        final_model_state = model.module.state_dict()
-    else:
-        final_model_state = model.state_dict()
+    # Save final checkpoint (仅主进程)
+    if rank == 0:
+        final_checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}_final.pt"
+        final_checkpoint_data = {
+            'model': model.module.state_dict(),
+            'ema': ema.state_dict(),
+            'opt': opt.state_dict(),
+            'config': train_config
+        }
+        torch.save(final_checkpoint_data, final_checkpoint_path)
+        logger.info(f"Saved final checkpoint: {final_checkpoint_path}")
+        logger.info(f"Training completed! Total steps: {train_steps}")
         
-    final_checkpoint = {
-        "model": final_model_state,
-        "ema": ema.state_dict(),
-        "opt": opt.state_dict(),
-        "config": train_config,
-    }
-    final_path = f"{checkpoint_dir}/final.pt"
-    torch.save(final_checkpoint, final_path)
-    logger.info(f"Final model saved to {final_path}")
+        writer.close()
     
-    return model, ema
+    # 清理分布式环境
+    cleanup_distributed()
 
 def load_weights_with_shape_check(model, checkpoint, rank=0):
     """从官方train.py复制的权重加载函数"""
@@ -470,23 +490,6 @@ def load_config(config_path):
         config = yaml.safe_load(file)
     return config
 
-def create_logger(logging_dir, accelerator):
-    """
-    Create a logger that writes to a log file and stdout.
-    """
-    if accelerator.process_index == 0:  # real logger
-        logging.basicConfig(
-            level=logging.INFO,
-            format='[\033[34m%(asctime)s\033[0m] %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S',
-            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
-        )
-        logger = logging.getLogger(__name__)
-    else:  # dummy logger (does nothing)
-        logger = logging.getLogger(__name__)
-        logger.addHandler(logging.NullHandler())
-    return logger
-
 @torch.no_grad()
 def evaluate(model, loader, device, transport, t_range):
     """Evaluate the model on validation set"""
@@ -505,22 +508,27 @@ def evaluate(model, loader, device, transport, t_range):
     model.train()
     return torch.tensor(val_loss / num_samples, device=device)
 
-if __name__ == "__main__":
-    # 读取配置
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str, default='config_microdoppler_finetune.yaml')
-    args = parser.parse_args()
-
-    # 检查GPU数量
-    gpu_count = torch.cuda.device_count()
-    print(f"Available GPUs: {gpu_count}")
+def main():
+    """主函数 - 启动多进程DDP训练"""
+    parser = argparse.ArgumentParser(description="LightningDiT微调脚本")
+    parser.add_argument("--config", type=str, required=True, help="配置文件路径")
     
-    if gpu_count > 1:
-        print(f"Using DataParallel on {gpu_count} GPUs")
-        device = torch.device('cuda')
+    args = parser.parse_args()
+    
+    # Load configuration
+    train_config = OmegaConf.load(args.config)
+    
+    # Get number of available GPUs
+    world_size = torch.cuda.device_count()
+    print(f"Available GPUs: {world_size}")
+    
+    if world_size >= 2:
+        print("Using DDP on multiple GPUs")
+        # 启动多进程训练
+        mp.spawn(do_train_ddp, args=(world_size, train_config), nprocs=world_size, join=True)
     else:
-        print("Using single GPU")
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-    train_config = load_config(args.config)
-    do_train_dataparallel(train_config, device, gpu_count)
+        print("Using single GPU training")
+        do_train_ddp(0, 1, train_config)
+
+if __name__ == "__main__":
+    main()
