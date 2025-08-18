@@ -43,7 +43,6 @@ from diffusers.models import AutoencoderKL
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from accelerate import Accelerator
-from datasets.img_latent_dataset import ImgLatentDataset  # 官方数据集
 
 # 导入我们自己的微多普勒数据集类
 sys.path.append('/kaggle/working/microdoppler_finetune')
@@ -499,12 +498,18 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
     )
     
     # 获取潜在空间统计信息
-    dataset = ImgLatentDataset(
+    dataset = MicroDopplerLatentDataset(
         data_dir=train_config['data']['data_path'],
         latent_norm=train_config['data']['latent_norm'],
         latent_multiplier=train_config['data']['latent_multiplier'],
     )
     latent_mean, latent_std = dataset.get_latent_stats()
+    
+    # 如果get_latent_stats不存在，使用默认统计值
+    if not hasattr(dataset, 'get_latent_stats'):
+        # 使用训练时计算的统计值或默认值
+        latent_mean = torch.zeros(train_config['model']['in_chans'], device=device)
+        latent_std = torch.ones(train_config['model']['in_chans'], device=device)
     latent_mean = latent_mean.to(device)
     latent_std = latent_std.to(device)
     latent_multiplier = train_config['data']['latent_multiplier']
