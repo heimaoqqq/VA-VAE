@@ -438,10 +438,10 @@ def evaluate(model, valid_loader, device, transport, accelerator):
     
     avg_loss = total_loss / total_steps
     
-    # All-reduce across processes
+    # All-reduce across processes using accelerator
     avg_loss_tensor = torch.tensor(avg_loss, device=device)
-    dist.all_reduce(avg_loss_tensor, op=dist.ReduceOp.SUM)
-    avg_loss = avg_loss_tensor.item() / dist.get_world_size()
+    avg_loss_tensor = accelerator.gather(avg_loss_tensor).mean()
+    avg_loss = avg_loss_tensor.item()
     
     return avg_loss
 
