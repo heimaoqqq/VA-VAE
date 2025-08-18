@@ -81,11 +81,8 @@ class MicroDopplerLatentDataset(Dataset):
                 sample_latent = latent[i]  # [C, H, W]
                 sample_label = labels_batch[i]
                 
-                # 应用归一化和缩放
-                if self.latent_norm:
-                    sample_latent = (sample_latent - sample_latent.mean()) / (sample_latent.std() + 1e-8)
-                sample_latent = sample_latent * self.latent_multiplier
-                
+                # 暂时不在这里归一化，保持原始latent
+                # 归一化将在计算全局统计后进行
                 self.latents.append(sample_latent)
                 self.labels.append(sample_label.long())
         
@@ -97,12 +94,21 @@ class MicroDopplerLatentDataset(Dataset):
         self._compute_latent_stats()
         
     def _compute_latent_stats(self):
-        """计算数据集中latent的统计信息"""
+        """计算数据集中latent的统计信息并进行归一化"""
         if len(self.latents) > 0:
             # 将所有latent堆叠并计算统计
             all_latents = torch.stack(self.latents)  # [N, C, H, W]
+            # 计算原始数据的统计信息（用于反归一化）
             self.latent_mean = all_latents.mean(dim=[0, 2, 3])  # [C]
             self.latent_std = all_latents.std(dim=[0, 2, 3])    # [C]
+            
+            # 如果需要归一化，现在对所有数据进行归一化
+            if self.latent_norm:
+                # 使用全局统计进行归一化
+                for i in range(len(self.latents)):
+                    # 归一化: (x - mean) / std * multiplier
+                    self.latents[i] = (self.latents[i] - self.latent_mean.view(-1, 1, 1)) / (self.latent_std.view(-1, 1, 1) + 1e-8)
+                    self.latents[i] = self.latents[i] * self.latent_multiplier
         else:
             # 默认值
             self.latent_mean = torch.zeros(32)  # 假设32维latent
