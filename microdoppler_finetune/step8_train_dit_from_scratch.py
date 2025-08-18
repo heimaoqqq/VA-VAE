@@ -44,18 +44,60 @@ from transport import create_transport, Sampler
 from accelerate import Accelerator
 # from datasets.img_latent_dataset import ImgLatentDataset  # 官方数据集
 
-# 导入我们自己的微多普勒数据集类 - 使用官方格式兼容
+# 导入我们自己的微多普勒数据集类
 sys.path.append('/kaggle/working/microdoppler_finetune')
-# from step6_encode_dataset import MicroDopplerLatentDataset
 
-# 临时使用官方数据集类，但修改为加载我们的safetensors格式
-from datasets.img_latent_dataset import ImgLatentDataset
+# 直接定义简化的数据集类，避免导入问题
+from safetensors.torch import load_file
+from torch.utils.data import Dataset
 
-# 重写数据集类以支持我们的格式
-class MicroDopplerLatentDataset(ImgLatentDataset):
+class MicroDopplerLatentDataset(Dataset):
     def __init__(self, data_dir, latent_norm=True, latent_multiplier=1.0):
-        # 使用官方参数名data_dir而不是data_path
-        super().__init__(data_dir, latent_norm, latent_multiplier)
+        self.data_dir = Path(data_dir)
+        self.latent_norm = latent_norm
+        self.latent_multiplier = latent_multiplier
+        
+        # 获取所有latent文件
+        self.latent_files = sorted(list(self.data_dir.glob("*.safetensors")))
+        
+        if len(self.latent_files) == 0:
+            raise ValueError(f"No safetensors files found in {data_dir}")
+        
+        print(f"Found {len(self.latent_files)} latent files in {data_dir}")
+        
+        # 预加载所有数据到内存
+        self.latents = []
+        self.labels = []
+        
+        for file_path in self.latent_files:
+            data = load_file(str(file_path))
+            
+            # 获取latent和labels（支持我们的batch格式）
+            latent = data['latents']  # [B, C, H, W]
+            labels_batch = data['labels']  # [B]
+            
+            # 添加每个样本
+            for i in range(latent.shape[0]):
+                sample_latent = latent[i]  # [C, H, W]
+                sample_label = labels_batch[i]
+                
+                # 应用归一化和缩放
+                if self.latent_norm:
+                    sample_latent = (sample_latent - sample_latent.mean()) / (sample_latent.std() + 1e-8)
+                sample_latent = sample_latent * self.latent_multiplier
+                
+                self.latents.append(sample_latent)
+                self.labels.append(sample_label.long())
+        
+        # 统计类别分布
+        unique_labels = torch.stack(self.labels).unique()
+        print(f"Dataset contains {len(self.latents)} samples with {len(unique_labels)} unique classes")
+        
+    def __len__(self):
+        return len(self.latents)
+    
+    def __getitem__(self, idx):
+        return self.latents[idx], self.labels[idx]
 
 def do_train(train_config, accelerator):
     """
