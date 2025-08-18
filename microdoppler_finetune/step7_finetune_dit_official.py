@@ -34,6 +34,7 @@ from omegaconf import OmegaConf
 from PIL import Image
 from torchvision import transforms
 import safetensors.torch as st
+from safetensors import safe_open
 
 # Completely disable torch compile and dynamo
 torch._dynamo.disable()
