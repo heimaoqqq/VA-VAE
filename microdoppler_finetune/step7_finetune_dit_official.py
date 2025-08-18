@@ -264,14 +264,16 @@ def do_train_ddp(rank, world_size, train_config):
     if rank == 0:
         logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Setup optimizer and scaler for mixed precision training
-    # Use CPU offloading for optimizer state to save GPU memory
-    opt = torch.optim.AdamW(model.parameters(), 
-                           lr=train_config['optimizer']['lr'], 
-                           weight_decay=train_config['optimizer'].get('weight_decay', 0.0),
-                           foreach=False,  # Disable multi-tensor operations to save memory
-                           fused=False)    # Disable fused operations to save memory
+    # Setup optimizer with CPU offloading to save GPU memory
+    # Use SGD instead of Adam to save memory (no momentum/variance buffers)
+    opt = torch.optim.SGD(model.parameters(), 
+                         lr=train_config['optimizer']['lr'],
+                         momentum=0.9,
+                         weight_decay=train_config['optimizer'].get('weight_decay', 0.0))
     scaler = torch.amp.GradScaler('cuda')
+    
+    if rank == 0:
+        logger.info("Using SGD optimizer to save GPU memory (instead of AdamW)")
 
     # Setup datasets
     dataset = MicroDopplerLatentDataset(
