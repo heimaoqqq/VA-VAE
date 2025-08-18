@@ -265,9 +265,12 @@ def do_train_ddp(rank, world_size, train_config):
         logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Setup optimizer and scaler for mixed precision training
+    # Use CPU offloading for optimizer state to save GPU memory
     opt = torch.optim.AdamW(model.parameters(), 
                            lr=train_config['optimizer']['lr'], 
-                           weight_decay=train_config['optimizer'].get('weight_decay', 0.0))
+                           weight_decay=train_config['optimizer'].get('weight_decay', 0.0),
+                           foreach=False,  # Disable multi-tensor operations to save memory
+                           fused=False)    # Disable fused operations to save memory
     scaler = torch.amp.GradScaler('cuda')
 
     # Setup datasets
@@ -384,9 +387,15 @@ def do_train_ddp(rank, world_size, train_config):
                 scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), train_config['optimizer'].get('grad_clip_norm', 1.0))
                 
+                # Clear cache before optimizer step to free memory
+                torch.cuda.empty_cache()
+                
                 scaler.step(opt)
                 scaler.update()
-                opt.zero_grad()
+                opt.zero_grad(set_to_none=True)  # More aggressive memory cleanup
+                
+                # Clear cache after optimizer step
+                torch.cuda.empty_cache()
                 
                 # Update EMA after optimizer step (仅主进程)
                 if rank == 0 and ema is not None:
