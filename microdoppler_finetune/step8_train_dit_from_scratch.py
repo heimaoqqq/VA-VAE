@@ -22,6 +22,7 @@ import os
 import sys
 import argparse
 from time import time
+from tqdm import tqdm
 from glob import glob
 from copy import deepcopy
 from collections import OrderedDict
@@ -295,12 +296,12 @@ def do_train(train_config, accelerator):
         if accelerator.is_main_process:
             print(f"🚀 Starting training loop for epoch {epoch+1}")
         
-        for batch_idx, (x, y) in enumerate(loader):
+        # 使用tqdm显示训练进度
+        pbar = tqdm(enumerate(loader), total=len(loader), desc=f"Epoch {epoch+1}/{max_epochs}", disable=not accelerator.is_main_process)
+        
+        for batch_idx, (x, y) in pbar:
             if batch_idx == 0 and accelerator.is_main_process:
-                print(f"🔄 Training epoch {epoch+1}, batch shape: {x.shape}, labels: {y.shape}")
-            
-            if batch_idx % 10 == 0 and accelerator.is_main_process:
-                print(f"  Processing batch {batch_idx+1}/{len(loader)}")
+                logger.info(f"Training epoch {epoch+1}, batch shape: {x.shape}, labels: {y.shape}")
                 
             try:
                 if accelerator.mixed_precision == 'no':
@@ -339,6 +340,10 @@ def do_train(train_config, accelerator):
                 train_steps += 1
                 epoch_steps += 1
                 
+                # 更新进度条显示当前batch的损失
+                if accelerator.is_main_process:
+                    pbar.set_postfix({'loss': f"{loss.item():.4f}", 'lr': f"{opt.param_groups[0]['lr']:.2e}"})
+                
                 if train_steps % train_config['train']['log_every'] == 0:
                     # Measure training speed:
                     torch.cuda.synchronize()
@@ -349,8 +354,9 @@ def do_train(train_config, accelerator):
                     avg_loss = accelerator.gather(avg_loss).mean()  # 使用accelerator替代dist
                     avg_loss = avg_loss.item()
                     if accelerator.is_main_process:
-                        logger.info(f"(epoch={epoch+1:03d}, step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                        logger.info(f"[Epoch {epoch+1}/{max_epochs}, Step {train_steps:07d}] Train Loss: {avg_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}, Speed: {steps_per_sec:.2f} steps/sec")
                         writer.add_scalar('Loss/train', avg_loss, train_steps)
+                        writer.add_scalar('Learning_rate', opt.param_groups[0]['lr'], train_steps)
                     # Reset monitoring variables:
                     running_loss = 0
                     log_steps = 0
@@ -364,9 +370,13 @@ def do_train(train_config, accelerator):
                 raise e
 
         # Epoch结束，计算平均损失
-        avg_epoch_loss = epoch_loss / epoch_steps
+        avg_epoch_loss = epoch_loss / epoch_steps if epoch_steps > 0 else 0
         if accelerator.is_main_process:
-            logger.info(f"Epoch {epoch+1} completed. Average loss: {avg_epoch_loss:.4f}")
+            logger.info(f"{'='*50}")
+            logger.info(f"Epoch {epoch+1}/{max_epochs} Summary:")
+            logger.info(f"  - Average Training Loss: {avg_epoch_loss:.4f}")
+            logger.info(f"  - Total Steps: {train_steps}")
+            logger.info(f"  - Learning Rate: {opt.param_groups[0]['lr']:.2e}")
             
         # 每个epoch结束进行验证
         if 'valid_path' in train_config['data']:
@@ -378,13 +388,19 @@ def do_train(train_config, accelerator):
             model.train()
             
             if accelerator.is_main_process:
-                logger.info(f"Validation Loss: {val_loss:.4f}")
+                logger.info(f"  - Validation Loss: {val_loss:.4f}")
                 writer.add_scalar('Loss/validation', val_loss, epoch+1)
+                
+                # 计算过拟合指标
+                overfitting_ratio = val_loss / avg_epoch_loss if avg_epoch_loss > 0 else 1.0
+                logger.info(f"  - Overfitting Ratio (val/train): {overfitting_ratio:.3f}")
                 
                 # 检查是否是最佳模型
                 if val_loss < best_val_loss:
+                    improvement = (best_val_loss - val_loss) / best_val_loss * 100 if best_val_loss != float('inf') else 100
                     best_val_loss = val_loss
                     patience_counter = 0
+                    logger.info(f"  ✅ New best model! Improvement: {improvement:.2f}%")
                     # 保存最佳模型
                     checkpoint = {
                         "model": accelerator.unwrap_model(model).state_dict(),
@@ -400,12 +416,12 @@ def do_train(train_config, accelerator):
                     logger.info(f"New best model saved with val_loss: {val_loss:.4f}")
                 else:
                     patience_counter += 1
-                    logger.info(f"No improvement. Patience: {patience_counter}/{patience}")
-                    
-                # 早停检查
-                if patience_counter >= patience:
-                    logger.info(f"Early stopping triggered at epoch {epoch+1}")
-                    break
+                    logger.info(f"  ⚠️ No improvement. Patience: {patience_counter}/{patience}")
+                    if patience_counter >= patience:
+                        logger.info("  🛑 Early stopping triggered!")
+                        break
+                
+                logger.info(f"{'='*50}")
         
         # 定期保存checkpoint
         if (epoch + 1) % train_config['train'].get('ckpt_every_epoch', 10) == 0:
@@ -422,7 +438,7 @@ def do_train(train_config, accelerator):
                 checkpoint_path = f"{checkpoint_dir}/epoch_{epoch+1:03d}.pt"
                 torch.save(checkpoint, checkpoint_path)
                 logger.info(f"Saved checkpoint to {checkpoint_path}")
-            dist.barrier()
+            accelerator.wait_for_everyone()  # 使用accelerator替代dist.barrier()
 
     if accelerator.is_main_process:
         logger.info("Training completed!")
