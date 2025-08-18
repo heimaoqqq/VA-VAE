@@ -27,8 +27,8 @@ from glob import glob
 from copy import deepcopy
 from collections import OrderedDict
 from PIL import Image
-from tqdm import tqdm
 from pathlib import Path
+import torchvision
 
 # 添加LightningDiT路径
 sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
@@ -43,7 +43,7 @@ from diffusers.models import AutoencoderKL
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from accelerate import Accelerator
-# from datasets.img_latent_dataset import ImgLatentDataset  # 官方数据集
+from datasets.img_latent_dataset import ImgLatentDataset  # 官方数据集
 
 # 导入我们自己的微多普勒数据集类
 sys.path.append('/kaggle/working/microdoppler_finetune')
@@ -372,11 +372,12 @@ def do_train(train_config, accelerator):
         # Epoch结束，计算平均损失
         avg_epoch_loss = epoch_loss / epoch_steps if epoch_steps > 0 else 0
         if accelerator.is_main_process:
-            logger.info(f"{'='*50}")
-            logger.info(f"Epoch {epoch+1}/{max_epochs} Summary:")
-            logger.info(f"  - Average Training Loss: {avg_epoch_loss:.4f}")
-            logger.info(f"  - Total Steps: {train_steps}")
-            logger.info(f"  - Learning Rate: {opt.param_groups[0]['lr']:.2e}")
+            print(f"{'='*60}")
+            print(f"📊 Epoch {epoch+1}/{max_epochs} Summary:")
+            print(f"   📉 Average Training Loss: {avg_epoch_loss:.4f}")
+            print(f"   🔢 Total Steps: {train_steps}")
+            print(f"   📚 Learning Rate: {opt.param_groups[0]['lr']:.2e}")
+            logger.info(f"Epoch {epoch+1}/{max_epochs} Summary - Train Loss: {avg_epoch_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}")
             
         # 每个epoch结束进行验证
         if 'valid_path' in train_config['data']:
@@ -388,20 +389,36 @@ def do_train(train_config, accelerator):
             model.train()
             
             if accelerator.is_main_process:
-                logger.info(f"  - Validation Loss: {val_loss:.4f}")
+                print(f"   🧪 Validation Loss: {val_loss:.4f}")
                 writer.add_scalar('Loss/validation', val_loss, epoch+1)
                 
                 # 计算过拟合指标
                 overfitting_ratio = val_loss / avg_epoch_loss if avg_epoch_loss > 0 else 1.0
-                logger.info(f"  - Overfitting Ratio (val/train): {overfitting_ratio:.3f}")
+                print(f"   📈 Overfitting Ratio (val/train): {overfitting_ratio:.3f}")
+                
+                # 过拟合状态判断
+                if overfitting_ratio < 1.1:
+                    print(f"   ✅ Good fit - model generalizing well")
+                elif overfitting_ratio < 1.3:
+                    print(f"   ⚠️  Slight overfitting - still acceptable")
+                else:
+                    print(f"   🚨 Overfitting detected - consider regularization")
                 
                 # 检查是否是最佳模型
                 if val_loss < best_val_loss:
                     improvement = (best_val_loss - val_loss) / best_val_loss * 100 if best_val_loss != float('inf') else 100
                     best_val_loss = val_loss
                     patience_counter = 0
-                    logger.info(f"  ✅ New best model! Improvement: {improvement:.2f}%")
-                    # 保存最佳模型
+                    print(f"   🏆 New best model! Improvement: {improvement:.2f}%")
+                    logger.info(f"New best model - Val Loss: {val_loss:.4f}, Improvement: {improvement:.2f}%")
+                    
+                    # 删除旧的最佳模型
+                    best_checkpoint_path = f"{checkpoint_dir}/best_model.pt"
+                    if os.path.exists(best_checkpoint_path):
+                        os.remove(best_checkpoint_path)
+                        print(f"   🗑️  Removed old best model")
+                    
+                    # 保存新的最佳模型
                     checkpoint = {
                         "model": accelerator.unwrap_model(model).state_dict(),
                         "ema": ema.state_dict(),
@@ -411,9 +428,8 @@ def do_train(train_config, accelerator):
                         "best_val_loss": best_val_loss,
                         "patience_counter": patience_counter,
                     }
-                    best_checkpoint_path = f"{checkpoint_dir}/best_model.pt"
                     torch.save(checkpoint, best_checkpoint_path)
-                    logger.info(f"New best model saved with val_loss: {val_loss:.4f}")
+                    print(f"   💾 New best model saved: {best_checkpoint_path}")
                 else:
                     patience_counter += 1
                     logger.info(f"  ⚠️ No improvement. Patience: {patience_counter}/{patience}")
@@ -422,6 +438,13 @@ def do_train(train_config, accelerator):
                         break
                 
                 logger.info(f"{'='*50}")
+        
+        # 每10个epoch生成演示样本
+        if (epoch + 1) % 10 == 0:
+            sample_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/demo_samples"
+            generate_demo_samples(model, vae, transport, device, accelerator, train_config, epoch, sample_dir)
+            if accelerator.is_main_process:
+                print(f"{'='*60}")
         
         # 定期保存checkpoint
         if (epoch + 1) % train_config['train'].get('ckpt_every_epoch', 10) == 0:
@@ -448,6 +471,92 @@ def do_train(train_config, accelerator):
 
 
 
+
+@torch.no_grad()
+def generate_demo_samples(model, vae, transport, device, accelerator, train_config, epoch, sample_dir):
+    """生成演示样本，基于官方inference.py实现"""
+    model.eval()
+    
+    # 采样配置
+    cfg_scale = train_config['sample']['cfg_scale']
+    cfg_interval_start = train_config['sample'].get('cfg_interval_start', 0.11)
+    timestep_shift = train_config['sample'].get('timestep_shift', 0.1)
+    num_samples = 8  # 生成8个样本做成2x4网格
+    
+    # 创建sampler
+    sampler = Sampler(transport)
+    sample_fn = sampler.sample_ode(
+        sampling_method=train_config['sample']['sampling_method'],
+        num_steps=train_config['sample']['num_sampling_steps'],
+        atol=train_config['sample']['atol'],
+        rtol=train_config['sample']['rtol'],
+        reverse=train_config['sample']['reverse'],
+        timestep_shift=timestep_shift,
+    )
+    
+    # 获取潜在空间统计信息
+    dataset = ImgLatentDataset(
+        data_dir=train_config['data']['data_path'],
+        latent_norm=train_config['data']['latent_norm'],
+        latent_multiplier=train_config['data']['latent_multiplier'],
+    )
+    latent_mean, latent_std = dataset.get_latent_stats()
+    latent_mean = latent_mean.to(device)
+    latent_std = latent_std.to(device)
+    latent_multiplier = train_config['data']['latent_multiplier']
+    
+    if accelerator.is_main_process:
+        print(f"🎨 Generating demo samples for epoch {epoch+1}...")
+        
+        images = []
+        # 生成不同类别的样本
+        demo_labels = [0, 1, 5, 10, 15, 20, 25, 30]  # 选择8个不同类别
+        
+        for label in demo_labels:
+            # 创建噪声和标签
+            latent_size = train_config['data']['image_size'] // train_config['vae']['downsample_ratio']
+            unwrapped_model = accelerator.unwrap_model(model)
+            z = torch.randn(1, unwrapped_model.in_channels, latent_size, latent_size, device=device)
+            y = torch.tensor([label], device=device)
+            
+            # CFG设置
+            z = torch.cat([z, z], 0)
+            y_null = torch.tensor([train_config['data']['num_classes']], device=device)
+            y = torch.cat([y, y_null], 0)
+            
+            model_kwargs = dict(y=y, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
+            model_fn = unwrapped_model.forward_with_cfg
+            
+            # 采样
+            samples = sample_fn(z, model_fn, **model_kwargs)[-1]
+            samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
+            
+            # 反归一化
+            samples = (samples * latent_std) / latent_multiplier + latent_mean
+            
+            # VAE解码为图像
+            with torch.no_grad():
+                image = vae.decode(samples)[0]  # 取第一个图像tensor
+                # 转换为numpy数组 (0-1范围)
+                image = torch.clamp(image, 0, 1)
+                image = (image.permute(1, 2, 0) * 255).cpu().numpy().astype(np.uint8)
+            images.append(image)
+        
+        # 创建2x4网格
+        h, w = images[0].shape[:2]
+        grid = np.zeros((2 * h, 4 * w, 3), dtype=np.uint8)
+        for idx, image in enumerate(images):
+            i, j = divmod(idx, 4)  # 2x4网格位置
+            grid[i*h:(i+1)*h, j*w:(j+1)*w] = image
+        
+        # 保存网格图像
+        os.makedirs(sample_dir, exist_ok=True)
+        grid_path = f"{sample_dir}/epoch_{epoch+1:03d}_samples.png"
+        Image.fromarray(grid).save(grid_path)
+        print(f"💾 Demo samples saved to: {grid_path}")
+    
+    model.train()
+    return
 
 @torch.no_grad()
 def evaluate(model, valid_loader, device, transport, accelerator):
