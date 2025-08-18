@@ -287,6 +287,9 @@ def do_train(train_config, accelerator):
             
         epoch_loss = 0
         epoch_steps = 0
+        running_loss = 0
+        log_steps = 0
+        start_time = time()
         
         for x, y in loader:
             if accelerator.mixed_precision == 'no':
