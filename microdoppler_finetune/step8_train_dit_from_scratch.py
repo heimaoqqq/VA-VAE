@@ -44,9 +44,18 @@ from transport import create_transport, Sampler
 from accelerate import Accelerator
 # from datasets.img_latent_dataset import ImgLatentDataset  # 官方数据集
 
-# 导入我们自己的微多普勒数据集类
+# 导入我们自己的微多普勒数据集类 - 使用官方格式兼容
 sys.path.append('/kaggle/working/microdoppler_finetune')
-from step6_encode_dataset import MicroDopplerLatentDataset
+# from step6_encode_dataset import MicroDopplerLatentDataset
+
+# 临时使用官方数据集类，但修改为加载我们的safetensors格式
+from datasets.img_latent_dataset import ImgLatentDataset
+
+# 重写数据集类以支持我们的格式
+class MicroDopplerLatentDataset(ImgLatentDataset):
+    def __init__(self, data_dir, latent_norm=True, latent_multiplier=1.0):
+        # 使用官方参数名data_dir而不是data_path
+        super().__init__(data_dir, latent_norm, latent_multiplier)
 
 def do_train(train_config, accelerator):
     """
@@ -132,9 +141,9 @@ def do_train(train_config, accelerator):
         logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
         logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
     
-    # Setup data - 使用我们的微多普勒latent数据集
+    # Setup data - 使用兼容的微多普勒latent数据集
     dataset = MicroDopplerLatentDataset(
-        data_path=train_config['data']['data_path'],  # 使用data_path而不是data_dir
+        data_dir=train_config['data']['data_path'],  # 使用官方参数名data_dir
         latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
         latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 1.0,
     )
@@ -155,7 +164,7 @@ def do_train(train_config, accelerator):
     # 验证集
     if 'valid_path' in train_config['data']:
         valid_dataset = MicroDopplerLatentDataset(
-            data_path=train_config['data']['valid_path'],  # 使用data_path而不是data_dir
+            data_dir=train_config['data']['valid_path'],  # 使用官方参数名data_dir
             latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
             latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 1.0,
         )
