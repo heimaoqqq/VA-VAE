@@ -255,20 +255,24 @@ def do_train(train_config, accelerator):
         start_epoch = 0
         best_val_loss = float('inf')
         patience_counter = 0
-
     model, opt, loader = accelerator.prepare(model, opt, loader)
     if 'valid_path' in train_config['data']:
         valid_loader = accelerator.prepare(valid_loader)
 
+    # 确保EMA模型在正确的设备上（accelerator.prepare后）
+    ema = ema.to(model.device)
+
     # Variables for monitoring/logging purposes:
     if not train_config['train']['resume']:
         train_steps = 0
-    log_steps = 0
-    running_loss = 0
-    start_time = time()
-    use_checkpoint = train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True
+        start_epoch = 0
+        best_val_loss = float('inf')
+        patience_counter = 0
+
+    # Prepare models for training:
+    update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
     if accelerator.is_main_process:
-        logger.info(f"Using checkpointing: {use_checkpoint}")
+        logger.info(f"Using checkpointing: {train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True}")
 
     # 早停参数
     patience = train_config['train'].get('patience', 20)
