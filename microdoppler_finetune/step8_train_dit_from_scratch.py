@@ -164,6 +164,27 @@ def do_train(train_config, accelerator):
             logger.info(f"Loaded pretrained model from {train_config['train']['weight_init']}")
     requires_grad(ema, False)
     
+    # 创建并加载我们微调的VA-VAE
+    from tokenizer.vavae import VA_VAE
+    vae = VA_VAE('tokenizer/configs/vavae_f16d32.yaml')
+    
+    # 加载微调的VA-VAE权重
+    vae_checkpoint_path = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
+    if os.path.exists(vae_checkpoint_path):
+        vae_checkpoint = torch.load(vae_checkpoint_path, map_location=device)
+        if 'state_dict' in vae_checkpoint:
+            vae.load_state_dict(vae_checkpoint['state_dict'])
+        else:
+            vae.load_state_dict(vae_checkpoint)
+        if accelerator.is_main_process:
+            logger.info(f"Loaded custom VA-VAE from {vae_checkpoint_path}")
+    else:
+        if accelerator.is_main_process:
+            logger.warning(f"VA-VAE checkpoint not found at {vae_checkpoint_path}, using default weights")
+    
+    vae.to(device)
+    vae.eval()
+    
     # 创建transport和优化器（在accelerator.prepare之前）
     transport = create_transport(
         train_config['transport']['path_type'],
