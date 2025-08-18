@@ -206,7 +206,7 @@ def do_train_dataparallel(train_config, device, gpu_count):
     opt = torch.optim.AdamW(model.parameters(), 
                            lr=train_config['optimizer']['lr'], 
                            weight_decay=train_config['optimizer'].get('weight_decay', 0.0))
-    scaler = torch.amp.GradScaler(device_type='cuda')
+    scaler = torch.cuda.amp.GradScaler()
 
     # Setup datasets
     dataset = MicroDopplerLatentDataset(
