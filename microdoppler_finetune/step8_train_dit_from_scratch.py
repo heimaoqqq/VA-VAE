@@ -369,10 +369,14 @@ def do_train(train_config, accelerator):
                     traceback.print_exc()
                 raise e
 
+        # 关闭进度条以确保后续输出可见
+        if accelerator.is_main_process:
+            pbar.close()
+        
         # Epoch结束，计算平均损失
         avg_epoch_loss = epoch_loss / epoch_steps if epoch_steps > 0 else 0
         if accelerator.is_main_process:
-            print(f"{'='*60}")
+            print(f"\n{'='*60}")
             print(f"📊 Epoch {epoch+1}/{max_epochs} Summary:")
             print(f"   📉 Average Training Loss: {avg_epoch_loss:.4f}")
             print(f"   🔢 Total Steps: {train_steps}")
