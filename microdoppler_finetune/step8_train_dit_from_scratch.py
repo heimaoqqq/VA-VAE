@@ -405,66 +405,6 @@ def do_train(train_config, accelerator):
     return accelerator
 
 
-class MicroDopplerLatentDataset(torch.utils.data.Dataset):
-    """微多普勒潜在编码数据集"""
-    def __init__(self, data_dir, split='train', latent_norm=True, latent_multiplier=1.0):
-        self.data_dir = Path(data_dir)
-        self.split = split
-        self.latent_norm = latent_norm
-        self.latent_multiplier = latent_multiplier
-        
-        # 加载split信息
-        split_file = self.data_dir / 'data_split.json'
-        if split_file.exists():
-            with open(split_file, 'r') as f:
-                splits = json.load(f)
-                self.file_list = splits[split]
-        else:
-            # 如果没有split文件，使用所有文件
-            import safetensors.torch
-            self.file_list = list(self.data_dir.glob('latents_*.safetensors'))
-        
-        # 加载统计信息
-        stats_file = self.data_dir / 'latents_stats.pt'
-        if stats_file.exists() and latent_norm:
-            stats = torch.load(stats_file)
-            self.mean = stats['mean']
-            self.std = stats['std']
-        else:
-            self.mean = 0.0
-            self.std = 1.0
-        
-        # 构建数据索引
-        self.data = []
-        self.labels = []
-        
-        for file_path in self.file_list:
-            # 从文件名提取用户ID
-            # 假设文件名格式: userX_frameY.safetensors
-            filename = file_path.stem
-            if 'user' in filename:
-                user_id = int(filename.split('user')[1].split('_')[0])
-            else:
-                user_id = 0  # 默认标签
-            
-            self.data.append(file_path)
-            self.labels.append(user_id)
-    
-    def __len__(self):
-        return len(self.data)
-    
-    def __getitem__(self, idx):
-        # 加载潜在编码
-        import safetensors.torch
-        file_path = self.data[idx]
-        latent_dict = safetensors.torch.load_file(str(file_path))
-        latent = latent_dict['latent']
-        
-        # 归一化
-        if self.latent_norm:
-            latent = (latent - self.mean) * self.latent_multiplier / self.std
-        
-        return latent, self.labels[idx]
 
 
 @torch.no_grad()
