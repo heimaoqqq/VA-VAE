@@ -200,10 +200,11 @@ def do_train_dataparallel(train_config, device, gpu_count):
     
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Setup optimizer
+    # Setup optimizer and scaler for mixed precision training
     opt = torch.optim.AdamW(model.parameters(), 
                            lr=train_config['optimizer']['lr'], 
                            weight_decay=train_config['optimizer'].get('weight_decay', 0.0))
+    scaler = torch.cuda.amp.GradScaler()
 
     # Setup datasets
     dataset = MicroDopplerLatentDataset(
@@ -295,24 +296,30 @@ def do_train_dataparallel(train_config, device, gpu_count):
             torch.cuda.empty_cache()
                 
             # Move tensors to primary device (cuda:0) for DataParallel
-            x = x.to('cuda:0', dtype=torch.float32)
+            # Use FP16 to save memory
+            x = x.to('cuda:0', dtype=torch.float16)
             y = y.to('cuda:0')
             
             model_kwargs = dict(y=y)
             
-            # Use gradient scaling for memory efficiency
-            with torch.amp.autocast(device_type='cuda'):
+            # Use proper mixed precision training with GradScaler
+            with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
                 loss_dict = transport.training_losses(model, x, model_kwargs)
                 loss = loss_dict["loss"].mean()
             
             opt.zero_grad()
-            loss.backward()
             
-            # Gradient clipping
+            # Scale loss for backward pass
+            scaler.scale(loss).backward()
+            
+            # Gradient clipping with scaler
             if 'max_grad_norm' in train_config['optimizer']:
+                scaler.unscale_(opt)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
             
-            opt.step()
+            # Step with scaler
+            scaler.step(opt)
+            scaler.update()
             
             # Update EMA
             if gpu_count > 1:
