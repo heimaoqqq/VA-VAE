@@ -33,17 +33,17 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torch.utils.tensorboard import SummaryWriter
-import torchvision
-import math
+from torch.nn.parallel import DistributedDataParallel as DDP
+from datetime import timedelta
 import logging
 import os
 import argparse
 from time import time
 from glob import glob
+import torchvision
+import math
 from copy import deepcopy
 from collections import OrderedDict
 from omegaconf import OmegaConf
@@ -66,14 +66,16 @@ from transport import create_transport
 
 def setup_distributed(rank, world_size):
     """设置分布式训练环境"""
-    os.environ['MASTER_ADDR'] = 'localhost'  
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = '29500'  # 使用默认端口
     
     # 初始化进程组
     dist.init_process_group(
         backend="nccl",
+        init_method='env://',
         rank=rank, 
-        world_size=world_size
+        world_size=world_size,
+        timeout=timedelta(minutes=10)  # 增加超时时间
     )
     
     # 设置当前进程的GPU设备
@@ -318,6 +320,9 @@ def do_train_ddp(rank, world_size, train_config):
             )
             logger.info(f"Validation dataset: {len(val_dataset):,} samples")
 
+    if rank == 0:
+        logger.info("Creating transport (diffusion process)...")
+    
     # Setup transport (diffusion process)
     transport = create_transport(
         path_type="Linear",
@@ -327,11 +332,23 @@ def do_train_ddp(rank, world_size, train_config):
         sample_eps=None,
     )
     
+    if rank == 0:
+        logger.info("Transport created successfully")
+    
     # Setup training state
+    if rank == 0:
+        logger.info("Creating TensorBoard writer...")
+        writer = SummaryWriter(log_dir=experiment_dir)
+        writer.add_text('config', str(train_config))
+        logger.info("TensorBoard writer created")
+    
     train_steps = 0
-    log_steps = 0
     running_loss = 0
+    log_steps = 0
     start_time = time()
+    
+    if rank == 0:
+        logger.info("Training variables initialized")
     
     # Resume from checkpoint if requested
     if train_config['train'].get('resume', False):
