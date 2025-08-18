@@ -268,7 +268,7 @@ def do_train_ddp(rank, world_size, train_config):
     opt = torch.optim.AdamW(model.parameters(), 
                            lr=train_config['optimizer']['lr'], 
                            weight_decay=train_config['optimizer'].get('weight_decay', 0.0))
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler('cuda')
 
     # Setup datasets
     dataset = MicroDopplerLatentDataset(
@@ -299,7 +299,7 @@ def do_train_ddp(rank, world_size, train_config):
         # 验证数据集（仅主进程）
         if rank == 0:
             val_dataset = MicroDopplerLatentDataset(
-                data_dir=train_config['data']['val_data_path'],
+                data_dir=train_config['data']['valid_path'],
                 latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
                 latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 0.18215,
             )
