@@ -93,6 +93,25 @@ class MicroDopplerLatentDataset(Dataset):
         unique_labels = torch.stack(self.labels).unique()
         print(f"Dataset contains {len(self.latents)} samples with {len(unique_labels)} unique classes")
         
+        # 计算latent统计信息用于采样
+        self._compute_latent_stats()
+        
+    def _compute_latent_stats(self):
+        """计算数据集中latent的统计信息"""
+        if len(self.latents) > 0:
+            # 将所有latent堆叠并计算统计
+            all_latents = torch.stack(self.latents)  # [N, C, H, W]
+            self.latent_mean = all_latents.mean(dim=[0, 2, 3])  # [C]
+            self.latent_std = all_latents.std(dim=[0, 2, 3])    # [C]
+        else:
+            # 默认值
+            self.latent_mean = torch.zeros(32)  # 假设32维latent
+            self.latent_std = torch.ones(32)
+    
+    def get_latent_stats(self):
+        """返回latent的均值和标准差统计"""
+        return self.latent_mean, self.latent_std
+        
     def __len__(self):
         return len(self.latents)
     
@@ -478,8 +497,8 @@ def do_train(train_config, accelerator):
                 
                 logger.info(f"{'='*50}")
         
-        # 每10个epoch生成演示样本
-        if (epoch + 1) % 10 == 0:
+        # 每个epoch生成演示样本
+        if True:  # 每个epoch都生成
             sample_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/demo_samples"
             generate_demo_samples(model, vae, transport, device, accelerator, train_config, epoch, sample_dir)
             if accelerator.is_main_process:
