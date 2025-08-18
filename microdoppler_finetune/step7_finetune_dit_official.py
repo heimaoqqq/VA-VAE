@@ -294,13 +294,14 @@ def do_train_dataparallel(train_config, device, gpu_count):
             # Memory management
             torch.cuda.empty_cache()
                 
-            x = x.to(device, dtype=torch.float32)
-            y = y.to(device)
+            # Move tensors to primary device (cuda:0) for DataParallel
+            x = x.to('cuda:0', dtype=torch.float32)
+            y = y.to('cuda:0')
             
             model_kwargs = dict(y=y)
             
             # Use gradient scaling for memory efficiency
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast(device_type='cuda'):
                 loss_dict = transport.training_losses(model, x, model_kwargs)
                 loss = loss_dict["loss"].mean()
             
