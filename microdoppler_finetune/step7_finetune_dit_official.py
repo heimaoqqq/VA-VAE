@@ -361,6 +361,8 @@ def do_train_ddp(rank, world_size, train_config):
     
     if rank == 0:
         logger.info("Starting DDP training loop...")
+        logger.info(f"Will log every {train_config['train']['log_every']} steps")
+        logger.info(f"Gradient accumulation: {train_config['train'].get('gradient_accumulation_steps', 1)} steps")
     
     # DDP training loop with gradient accumulation
     gradient_accumulation_steps = train_config['train'].get('gradient_accumulation_steps', 1)
@@ -371,6 +373,10 @@ def do_train_ddp(rank, world_size, train_config):
         for batch_idx, (x, y) in enumerate(loader):
             if train_steps >= train_config['train']['max_steps']:
                 break
+                
+            # Log first few batches to confirm training started
+            if rank == 0 and batch_idx < 5:
+                logger.info(f"Processing batch {batch_idx}, train_steps={train_steps}")
                 
             # Move data to device
             x = x.to(device, dtype=torch.float16)
