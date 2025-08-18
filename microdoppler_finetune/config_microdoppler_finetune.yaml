@@ -24,7 +24,7 @@ model:
   use_rmsnorm: true
   wo_shift: false
   in_chans: 32  # VA-VAE f16d32的通道数
-  use_checkpoint: true   # 启用gradient checkpointing节省内存
+  use_checkpoint: false   # 禁用gradient checkpointing，避免backward重计算
 
 # 训练配置
 train:
