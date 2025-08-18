@@ -184,11 +184,13 @@ def do_train_dataparallel(train_config, device, gpu_count):
         model.load_state_dict(checkpoint, strict=False)
         logger.info("Pretrained weights loaded successfully")
 
-    # Move model to GPU and wrap with DataParallel
-    model = model.to(device)
+    # Move model to GPU
+    model = model.to('cuda:0')  # 明确指定主设备
+    
     if gpu_count > 1:
-        logger.info(f"Using DataParallel on {gpu_count} GPUs")
-        model = torch.nn.DataParallel(model)
+        logger.info(f"Using DataParallel on {gpu_count} GPUs with device_ids=[0,1]")
+        # 显式指定设备ID，确保负载均衡
+        model = torch.nn.DataParallel(model, device_ids=[0, 1], output_device=0)
     
     # Create EMA model
     ema = deepcopy(model.module if gpu_count > 1 else model).to(device)
@@ -204,7 +206,7 @@ def do_train_dataparallel(train_config, device, gpu_count):
     opt = torch.optim.AdamW(model.parameters(), 
                            lr=train_config['optimizer']['lr'], 
                            weight_decay=train_config['optimizer'].get('weight_decay', 0.0))
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler(device_type='cuda')
 
     # Setup datasets
     dataset = MicroDopplerLatentDataset(
@@ -279,11 +281,17 @@ def do_train_dataparallel(train_config, device, gpu_count):
     # Clear memory and set memory fraction
     torch.cuda.empty_cache()
     
-    # Force memory balancing for DataParallel
+    # Set memory fraction for balanced GPU usage - 更保守的内存分配
     if gpu_count > 1:
-        torch.cuda.set_per_process_memory_fraction(0.45, device=0)
-        torch.cuda.set_per_process_memory_fraction(0.45, device=1)
-    
+        torch.cuda.set_per_process_memory_fraction(0.40, device=0)  # 主GPU更保守
+        torch.cuda.set_per_process_memory_fraction(0.45, device=1)  # 从GPU也保守一些
+        
+        # 预分配内存以避免碎片化
+        torch.cuda.empty_cache()
+        with torch.cuda.device(0):
+            torch.cuda.memory.set_per_process_memory_fraction(0.40)
+        with torch.cuda.device(1):
+            torch.cuda.memory.set_per_process_memory_fraction(0.45)  
     logger.info("Starting training loop...")
     
     # Training loop
