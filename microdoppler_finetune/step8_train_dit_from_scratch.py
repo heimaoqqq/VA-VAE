@@ -604,10 +604,9 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             
             # VAE解码为图像
             with torch.no_grad():
-                image = vae.decode(samples)[0]  # 取第一个图像tensor
-                # 转换为numpy数组 (0-1范围)
-                image = torch.clamp(image, 0, 1)
-                image = (image.permute(1, 2, 0) * 255).cpu().numpy().astype(np.uint8)
+                # 使用VA_VAE的decode_to_images方法，直接返回numpy数组
+                images_decoded = vae.decode_to_images(samples)  # 返回[B, H, W, C] numpy数组
+                image = images_decoded[0]  # 取第一个图像 [H, W, C]
             images.append(image)
         
         # 创建2x4网格
