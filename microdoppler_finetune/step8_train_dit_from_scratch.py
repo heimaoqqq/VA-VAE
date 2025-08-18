@@ -298,59 +298,70 @@ def do_train(train_config, accelerator):
         for batch_idx, (x, y) in enumerate(loader):
             if batch_idx == 0 and accelerator.is_main_process:
                 print(f"🔄 Training epoch {epoch+1}, batch shape: {x.shape}, labels: {y.shape}")
+            
+            if batch_idx % 10 == 0 and accelerator.is_main_process:
+                print(f"  Processing batch {batch_idx+1}/{len(loader)}")
                 
-            if accelerator.mixed_precision == 'no':
-                x = x.to(device, dtype=torch.float32)
-                y = y.to(device, dtype=torch.long)  # 确保标签是long类型
-            else:
-                x = x.to(device)
-                y = y.to(device, dtype=torch.long)
-            
-            model_kwargs = dict(y=y)
-            # 使用accelerator包装后的模型
-            loss_dict = transport.training_losses(model, x, model_kwargs)
-            if 'cos_loss' in loss_dict:
-                mse_loss = loss_dict["loss"].mean()
-                loss = loss_dict["cos_loss"].mean() + mse_loss
-            else:
-                loss = loss_dict["loss"].mean()
-            
-            opt.zero_grad()
-            accelerator.backward(loss)
-            if 'max_grad_norm' in train_config['optimizer']:
-                if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
-            opt.step()
-            update_ema(ema, model)
+            try:
+                if accelerator.mixed_precision == 'no':
+                    x = x.to(device, dtype=torch.float32)
+                    y = y.to(device, dtype=torch.long)  # 确保标签是long类型
+                else:
+                    x = x.to(device)
+                    y = y.to(device, dtype=torch.long)
+                
+                model_kwargs = dict(y=y)
+                # 使用accelerator包装后的模型
+                loss_dict = transport.training_losses(model, x, model_kwargs)
+                if 'cos_loss' in loss_dict:
+                    mse_loss = loss_dict["loss"].mean()
+                    loss = loss_dict["cos_loss"].mean() + mse_loss
+                else:
+                    loss = loss_dict["loss"].mean()
+                
+                opt.zero_grad()
+                accelerator.backward(loss)
+                if 'max_grad_norm' in train_config['optimizer']:
+                    if accelerator.sync_gradients:
+                        accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
+                opt.step()
+                update_ema(ema, model)
 
-            # Log loss values:
-            if 'cos_loss' in loss_dict:
-                running_loss += mse_loss.item()
-                epoch_loss += mse_loss.item()
-            else:
-                running_loss += loss.item()
-                epoch_loss += loss.item()
+                # Log loss values:
+                if 'cos_loss' in loss_dict:
+                    running_loss += mse_loss.item()
+                    epoch_loss += mse_loss.item()
+                else:
+                    running_loss += loss.item()
+                    epoch_loss += loss.item()
+                    
+                log_steps += 1
+                train_steps += 1
+                epoch_steps += 1
                 
-            log_steps += 1
-            train_steps += 1
-            epoch_steps += 1
-            
-            if train_steps % train_config['train']['log_every'] == 0:
-                # Measure training speed:
-                torch.cuda.synchronize()
-                end_time = time()
-                steps_per_sec = log_steps / (end_time - start_time)
-                # Reduce loss history over all processes:
-                avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                avg_loss = accelerator.gather(avg_loss).mean()  # 使用accelerator替代dist
-                avg_loss = avg_loss.item()
+                if train_steps % train_config['train']['log_every'] == 0:
+                    # Measure training speed:
+                    torch.cuda.synchronize()
+                    end_time = time()
+                    steps_per_sec = log_steps / (end_time - start_time)
+                    # Reduce loss history over all processes:
+                    avg_loss = torch.tensor(running_loss / log_steps, device=device)
+                    avg_loss = accelerator.gather(avg_loss).mean()  # 使用accelerator替代dist
+                    avg_loss = avg_loss.item()
+                    if accelerator.is_main_process:
+                        logger.info(f"(epoch={epoch+1:03d}, step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                        writer.add_scalar('Loss/train', avg_loss, train_steps)
+                    # Reset monitoring variables:
+                    running_loss = 0
+                    log_steps = 0
+                    start_time = time()
+                    
+            except Exception as e:
                 if accelerator.is_main_process:
-                    logger.info(f"(epoch={epoch+1:03d}, step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
-                    writer.add_scalar('Loss/train', avg_loss, train_steps)
-                # Reset monitoring variables:
-                running_loss = 0
-                log_steps = 0
-                start_time = time()
+                    print(f"❌ Error in batch {batch_idx}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                raise e
 
         # Epoch结束，计算平均损失
         avg_epoch_loss = epoch_loss / epoch_steps
