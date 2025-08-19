@@ -185,10 +185,12 @@ def do_train(train_config, accelerator):
         use_checkpoint=train_config['model']['use_checkpoint'] if 'use_checkpoint' in train_config['model'] else False,
     )
 
-    ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
-
+    # Create EMA model after moving main model to device
+    ema = deepcopy(model)
+    ema = ema.to(device)  # Ensure EMA is on correct device
+    
     # load pretrained model (if provided)
-    if 'weight_init' in train_config['train']:
+    if 'weight_init' in train_config['train'] and train_config['train']['weight_init'] is not None:
         checkpoint = torch.load(train_config['train']['weight_init'], map_location=lambda storage, loc: storage)
         # remove the prefix 'module.' from the keys
         checkpoint['model'] = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
@@ -196,6 +198,11 @@ def do_train(train_config, accelerator):
         ema = load_weights_with_shape_check(ema, checkpoint, rank=rank)
         if accelerator.is_main_process:
             logger.info(f"Loaded pretrained model from {train_config['train']['weight_init']}")
+    
+    # Ensure all EMA parameters are on the correct device
+    for param in ema.parameters():
+        param.data = param.data.to(device)
+    
     requires_grad(ema, False)
     
     # 创建并加载我们微调的VA-VAE
