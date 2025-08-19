@@ -415,7 +415,8 @@ def do_train(train_config, accelerator):
                 # 前向传播 (考虑梯度累积)
                 with accelerator.autocast():
                     loss_dict = transport.training_losses(model, x, model_kwargs=dict(y=y))
-                    loss = loss_dict["loss"].mean() / gradient_accumulation_steps  # 归一化损失
+                    raw_loss = loss_dict["loss"].mean()  # 原始损失用于记录
+                    loss = raw_loss / gradient_accumulation_steps  # 归一化损失用于反向传播
                 
                 # 反向传播
                 accelerator.backward(loss)
@@ -443,8 +444,8 @@ def do_train(train_config, accelerator):
                     step_count += 1
                 
                 # Log loss values:
-                running_loss += loss.item() * gradient_accumulation_steps
-                epoch_loss += loss.item()
+                running_loss += raw_loss.item()  # 使用原始损失值
+                epoch_loss += raw_loss.item()     # 使用原始损失值
                     
                 log_steps += 1
                 train_steps += 1
@@ -452,7 +453,7 @@ def do_train(train_config, accelerator):
                 
                 # 更新进度条显示当前batch的损失
                 if accelerator.is_main_process:
-                    pbar.set_postfix({'loss': f"{loss.item():.4f}", 'lr': f"{opt.param_groups[0]['lr']:.2e}"})
+                    pbar.set_postfix({'loss': f"{raw_loss.item():.4f}", 'lr': f"{opt.param_groups[0]['lr']:.2e}"})
                 
                 # 定期记录 (只在优化器更新后)
                 if (batch_idx + 1) % gradient_accumulation_steps == 0 and train_steps % train_config['train']['log_every'] == 0:
