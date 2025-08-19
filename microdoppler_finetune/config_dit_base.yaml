@@ -64,8 +64,8 @@ train:
   # 正则化配置（针对小数据集）
   use_label_smoothing: true       # 标签平滑
   label_smoothing: 0.1            # 平滑系数
-  mixup_prob: 0.2                 # Mixup概率
-  mixup_alpha: 0.2                # Mixup强度
+  mixup_prob: 0.0                 # 禁用Mixup数据增强
+  mixup_alpha: 0.2                # Mixup强度（已禁用）
   use_contrastive_reg: false     # 对比学习正则（初期关闭）
   use_orthogonal_reg: false      # 正交正则（初期关闭）
 
