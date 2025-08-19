@@ -109,7 +109,28 @@ def encode_images_to_latents(vae_model, image_paths, batch_size=4, device='cuda'
         batch_images = []
         
         for img_path in batch_paths:
-            img = Image.open(img_path).convert('RGB')
+            img = Image.open(img_path)
+            
+            # 微多普勒时频图正确处理：保持单通道或转换为灰度
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+            elif img.mode not in ['L', 'RGB']:
+                img = img.convert('L')  # 转为灰度
+            
+            # 如果是RGB但实际是灰度图（三通道相同），转换为单通道
+            if img.mode == 'RGB':
+                img_array = np.array(img)
+                # 检查是否三通道相同（实际是灰度图）
+                if np.allclose(img_array[:,:,0], img_array[:,:,1]) and np.allclose(img_array[:,:,1], img_array[:,:,2]):
+                    img = img.convert('L')
+                    
+            # 确保最终为RGB格式以兼容VA-VAE（但保持原始强度信息）
+            if img.mode == 'L':
+                # 将单通道扩展为三通道，保持强度信息
+                img_array = np.array(img)
+                img_rgb = np.stack([img_array, img_array, img_array], axis=-1)
+                img = Image.fromarray(img_rgb)
+            
             img_tensor = transform(img)
             batch_images.append(img_tensor)
         
@@ -119,8 +140,8 @@ def encode_images_to_latents(vae_model, image_paths, batch_size=4, device='cuda'
         # 使用官方编码方法
         latents = vae_model.encode_images(batch_tensor)
         
-        # 应用缩放因子
-        latents = latents * 0.18215
+        # VA-VAE不需要额外缩放因子（已在模型内部处理）
+        # latents = latents * 0.18215  # 移除错误的SD缩放因子
         
         all_latents.append(latents.cpu())
         
