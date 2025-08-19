@@ -414,7 +414,7 @@ def do_train(train_config, accelerator):
                 
                 # 前向传播 (考虑梯度累积)
                 with accelerator.autocast():
-                    loss_dict = transport.training_losses(model, x, cond=dict(y=y))
+                    loss_dict = transport.training_losses(model, x, model_kwargs=dict(y=y))
                     loss = loss_dict["loss"].mean() / gradient_accumulation_steps  # 归一化损失
                 
                 # 反向传播
