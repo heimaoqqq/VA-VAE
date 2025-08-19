@@ -252,25 +252,11 @@ def do_train(train_config, accelerator):
     
     opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, betas=(0.9, train_config['optimizer']['beta2']))
     
-    # 创建学习率调度器
-    total_steps = train_config['train']['max_epochs'] * len(loader)
-    scheduler = create_scheduler(opt, train_config['train'], total_steps)
-    
-    # 初始化正则化工具
-    label_smoother = LabelSmoothing(
-        smoothing=train_config['train'].get('label_smoothing', 0.1),
-        num_classes=train_config['model']['num_classes']
-    )
-    contrastive_reg = ContrastiveRegularizer(temperature=0.07)
-    early_stopping = EarlyStopping(patience=train_config['train'].get('patience', 20))
-    
     if accelerator.is_main_process:
         logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
         logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
         logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
         logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
-        if scheduler:
-            logger.info(f"Using learning rate scheduler: {train_config['train'].get('scheduler', {}).get('type', 'cosine')}")
     
     # Setup data - 使用兼容的微多普勒latent数据集
     dataset = MicroDopplerLatentDataset(
@@ -288,9 +274,25 @@ def do_train(train_config, accelerator):
         pin_memory=True,
         drop_last=True
     )
+    
+    # 创建学习率调度器（现在loader已经定义）
+    total_steps = train_config['train']['max_epochs'] * len(loader)
+    scheduler = create_scheduler(opt, train_config['train'], total_steps)
+    
+    # 初始化正则化工具
+    label_smoother = LabelSmoothing(
+        smoothing=train_config['train'].get('label_smoothing', 0.1),
+        num_classes=train_config['model']['num_classes']
+    )
+    contrastive_reg = ContrastiveRegularizer(temperature=0.07)
+    early_stopping = EarlyStopping(patience=train_config['train'].get('patience', 20))
+    
     if accelerator.is_main_process:
         logger.info(f"Dataset contains {len(dataset):,} images {train_config['data']['data_path']}")
         logger.info(f"Batch size {batch_size_per_gpu} per gpu, with {global_batch_size} global batch size")
+        if scheduler:
+            logger.info(f"Using learning rate scheduler: {train_config['train'].get('scheduler', {}).get('type', 'cosine')}")
+            logger.info(f"Total training steps: {total_steps:,}")
     
     # 验证集
     if 'valid_path' in train_config['data']:
@@ -437,7 +439,7 @@ def do_train(train_config, accelerator):
                         update_ema(ema, model.module)
                     else:
                         update_ema(ema, model)
-                
+                    
                     step_count += 1
                 
                 # Log loss values:
