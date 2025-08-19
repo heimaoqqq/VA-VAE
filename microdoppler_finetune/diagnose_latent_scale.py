@@ -59,7 +59,7 @@ def diagnose_latent_statistics():
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     vae_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
     vae = load_vavae_model(vae_checkpoint, device)
-    vae.eval()
+    vae.model.eval()  # VA_VAE的模型在.model属性中
     
     # 取第一个样本
     sample_latent = latents[0:1].to(device)  # [1, C, H, W]
