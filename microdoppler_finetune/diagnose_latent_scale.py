@@ -66,9 +66,9 @@ def diagnose_latent_statistics():
     
     print(f"\n测试不同的解码方式:")
     
-    # 方式1: 直接解码（不做任何处理）
+    # 方式1: 使用model.decode直接解码
     with torch.no_grad():
-        decoded1 = vae.decode(sample_latent)
+        decoded1 = vae.model.decode(sample_latent)
         decoded1 = torch.clamp(decoded1, -1, 1)
         decoded1 = (decoded1 + 1) / 2  # [-1,1] -> [0,1]
         img1 = (decoded1[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
@@ -78,7 +78,7 @@ def diagnose_latent_statistics():
     
     # 方式2: 除以0.18215后解码（如果数据带有SD缩放）
     with torch.no_grad():
-        decoded2 = vae.decode(sample_latent / 0.18215)
+        decoded2 = vae.model.decode(sample_latent / 0.18215)
         decoded2 = torch.clamp(decoded2, -1, 1)
         decoded2 = (decoded2 + 1) / 2
         img2 = (decoded2[0].permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
