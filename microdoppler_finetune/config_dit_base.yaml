@@ -39,16 +39,13 @@ train:
   global_seed: 42                  # 随机种子
   output_dir: '/kaggle/working/output'
   exp_name: 'dit_base_microdoppler_official'
-  weight_init: '/kaggle/input/lightningdit-weights/lightningdit-xl-imagenet256-64ep.pt'
+  # weight_init: null  # 从头训练，不使用预训练权重
   resume: false
   log_every: 50                    # 每50步记录一次
   ckpt_every_epoch: 10             # 每10个epoch保存checkpoint
   
   # 早停配置
   patience: 20                     # 早停耐心值
-  
-  # 恢复训练
-  resume: false
   
   # 梯度检查点（节省内存但速度慢）
   use_checkpoint: false
