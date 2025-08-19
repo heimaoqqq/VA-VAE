@@ -15,7 +15,7 @@ def diagnose_latent_statistics():
     """诊断latent数据集的统计特性"""
     
     # 加载一个latent文件样本
-    latent_dir = Path('/kaggle/working/latent_dataset')
+    latent_dir = Path('/kaggle/working/latent_dataset/train')  # 修正路径
     latent_files = list(latent_dir.glob('*.safetensors'))
     
     if not latent_files:
