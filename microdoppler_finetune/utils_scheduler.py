@@ -59,7 +59,7 @@ def create_scheduler(optimizer, config, total_steps):
     """
     scheduler_type = config.get('scheduler', {}).get('type', 'cosine')
     warmup_steps = config.get('scheduler', {}).get('warmup_steps', int(0.05 * total_steps))
-    min_lr = config.get('scheduler', {}).get('min_lr', 1e-6)
+    min_lr = float(config.get('scheduler', {}).get('min_lr', 1e-6))  # 确保转换为float
     
     if scheduler_type == 'cosine':
         scheduler = WarmupCosineScheduler(
