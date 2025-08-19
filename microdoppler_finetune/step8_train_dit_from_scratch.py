@@ -255,7 +255,7 @@ def do_train(train_config, accelerator):
     dataset = MicroDopplerLatentDataset(
         data_dir=train_config['data']['data_path'],  # 使用官方参数名data_dir
         latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
-        latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 1.0,
+        latent_multiplier=train_config['data'].get('latent_multiplier', 1.0),  # 使用1.0作为默认值
     )
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
     global_batch_size = batch_size_per_gpu * accelerator.num_processes
@@ -276,7 +276,7 @@ def do_train(train_config, accelerator):
         valid_dataset = MicroDopplerLatentDataset(
             data_dir=train_config['data']['valid_path'],  # 使用官方参数名data_dir
             latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
-            latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 1.0,
+            latent_multiplier=train_config['data'].get('latent_multiplier', 1.0),  # 使用1.0作为默认值
         )
         valid_loader = DataLoader(
             valid_dataset,
@@ -573,7 +573,7 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
     dataset = MicroDopplerLatentDataset(
         data_dir=train_config['data']['data_path'],
         latent_norm=train_config['data']['latent_norm'],
-        latent_multiplier=train_config['data'].get('latent_multiplier', 0.18215),  # 使用官方默认值
+        latent_multiplier=train_config['data'].get('latent_multiplier', 1.0),  # 使用我们VA-VAE的值
     )
     latent_mean, latent_std = dataset.get_latent_stats()
     
@@ -584,7 +584,7 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
         latent_std = torch.ones(train_config['model']['in_chans'], device=device)
     latent_mean = latent_mean.to(device)
     latent_std = latent_std.to(device)
-    latent_multiplier = train_config['data']['latent_multiplier']
+    latent_multiplier = train_config['data'].get('latent_multiplier', 1.0)  # 确保使用正确的值
     
     if accelerator.is_main_process:
         print(f"🎨 Generating demo samples for epoch {epoch+1}...")
