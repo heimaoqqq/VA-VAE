@@ -4,15 +4,15 @@
 
 # 数据配置
 data:
-  data_path: '/kaggle/working/latent_dataset/train'  # 训练集潜在编码路径（step6输出）
-  valid_path: '/kaggle/working/latent_dataset/val'    # 验证集潜在编码路径（step6输出）
+  data_path: '/kaggle/input/microdoppler-latents/latents_train'  # 训练集潜在编码路径（step6输出）
+  valid_path: '/kaggle/input/microdoppler-latents/latents_val'    # 验证集潜在编码路径（step6输出）
   
-  # 基础设置
+  # 官方LightningDiT关键设置
   image_size: 256        # 原始图像尺寸
   num_classes: 31        # 31个用户类别
   num_workers: 4         # 数据加载线程数
-  latent_norm: false     # 关闭归一化，避免重复处理
-  latent_multiplier: 1.0 # 潜在空间缩放因子
+  latent_norm: false       # 关闭 - 避免重复归一化
+  latent_multiplier: 0.18215  # 需要缩放到LightningDiT标准空间
 
 # VAE配置（与微调的VA-VAE一致）
 vae:
@@ -34,16 +34,13 @@ model:
 # 训练配置
 train:
   # 训练规模
-  max_epochs: 200                  # 最大训练轮数
-  global_batch_size: 16            # GPU内存限制
-  gradient_accumulation_steps: 4   # 增加梯度累积（16x8=128有效batch）
+  max_epochs: 100                  # 增加训练轮数
+  global_batch_size: 64            # GPU内存限制
   global_seed: 42                  # 随机种子
-  
-  # 输出配置
   output_dir: '/kaggle/working/output'
-  exp_name: 'lightningdit_base_microdoppler'
-  
-  # 日志和保存
+  exp_name: 'dit_base_microdoppler_official'
+  weight_init: '/kaggle/input/lightningdit-weights/lightningdit-xl-imagenet256-64ep.pt'
+  resume: false
   log_every: 50                    # 每50步记录一次
   ckpt_every_epoch: 10             # 每10个epoch保存checkpoint
   
@@ -56,25 +53,11 @@ train:
   # 梯度检查点（节省内存但速度慢）
   use_checkpoint: false
   
-  # 学习率调度器配置
-  scheduler:
-    type: cosine
-    warmup_steps: 500  # 标准warmup步数
-    min_lr: 1.0e-6                  # 最小学习率
-  
-  # 正则化配置（针对小数据集）
-  use_label_smoothing: true       # 标签平滑
-  label_smoothing: 0.1            # 平滑系数
-  mixup_prob: 0.0                 # 禁用Mixup数据增强
-  mixup_alpha: 0.2                # Mixup强度（已禁用）
-  use_contrastive_reg: false     # 对比学习正则（初期关闭）
-  use_orthogonal_reg: false      # 正交正则（初期关闭）
-
 # 优化器配置 - 基于研究优化
 optimizer:
-  lr: 0.00008  # 保守提升学习率
+  lr: 0.0002  # 官方学习率
   beta1: 0.9  # 标准动量值
-  beta2: 0.95  # 官方默认值
+  beta2: 0.95  # 官方beta2
   max_grad_norm: 1.0
   weight_decay: 0.0  # 小数据集不用权重衰减
 
@@ -85,8 +68,8 @@ transport:
   loss_weight: null                # 默认损失权重（与官方一致）
   sample_eps: null                 # 采样epsilon（与官方一致）
   train_eps: null                  # 训练epsilon（与官方一致）
-  use_cosine_loss: true            # 使用余弦相似度损失（与官方一致）
-  use_lognorm: true                # 使用对数正态采样（官方关键设置）
+  use_cosine_loss: true            # 启用cosine loss
+  use_lognorm: true                # 启用lognorm
 
 # 采样配置（用于推理）
 sample:
