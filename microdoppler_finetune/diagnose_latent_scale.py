@@ -54,6 +54,7 @@ def diagnose_latent_statistics():
     print(f"\n🖼️ 测试直接解码（不进行反归一化）:")
     
     # 加载VA-VAE
+    sys.path.append('/kaggle/working/VA-VAE')
     from microdoppler_finetune.step6_encode_dataset import load_vavae_model
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     vae_checkpoint = '/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt'
