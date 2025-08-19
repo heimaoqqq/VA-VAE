@@ -280,9 +280,10 @@ def do_train(train_config, accelerator):
     scheduler = create_scheduler(opt, train_config['train'], total_steps)
     
     # 初始化正则化工具
+    num_classes = train_config.get('model', {}).get('num_classes', 31)  # 默认31个类别
     label_smoother = LabelSmoothing(
         smoothing=train_config['train'].get('label_smoothing', 0.1),
-        num_classes=train_config['model']['num_classes']
+        num_classes=num_classes
     )
     contrastive_reg = ContrastiveRegularizer(temperature=0.07)
     early_stopping = EarlyStopping(patience=train_config['train'].get('patience', 20))
