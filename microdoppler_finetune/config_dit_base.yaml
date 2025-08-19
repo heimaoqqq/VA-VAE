@@ -35,8 +35,8 @@ model:
 train:
   # 训练规模
   max_epochs: 200                  # 最大训练轮数
-  global_batch_size: 16            # 降低批次来稳定训练（B模型更敏感）
-  gradient_accumulation_steps: 4  # 梯度累积补偿小批次（16x4=64有效batch）
+  global_batch_size: 16            # GPU内存限制
+  gradient_accumulation_steps: 4   # 增加梯度累积（16x8=128有效batch）
   global_seed: 42                  # 随机种子
   
   # 输出配置
@@ -58,9 +58,9 @@ train:
   
   # 学习率调度器配置
   scheduler:
-    type: 'cosine'                # cosine, linear_warmup, constant
-    warmup_steps: 500             # warmup步数（约5%总步数）
-    min_lr: 1e-6                  # 最小学习率
+    type: cosine
+    warmup_steps: 500  # 标准warmup步数
+    min_lr: 1.0e-6                  # 最小学习率
   
   # 正则化配置（针对小数据集）
   use_label_smoothing: true       # 标签平滑
@@ -70,11 +70,13 @@ train:
   use_contrastive_reg: false     # 对比学习正则（初期关闭）
   use_orthogonal_reg: false      # 正交正则（初期关闭）
 
-# 优化器配置 - 针对小数据集优化
+# 优化器配置 - 基于研究优化
 optimizer:
-  lr: 0.00005                      # B模型从头训练需要更低学习率（5e-5）
-  beta2: 0.95                      # Adam beta2（与官方一致）
-  max_grad_norm: 1.0               # 梯度裁剪（官方默认有但未明确设置）
+  lr: 0.00008  # 保守提升学习率
+  beta1: 0.9  # 标准动量值
+  beta2: 0.95  # 官方默认值
+  max_grad_norm: 1.0
+  weight_decay: 0.0  # 小数据集不用权重衰减
 
 # Transport配置（扩散过程）- 与官方完全一致
 transport:
