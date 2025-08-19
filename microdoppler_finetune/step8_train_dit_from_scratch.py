@@ -250,11 +250,11 @@ def do_train(train_config, accelerator):
         use_lognorm = train_config['transport']['use_lognorm'] if 'use_lognorm' in train_config['transport'] else False,
     )  # default: velocity; 
     
-    train_config['optimizer']['lr'] = config.get('optimizer', {}).get('lr', 8e-5)  # 适度提高学习率
-    train_config['optimizer']['beta1'] = config.get('optimizer', {}).get('beta1', 0.9)  # 标准动量值
-    train_config['optimizer']['beta2'] = config.get('optimizer', {}).get('beta2', 0.95)  # 官方默认值
-    train_config['optimizer']['max_grad_norm'] = config.get('optimizer', {}).get('max_grad_norm', 1.0)
-    train_config['optimizer']['weight_decay'] = config.get('optimizer', {}).get('weight_decay', 0.0)  # 小数据集不用权重衰减
+    train_config['optimizer']['lr'] = train_config.get('optimizer', {}).get('lr', 8e-5)  # 适度提高学习率
+    train_config['optimizer']['beta1'] = train_config.get('optimizer', {}).get('beta1', 0.9)  # 标准动量值
+    train_config['optimizer']['beta2'] = train_config.get('optimizer', {}).get('beta2', 0.95)  # 官方默认值
+    train_config['optimizer']['max_grad_norm'] = train_config.get('optimizer', {}).get('max_grad_norm', 1.0)
+    train_config['optimizer']['weight_decay'] = train_config.get('optimizer', {}).get('weight_decay', 0.0)  # 小数据集不用权重衰减
     
     opt = torch.optim.AdamW(
         model.parameters(), 
