@@ -34,29 +34,30 @@ model:
 # 训练配置
 train:
   # 训练规模
-  max_epochs: 100                  # 增加训练轮数
-  global_batch_size: 64            # GPU内存限制
+  max_epochs: 150                  # 充分训练小数据集
+  global_batch_size: 31            # 每个batch包含所有用户，确保均衡学习
   global_seed: 42                  # 随机种子
   output_dir: '/kaggle/working/output'
   exp_name: 'dit_base_microdoppler_official'
   # weight_init: null  # 从头训练，不使用预训练权重
   resume: false
-  log_every: 50                    # 每50步记录一次
-  ckpt_every_epoch: 10             # 每10个epoch保存checkpoint
+  log_every: 30                    # 调整为30步（适应新batch数）
+  ckpt_every_epoch: 50              # 更频繁保存（小数据集训练快）
   
   # 早停配置
-  patience: 20                     # 早停耐心值
+  patience: 30                     # 增加耐心值（小batch训练波动大）
   
   # 梯度检查点（节省内存但速度慢）
   use_checkpoint: false
   
-# 优化器配置 - 基于研究优化
+# 优化器配置 - 针对小batch size调整
 optimizer:
-  lr: 0.0002  # 官方学习率
+  lr: 0.0001  # 降低学习率（batch size从64降到31，约减半）
   beta1: 0.9  # 标准动量值
-  beta2: 0.95  # 官方beta2
+  beta2: 0.999  # 提高beta2增加稳定性（小batch噪声大）
   max_grad_norm: 1.0
   weight_decay: 0.0  # 小数据集不用权重衰减
+  eps: 1e-8  # Adam epsilon
 
 # Transport配置（扩散过程）- 与官方完全一致
 transport:
@@ -77,7 +78,7 @@ sample:
   reverse: false
   likelihood: false
   num_sampling_steps: 150          # 采样步数（平衡质量和速度）
-  cfg_scale: 7.0                   # 适度CFG，避免过度引导丢失微动细节
+  cfg_scale: 5.0                   # 降低CFG（小数据集避免过拟合）
   
   # 高级采样设置
   per_proc_batch_size: 4
