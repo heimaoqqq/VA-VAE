@@ -380,13 +380,14 @@ def do_train(train_config, accelerator):
     best_loss = float('inf')
     patience_counter = 0
     
-    # Gradient accumulation设置 - 保守设置避免过拟合
-    gradient_accumulation_steps = train_config.get('gradient_accumulation_steps', 4)  # 适度梯度累积
-    batch_size = train_config.get('batch_size', 16)  # 保持16，有效batch=64
+    # Gradient accumulation设置 - 针对31 batch size优化
+    gradient_accumulation_steps = train_config.get('gradient_accumulation_steps', 8)  # 增加到8步，有效batch=248
+    batch_size = train_config.get('batch_size', 31)  # 每个batch包含所有31个用户
     
     if accelerator.is_main_process:
         logger.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
         logger.info(f"Effective batch size: {train_config['train']['global_batch_size']} x {gradient_accumulation_steps} = {train_config['train']['global_batch_size'] * gradient_accumulation_steps}")
+        logger.info(f"With 31 users, each batch covers all users for balanced learning")
     model, opt, loader = accelerator.prepare(model, opt, loader)
     if 'valid_path' in train_config['data']:
         valid_loader = accelerator.prepare(valid_loader)
