@@ -34,7 +34,8 @@ model:
 train:
   # 训练规模
   max_epochs: 200                  # 最大训练轮数
-  global_batch_size: 32            # 全局批次大小（T4x2可承受）
+  global_batch_size: 16            # 降低批次来稳定训练（B模型更敏感）
+  gradient_accumulation_steps: 4  # 梯度累积补偿小批次（16x4=64有效batch）
   global_seed: 42                  # 随机种子
   
   # 输出配置
@@ -53,10 +54,24 @@ train:
   
   # 梯度检查点（节省内存但速度慢）
   use_checkpoint: false
+  
+  # 学习率调度器配置
+  scheduler:
+    type: 'cosine'                # cosine, linear_warmup, constant
+    warmup_steps: 500             # warmup步数（约5%总步数）
+    min_lr: 1e-6                  # 最小学习率
+  
+  # 正则化配置（针对小数据集）
+  use_label_smoothing: true       # 标签平滑
+  label_smoothing: 0.1            # 平滑系数
+  mixup_prob: 0.2                 # Mixup概率
+  mixup_alpha: 0.2                # Mixup强度
+  use_contrastive_reg: false     # 对比学习正则（初期关闭）
+  use_orthogonal_reg: false      # 正交正则（初期关闭）
 
 # 优化器配置 - 针对小数据集优化
 optimizer:
-  lr: 0.0001                       # 降低学习率以稳定训练（官方0.0002）
+  lr: 0.00005                      # B模型从头训练需要更低学习率（5e-5）
   beta2: 0.95                      # Adam beta2（与官方一致）
   max_grad_norm: 1.0               # 梯度裁剪（官方默认有但未明确设置）
 
@@ -68,6 +83,7 @@ transport:
   sample_eps: null                 # 采样epsilon（与官方一致）
   train_eps: null                  # 训练epsilon（与官方一致）
   use_cosine_loss: true            # 使用余弦相似度损失（与官方一致）
+  use_lognorm: true                # 使用对数正态采样（官方关键设置）
 
 # 采样配置（用于推理）
 sample:
@@ -78,13 +94,13 @@ sample:
   reverse: false
   likelihood: false
   num_sampling_steps: 150          # 采样步数（平衡质量和速度）
-  cfg_scale: 10.0                  # 增强CFG强度提高条件控制
+  cfg_scale: 7.0                   # 适度CFG，避免过度引导丢失微动细节
   
   # 高级采样设置
   per_proc_batch_size: 4
   fid_num: 50000
   cfg_interval_start: 0.11         # CFG区间开始
-  timestep_shift: 0.1              # 时间步偏移（减小以保留细节）
+  timestep_shift: 0.1              # 时间步偏移（微多普勒需要保留弱信号，不用官方0.3）
 
 # 分布式训练配置（Kaggle T4x2）
 distributed:
