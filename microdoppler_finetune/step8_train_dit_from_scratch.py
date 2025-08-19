@@ -343,11 +343,6 @@ def do_train(train_config, accelerator):
         if accelerator.is_main_process:
             logger.info(f"Validation Dataset contains {len(valid_dataset):,} images {train_config['data']['valid_path']}")
 
-    # Prepare models for training:
-    update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
-    model.train()  # important! This enables embedding dropout for classifier-free guidance
-    ema.eval()  # EMA model should always be in eval mode
-    
     train_config['train']['resume'] = train_config['train']['resume'] if 'resume' in train_config['train'] else False
 
     if train_config['train']['resume']:
@@ -401,11 +396,12 @@ def do_train(train_config, accelerator):
     start_epoch = 0
 
     # 重新创建EMA模型确保设备同步（accelerator.prepare后）
-    ema = deepcopy(model).to(accelerator.device)
-    requires_grad(ema, False)
-    
-    # Prepare models for training:
-    update_ema(ema, model, decay=0)  # Ensure EMA is initialized with synced weights
+    with accelerator.main_process_first():
+        ema = deepcopy(accelerator.unwrap_model(model))
+        ema = ema.to(accelerator.device)
+        requires_grad(ema, False)
+        # Initialize EMA with model weights
+        update_ema(ema, accelerator.unwrap_model(model), decay=0)
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True}")
 
@@ -467,11 +463,8 @@ def do_train(train_config, accelerator):
                     if scheduler is not None:
                         scheduler.step()
                     
-                    # EMA更新
-                    if hasattr(model, 'module'):
-                        update_ema(ema, model.module)
-                    else:
-                        update_ema(ema, model)
+                    # EMA更新 - 使用accelerator.unwrap_model确保获取正确的模型
+                    update_ema(ema, accelerator.unwrap_model(model))
                     
                     step_count += 1
                 
