@@ -250,7 +250,19 @@ def do_train(train_config, accelerator):
         use_lognorm = train_config['transport']['use_lognorm'] if 'use_lognorm' in train_config['transport'] else False,
     )  # default: velocity; 
     
-    opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, betas=(0.9, train_config['optimizer']['beta2']))
+    train_config['optimizer']['lr'] = config.get('optimizer', {}).get('lr', 8e-5)  # 适度提高学习率
+    train_config['optimizer']['beta1'] = config.get('optimizer', {}).get('beta1', 0.9)  # 标准动量值
+    train_config['optimizer']['beta2'] = config.get('optimizer', {}).get('beta2', 0.95)  # 官方默认值
+    train_config['optimizer']['max_grad_norm'] = config.get('optimizer', {}).get('max_grad_norm', 1.0)
+    train_config['optimizer']['weight_decay'] = config.get('optimizer', {}).get('weight_decay', 0.0)  # 小数据集不用权重衰减
+    
+    opt = torch.optim.AdamW(
+        model.parameters(), 
+        lr=train_config['optimizer']['lr'], 
+        weight_decay=train_config['optimizer'].get('weight_decay', 0.01),
+        betas=(train_config['optimizer']['beta1'], train_config['optimizer']['beta2']),
+        eps=1e-8
+    )
     
     if accelerator.is_main_process:
         logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
@@ -277,16 +289,27 @@ def do_train(train_config, accelerator):
     
     # 创建学习率调度器（现在loader已经定义）
     total_steps = train_config['train']['max_epochs'] * len(loader)
-    scheduler = create_scheduler(opt, train_config['train'], total_steps)
-    
-    # 初始化正则化工具
-    num_classes = train_config.get('model', {}).get('num_classes', 31)  # 默认31个类别
-    label_smoother = LabelSmoothing(
-        smoothing=train_config['train'].get('label_smoothing', 0.1),
-        num_classes=num_classes
-    )
-    contrastive_reg = ContrastiveRegularizer(temperature=0.07)
-    early_stopping = EarlyStopping(patience=train_config['train'].get('patience', 20))
+    if 'scheduler' in train_config:
+        scheduler_config = train_config['scheduler']
+        if scheduler_config['type'] == 'cosine':
+            # 余弦退火，带线性warmup
+            def lr_lambda(current_step):
+                warmup_steps = scheduler_config.get('warmup_steps', 500)  # 标准warmup
+                min_lr_ratio = scheduler_config.get('min_lr', 1e-6) / train_config['optimizer']['lr']
+                
+                if current_step < warmup_steps:
+                    # 线性warmup
+                    return float(current_step) / float(max(1, warmup_steps))
+                else:
+                    # 余弦退火到min_lr
+                    progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+                    cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+                    return min_lr_ratio + (1 - min_lr_ratio) * cosine_decay
+            
+            scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+            print(f"📊 Using cosine scheduler with {scheduler_config.get('warmup_steps', 500)} warmup steps")               
+        else:
+            scheduler = None
     
     if accelerator.is_main_process:
         logger.info(f"Dataset contains {len(dataset):,} images {train_config['data']['data_path']}")
@@ -355,8 +378,10 @@ def do_train(train_config, accelerator):
     best_loss = float('inf')
     patience_counter = 0
     
-    # Gradient accumulation设置
-    gradient_accumulation_steps = train_config['train'].get('gradient_accumulation_steps', 1)
+    # Gradient accumulation设置 - 保守设置避免过拟合
+    gradient_accumulation_steps = train_config.get('gradient_accumulation_steps', 4)  # 适度梯度累积
+    batch_size = train_config.get('batch_size', 16)  # 保持16，有效batch=64
+    
     if accelerator.is_main_process:
         logger.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
         logger.info(f"Effective batch size: {train_config['train']['global_batch_size']} x {gradient_accumulation_steps} = {train_config['train']['global_batch_size'] * gradient_accumulation_steps}")
@@ -565,6 +590,14 @@ def do_train(train_config, accelerator):
         # 定期保存checkpoint
         if (epoch + 1) % train_config['train'].get('ckpt_every_epoch', 10) == 0:
             if accelerator.is_main_process:
+                # 清理旧的epoch checkpoint（只保留最近3个）
+                epoch_checkpoints = glob(f"{checkpoint_dir}/epoch_*.pt")
+                epoch_checkpoints.sort()
+                if len(epoch_checkpoints) >= 3:
+                    for old_ckpt in epoch_checkpoints[:-2]:  # 保留最后2个
+                        os.remove(old_ckpt)
+                        logger.info(f"Removed old checkpoint: {old_ckpt}")
+                
                 checkpoint = {
                     "model": accelerator.unwrap_model(model).state_dict(),
                     "ema": ema.state_dict(),
