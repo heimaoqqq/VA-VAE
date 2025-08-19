@@ -652,15 +652,18 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # 反归一化 - 修复维度匹配问题
-            # latent_mean和latent_std已经是[1, C, 1, 1]形状，可以直接使用
-            # 反归一化: x * std / multiplier + mean
-            samples = (samples * latent_std) / latent_multiplier + latent_mean
+            # 反归一化 - 仅在使用了归一化时才需要
+            if train_config['data']['latent_norm']:
+                # 反归一化: x * std / multiplier + mean
+                samples = (samples * latent_std) / latent_multiplier + latent_mean
+            # 如果没有归一化，samples已经是原始latent空间
             
             # VAE解码为图像
             with torch.no_grad():
+                # 重要：latent数据包含0.18215缩放，解码前需要除以这个因子
+                samples_descaled = samples / 0.18215
                 # 使用VA_VAE的decode_to_images方法，直接返回numpy数组
-                images_decoded = vae.decode_to_images(samples)  # 返回[B, H, W, C] numpy数组
+                images_decoded = vae.decode_to_images(samples_descaled)  # 返回[B, H, W, C] numpy数组
                 image = images_decoded[0]  # 取第一个图像 [H, W, C]
             images.append(image)
         
