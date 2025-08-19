@@ -183,11 +183,14 @@ def do_train(train_config, accelerator):
         wo_shift=train_config['model']['wo_shift'] if 'wo_shift' in train_config['model'] else False,
         in_channels=train_config['model']['in_chans'] if 'in_chans' in train_config['model'] else 4,
         use_checkpoint=train_config['model']['use_checkpoint'] if 'use_checkpoint' in train_config['model'] else False,
-    )
+    ).to(device)  # Move model to device immediately after creation
 
-    # Create EMA model after moving main model to device
+    # Create EMA model - must be on same device as model
     ema = deepcopy(model)
-    ema = ema.to(device)  # Ensure EMA is on correct device
+    
+    # Explicitly move both models to device and ensure all parameters are there
+    model = model.to(device)
+    ema = ema.to(device)
     
     # load pretrained model (if provided)
     if 'weight_init' in train_config['train'] and train_config['train']['weight_init'] is not None:
@@ -198,10 +201,6 @@ def do_train(train_config, accelerator):
         ema = load_weights_with_shape_check(ema, checkpoint, rank=rank)
         if accelerator.is_main_process:
             logger.info(f"Loaded pretrained model from {train_config['train']['weight_init']}")
-    
-    # Ensure all EMA parameters are on the correct device
-    for param in ema.parameters():
-        param.data = param.data.to(device)
     
     requires_grad(ema, False)
     
@@ -796,7 +795,11 @@ def update_ema(ema_model, model, decay=0.9999):
         name = name.replace("module.", "")
         # 指数移动平均更新
         if name in ema_params:
-            ema_params[name].mul_(decay).add_(param.data, alpha=1 - decay)
+            # Ensure both tensors are on the same device
+            ema_param = ema_params[name]
+            if ema_param.device != param.data.device:
+                ema_param.data = ema_param.data.to(param.data.device)
+            ema_param.mul_(decay).add_(param.data, alpha=1 - decay)
 
 def requires_grad(model, flag=True):
     """
