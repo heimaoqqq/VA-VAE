@@ -22,6 +22,7 @@ vae:
 # 模型配置 - LightningDiT-Base
 model:
   model_type: 'LightningDiT-B/2'  # Base模型，patch_size=2
+  num_classes: 31                  # 31个用户类别
   use_qknorm: false                # 官方推荐设置
   use_swiglu: true                 # SwiGLU激活函数
   use_rope: true                   # Rotary Position Embedding
