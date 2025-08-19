@@ -289,6 +289,7 @@ def do_train(train_config, accelerator):
     
     # 创建学习率调度器（现在loader已经定义）
     total_steps = train_config['train']['max_epochs'] * len(loader)
+    scheduler = None  # 初始化scheduler变量
     if 'scheduler' in train_config:
         scheduler_config = train_config['scheduler']
         if scheduler_config['type'] == 'cosine':
