@@ -12,6 +12,7 @@ import torch.backends.cudnn
 # from torch.nn.parallel import DistributedDataParallel as DDP  # 使用accelerator替代
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 import math
 import yaml
@@ -33,6 +34,12 @@ import torchvision
 # 添加LightningDiT路径
 sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
 sys.path.append('/kaggle/working/LightningDiT')
+
+from utils_scheduler import create_scheduler
+from utils_regularization import (
+    LabelSmoothing, mixup_data, orthogonal_regularization,
+    ContrastiveRegularizer, EarlyStopping
+)
 
 # 禁用torch.compile以避免Kaggle环境问题
 os.environ['TORCH_COMPILE_DISABLE'] = '1'
@@ -245,11 +252,25 @@ def do_train(train_config, accelerator):
     
     opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, betas=(0.9, train_config['optimizer']['beta2']))
     
+    # 创建学习率调度器
+    total_steps = train_config['train']['max_epochs'] * len(loader)
+    scheduler = create_scheduler(opt, train_config['train'], total_steps)
+    
+    # 初始化正则化工具
+    label_smoother = LabelSmoothing(
+        smoothing=train_config['train'].get('label_smoothing', 0.1),
+        num_classes=train_config['model']['num_classes']
+    )
+    contrastive_reg = ContrastiveRegularizer(temperature=0.07)
+    early_stopping = EarlyStopping(patience=train_config['train'].get('patience', 20))
+    
     if accelerator.is_main_process:
         logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
         logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
         logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
         logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
+        if scheduler:
+            logger.info(f"Using learning rate scheduler: {train_config['train'].get('scheduler', {}).get('type', 'cosine')}")
     
     # Setup data - 使用兼容的微多普勒latent数据集
     dataset = MicroDopplerLatentDataset(
@@ -323,16 +344,26 @@ def do_train(train_config, accelerator):
         start_epoch = 0
         best_val_loss = float('inf')
         patience_counter = 0
+    model.train()
+    running_loss = 0.0
+    step_count = 0
+    start_time = time.time()
+    
+    best_loss = float('inf')
+    patience_counter = 0
+    
+    # Gradient accumulation设置
+    gradient_accumulation_steps = train_config['train'].get('gradient_accumulation_steps', 1)
+    if accelerator.is_main_process:
+        logger.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+        logger.info(f"Effective batch size: {train_config['train']['global_batch_size']} x {gradient_accumulation_steps} = {train_config['train']['global_batch_size'] * gradient_accumulation_steps}")
     model, opt, loader = accelerator.prepare(model, opt, loader)
     if 'valid_path' in train_config['data']:
         valid_loader = accelerator.prepare(valid_loader)
 
     # Variables for monitoring/logging purposes:
-    if not train_config['train']['resume']:
-        train_steps = 0
-        start_epoch = 0
-        best_val_loss = float('inf')
-        patience_counter = 0
+    train_steps = 0
+    start_epoch = 0
 
     # 重新创建EMA模型确保设备同步（accelerator.prepare后）
     ema = deepcopy(model).to(accelerator.device)
@@ -366,46 +397,52 @@ def do_train(train_config, accelerator):
         # 使用tqdm显示训练进度
         pbar = tqdm(enumerate(loader), total=len(loader), desc=f"Epoch {epoch+1}/{max_epochs}", disable=not accelerator.is_main_process)
         
-        for batch_idx, (x, y) in pbar:
+        for batch_idx, batch in pbar:
             if batch_idx == 0 and accelerator.is_main_process:
-                logger.info(f"Training epoch {epoch+1}, batch shape: {x.shape}, labels: {y.shape}")
+                logger.info(f"Training epoch {epoch+1}, batch shape: {batch['latent'].shape}, labels: {batch['class_label'].shape}")
                 
             try:
+                # 获取数据
                 if accelerator.mixed_precision == 'no':
-                    x = x.to(device, dtype=torch.float32)
-                    y = y.to(device, dtype=torch.long)  # 确保标签是long类型
+                    x = batch['latent'].to(device, dtype=torch.float32)
+                    y = batch['class_label'].to(device, dtype=torch.long)
                 else:
-                    x = x.to(device)
-                    y = y.to(device, dtype=torch.long)
+                    x = batch['latent'].to(device)
+                    y = batch['class_label'].to(device, dtype=torch.long)
                 
-                model_kwargs = dict(y=y)
-                # 使用accelerator包装后的模型
-                loss_dict = transport.training_losses(model, x, model_kwargs)
-                if 'cos_loss' in loss_dict:
-                    mse_loss = loss_dict["loss"].mean()
-                    loss = loss_dict["cos_loss"].mean() + mse_loss
-                else:
-                    loss = loss_dict["loss"].mean()
+                # 前向传播 (考虑梯度累积)
+                with accelerator.autocast():
+                    loss_dict = transport.training_losses(model, x, cond=dict(y=y))
+                    loss = loss_dict["loss"].mean() / gradient_accumulation_steps  # 归一化损失
                 
-                opt.zero_grad()
+                # 反向传播
                 accelerator.backward(loss)
-                if 'max_grad_norm' in train_config['optimizer']:
-                    if accelerator.sync_gradients:
+                
+                # 只在累积足够梯度后更新
+                if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                    # 梯度裁剪
+                    if train_config['optimizer'].get('max_grad_norm', 0) > 0:
                         accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
-                opt.step()
-                # accelerator包装后的模型需要通过.module访问原始模型
-                if hasattr(model, 'module'):
-                    update_ema(ema, model.module)
-                else:
-                    update_ema(ema, model)
-
+                    
+                    # 优化器更新
+                    opt.step()
+                    opt.zero_grad()
+                    
+                    # 学习率调度器更新
+                    if scheduler is not None:
+                        scheduler.step()
+                    
+                    # EMA更新
+                    if hasattr(model, 'module'):
+                        update_ema(ema, model.module)
+                    else:
+                        update_ema(ema, model)
+                
+                    step_count += 1
+                
                 # Log loss values:
-                if 'cos_loss' in loss_dict:
-                    running_loss += mse_loss.item()
-                    epoch_loss += mse_loss.item()
-                else:
-                    running_loss += loss.item()
-                    epoch_loss += loss.item()
+                running_loss += loss.item() * gradient_accumulation_steps
+                epoch_loss += loss.item()
                     
                 log_steps += 1
                 train_steps += 1
@@ -415,7 +452,8 @@ def do_train(train_config, accelerator):
                 if accelerator.is_main_process:
                     pbar.set_postfix({'loss': f"{loss.item():.4f}", 'lr': f"{opt.param_groups[0]['lr']:.2e}"})
                 
-                if train_steps % train_config['train']['log_every'] == 0:
+                # 定期记录 (只在优化器更新后)
+                if (batch_idx + 1) % gradient_accumulation_steps == 0 and train_steps % train_config['train']['log_every'] == 0:
                     # Measure training speed:
                     torch.cuda.synchronize()
                     end_time = time()
