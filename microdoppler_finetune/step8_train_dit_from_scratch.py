@@ -402,16 +402,15 @@ def do_train(train_config, accelerator):
         
         for batch_idx, batch in pbar:
             if batch_idx == 0 and accelerator.is_main_process:
-                logger.info(f"Training epoch {epoch+1}, batch shape: {batch['latent'].shape}, labels: {batch['class_label'].shape}")
-                
+                logger.info(f"Training epoch {epoch+1}, batch shape: {batch[0].shape}, labels: {batch[1].shape}")
+            
             try:
-                # 获取数据
-                if accelerator.mixed_precision == 'no':
-                    x = batch['latent'].to(device, dtype=torch.float32)
-                    y = batch['class_label'].to(device, dtype=torch.long)
-                else:
-                    x = batch['latent'].to(device)
-                    y = batch['class_label'].to(device, dtype=torch.long)
+                device = accelerator.device
+                
+                # Unpack batch - DataLoader返回(latents, labels)元组
+                x, y = batch
+                x = x.to(device)
+                y = y.to(device, dtype=torch.long)
                 
                 # 前向传播 (考虑梯度累积)
                 with accelerator.autocast():
