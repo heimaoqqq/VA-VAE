@@ -22,7 +22,7 @@ import logging
 import os
 import sys
 import argparse
-from time import time
+import time
 from tqdm import tqdm
 from glob import glob
 from copy import deepcopy
@@ -392,7 +392,7 @@ def do_train(train_config, accelerator):
         epoch_steps = 0
         running_loss = 0
         log_steps = 0
-        start_time = time()
+        start_time = time.time()
         
         if accelerator.is_main_process:
             print(f"🚀 Starting training loop for epoch {epoch+1}")
@@ -459,7 +459,7 @@ def do_train(train_config, accelerator):
                 if (batch_idx + 1) % gradient_accumulation_steps == 0 and train_steps % train_config['train']['log_every'] == 0:
                     # Measure training speed:
                     torch.cuda.synchronize()
-                    end_time = time()
+                    end_time = time.time()
                     steps_per_sec = log_steps / (end_time - start_time)
                     # Reduce loss history over all processes:
                     avg_loss = torch.tensor(running_loss / log_steps, device=device)
@@ -472,7 +472,7 @@ def do_train(train_config, accelerator):
                     # Reset monitoring variables:
                     running_loss = 0
                     log_steps = 0
-                    start_time = time()
+                    start_time = time.time()
                     
             except Exception as e:
                 if accelerator.is_main_process:
