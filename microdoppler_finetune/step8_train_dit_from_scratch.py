@@ -697,14 +697,15 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # VA-VAE生成流程（基于历史成功配置）
+            # VA-VAE反归一化流程
             if train_config['data']['latent_norm']:
-                # 如果训练时归一化，需要反归一化
+                # 训练时latent被归一化到N(0,1)，生成时需要反归一化
+                # 步骤1: 反归一化到原始latent分布 (samples * std + mean)
                 samples_unnormalized = samples * latent_std + latent_mean
+                # 步骤2: 应用multiplier（VA-VAE为1.0）
                 samples_for_decode = samples_unnormalized * latent_multiplier
             else:
-                # latent_norm=false时：训练时已乘0.18215缩放
-                # 模型输出已在缩放空间，直接解码即可
+                # 未归一化训练：直接使用模型输出
                 samples_for_decode = samples
             
             # VAE解码为图像
