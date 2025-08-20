@@ -110,14 +110,14 @@ class MicroDopplerLatentDataset(Dataset):
             self.latent_mean = all_latents.mean(dim=[0, 2, 3], keepdim=True)  # [1, C, 1, 1]
             self.latent_std = all_latents.std(dim=[0, 2, 3], keepdim=True)    # [1, C, 1, 1]
             
-            # 如果需要归一化，现在对所有数据进行归一化
-            if self.latent_norm:
-                # 使用全局统计进行归一化
-                for i in range(len(self.latents)):
+            # 按照官方LightningDiT方式处理
+            for i in range(len(self.latents)):
+                if self.latent_norm:
                     # 归一化到N(0,1): (x - mean) / std
-                    # latent_mean和latent_std已经是[1, C, 1, 1]形状，可以直接广播
+                    # 保持[1, C, 1, 1]形状用于广播
                     self.latents[i] = (self.latents[i] - self.latent_mean.squeeze(0)) / (self.latent_std.squeeze(0) + 1e-8)
-                    # 注意：VA-VAE训练时不需要再乘multiplier，只在生成时用于反归一化
+                # 官方总是乘multiplier（无论是否归一化）
+                self.latents[i] = self.latents[i] * self.latent_multiplier
         else:
             # 默认值，保持[1, C, 1, 1]形状
             self.latent_mean = torch.zeros(1, 32, 1, 1)  # 假设32维latent
@@ -697,16 +697,17 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # VA-VAE反归一化流程
+            # 按官方方式反向处理：先除以multiplier，再反归一化
+            # 训练时: (latent - mean)/std * multiplier
+            # 生成时: samples / multiplier * std + mean
+            samples_descaled = samples / latent_multiplier  # 先除以multiplier
+            
             if train_config['data']['latent_norm']:
-                # 训练时latent被归一化到N(0,1)，生成时需要反归一化
-                # 步骤1: 反归一化到原始latent分布 (samples * std + mean)
-                samples_unnormalized = samples * latent_std + latent_mean
-                # 步骤2: 应用multiplier（VA-VAE为1.0）
-                samples_for_decode = samples_unnormalized * latent_multiplier
+                # 反归一化到原始空间
+                samples_for_decode = samples_descaled * latent_std + latent_mean
             else:
-                # 未归一化训练：直接使用模型输出
-                samples_for_decode = samples
+                # 无归一化，直接使用
+                samples_for_decode = samples_descaled
             
             # VAE解码为图像
             with torch.no_grad():
