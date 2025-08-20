@@ -14,7 +14,7 @@ def analyze_raw_latents():
     print("=" * 70)
     
     # 检查latent目录
-    latent_dir = Path('G:/VA-VAE/latent_dataset/train')
+    latent_dir = Path('/kaggle/working/latent_dataset/train')
     if not latent_dir.exists():
         print(f"❌ 目录不存在: {latent_dir}")
         return
