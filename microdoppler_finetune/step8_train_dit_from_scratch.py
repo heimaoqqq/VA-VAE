@@ -301,7 +301,7 @@ def do_train(train_config, accelerator):
             # 余弦退火，带线性warmup
             def lr_lambda(current_step):
                 warmup_steps = scheduler_config.get('warmup_steps', 500)  # 标准warmup
-                min_lr_ratio = scheduler_config.get('min_lr', 1e-6) / train_config['optimizer']['lr']
+                min_lr_ratio = float(scheduler_config.get('min_lr', 1e-6)) / float(train_config['optimizer']['lr'])
                 
                 if current_step < warmup_steps:
                     # 线性warmup
