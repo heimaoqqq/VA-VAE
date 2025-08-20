@@ -52,7 +52,7 @@ train:
   
 # 优化器配置 - 针对小batch size调整
 optimizer:
-  lr: 0.0001  # 降低学习率（batch size从64降到31，约减半）
+  lr: 0.0002  # 提高学习率加快收敛（小数据集需要更快学习）
   beta1: 0.9  # 标准动量值
   beta2: 0.999  # 提高beta2增加稳定性（小batch噪声大）
   max_grad_norm: 1.0
@@ -62,7 +62,7 @@ optimizer:
 # 学习率调度器配置 - 解决训练停滞问题
 scheduler:
   type: 'cosine'  # 余弦退火调度器
-  warmup_steps: 500  # warmup步数（约4个epoch）
+  warmup_steps: 300  # 减少warmup步数（约1.5个epoch，加快进入正常学习）
   min_lr: 1e-6  # 最小学习率（原始lr的1/100）
 
 # Transport配置（扩散过程）- 与官方完全一致
