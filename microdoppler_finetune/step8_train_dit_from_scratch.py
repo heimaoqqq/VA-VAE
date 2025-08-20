@@ -651,22 +651,25 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
         timestep_shift=timestep_shift,
     )
     
-    # 获取潜在空间统计信息
+    # 获取潜在空间统计信息（用于反归一化）
     dataset = MicroDopplerLatentDataset(
         data_dir=train_config['data']['data_path'],
         latent_norm=train_config['data']['latent_norm'],
-        latent_multiplier=train_config['data'].get('latent_multiplier', 1.0),  # 使用我们VA-VAE的值
+        latent_multiplier=train_config['data'].get('latent_multiplier', 1.0),
     )
-    latent_mean, latent_std = dataset.get_latent_stats()
     
-    # 如果get_latent_stats不存在，使用默认统计值
-    if not hasattr(dataset, 'get_latent_stats'):
-        # 使用训练时计算的统计值或默认值
-        latent_mean = torch.zeros(train_config['model']['in_chans'], device=device)
-        latent_std = torch.ones(train_config['model']['in_chans'], device=device)
-    latent_mean = latent_mean.to(device)
-    latent_std = latent_std.to(device)
-    latent_multiplier = train_config['data'].get('latent_multiplier', 1.0)  # 确保使用正确的值
+    # 获取统计信息
+    latent_mean, latent_std = dataset.get_latent_stats()
+    latent_multiplier = train_config['data'].get('latent_multiplier', 1.0)
+    
+    if latent_mean is None or latent_std is None:
+        print("⚠️ 警告：无法获取latent统计信息，将无法正确反归一化")
+        latent_mean = torch.zeros(32, 1, 1, device=device)  # VA-VAE f16d32是32通道
+        latent_std = torch.ones(32, 1, 1, device=device)
+    else:
+        latent_mean = latent_mean.to(device)
+        latent_std = latent_std.to(device)
+        print(f"✅ 加载统计信息: mean={latent_mean.mean():.4f}, std={latent_std.mean():.4f}")
     
     if accelerator.is_main_process:
         print(f"🎨 Generating demo samples for epoch {epoch+1}...")
@@ -694,14 +697,16 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # 反归一化 - 关键修复：从归一化空间恢复到原始空间
+            # VA-VAE反归一化流程（与SD-VAE不同）
             if train_config['data']['latent_norm']:
-                # 模型输出在归一化空间，需要反归一化到原始空间
+                # 训练时latent被归一化到N(0,1)，生成时需要反归一化
+                # VA-VAE特点：不使用SD-VAE的0.18215缩放因子
+                # 步骤1: 反归一化到原始latent分布 (samples * std + mean)
                 samples_unnormalized = samples * latent_std + latent_mean
-                # 再应用latent_multiplier缩放
+                # 步骤2: 应用multiplier（VA-VAE为1.0，SD-VAE为0.18215）
                 samples_for_decode = samples_unnormalized * latent_multiplier
             else:
-                # 如果没有归一化，直接使用
+                # 未归一化训练：直接使用模型输出
                 samples_for_decode = samples
             
             # VAE解码为图像
