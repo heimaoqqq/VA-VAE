@@ -304,6 +304,20 @@ class MicroDopplerLatentDataset(Dataset):
         self.latent_norm = latent_norm
         self.latent_multiplier = latent_multiplier
         
+        # 加载数据集统计信息（与官方一致）
+        if self.latent_norm:
+            stats_file = self.data_path / 'latents_stats.pt'
+            if stats_file.exists():
+                stats = torch.load(str(stats_file))
+                # 保持维度一致 [1, C, 1, 1]
+                self._latent_mean = stats['mean'].view(1, -1, 1, 1)
+                self._latent_std = stats['std'].view(1, -1, 1, 1)
+                print(f"✅ 加载数据集统计: {stats_file}")
+            else:
+                print(f"⚠️  未找到统计文件: {stats_file}，将使用按样本归一化")
+                self._latent_mean = None
+                self._latent_std = None
+        
         # 获取所有latent文件
         self.latent_files = sorted(list(self.data_path.glob("*.safetensors")))
         
@@ -348,8 +362,11 @@ class MicroDopplerLatentDataset(Dataset):
                     sample_latent = latent[i]  # [C, H, W]
                     sample_label = labels_batch[i] if labels_batch.dim() > 0 else labels_batch
                     
-                    # 应用归一化和缩放
-                    if self.latent_norm:
+                    # 应用数据集级别归一化（与官方一致）
+                    if self.latent_norm and self._latent_mean is not None:
+                        sample_latent = (sample_latent - self._latent_mean) / self._latent_std
+                    elif self.latent_norm:
+                        # 如果没有全局统计，降级为按样本归一化
                         sample_latent = (sample_latent - sample_latent.mean()) / (sample_latent.std() + 1e-8)
                     sample_latent = sample_latent * self.latent_multiplier
                     
