@@ -40,14 +40,21 @@ def diagnose_training():
     # 3. 加载latent统计文件
     stats_file = data_path / 'latents_stats.pt'
     if stats_file.exists():
-        stats = torch.load(stats_file)
+        stats = torch.load(stats_file, map_location='cpu')
         saved_mean = stats['mean']
         saved_std = stats['std']
         print(f"\n📊 保存的统计信息:")
         print(f"  mean shape: {saved_mean.shape}, mean值: {saved_mean.mean():.4f}")
         print(f"  std shape: {saved_std.shape}, mean值: {saved_std.mean():.4f}")
+        
+        # 确保统计信息形状正确：从[C]调整为[C, 1, 1]用于广播
+        if len(saved_mean.shape) == 1:
+            saved_mean = saved_mean.view(-1, 1, 1)  # [C] -> [C, 1, 1]
+            saved_std = saved_std.view(-1, 1, 1)
+            print(f"  调整后形状: mean {saved_mean.shape}, std {saved_std.shape}")
     else:
         print(f"⚠️ 统计文件不存在: {stats_file}")
+        saved_mean = saved_std = None
     
     # 4. 分析实际latent文件
     latent_files = list(data_path.glob("*.safetensors"))[:3]
@@ -61,7 +68,7 @@ def diagnose_training():
         print(f"  原始数据: mean={latent.mean():.4f}, std={latent.std():.4f}")
         
         # 模拟训练时的数据处理
-        if latent_norm and 'saved_mean' in locals():
+        if latent_norm and saved_mean is not None:
             # 模拟训练时的归一化
             normalized = (latent - saved_mean) / (saved_std + 1e-8)
             print(f"  归一化后: mean={normalized.mean():.4f}, std={normalized.std():.4f}")
