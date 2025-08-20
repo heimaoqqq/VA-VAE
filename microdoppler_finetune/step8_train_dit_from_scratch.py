@@ -402,119 +402,119 @@ with accelerator.main_process_first():
     requires_grad(ema, False)
     # Initialize EMA with model weights
     update_ema(ema, accelerator.unwrap_model(model), decay=0)
-if accelerator.is_main_process:
-    logger.info(f"Using checkpointing: {train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True}")
+    if accelerator.is_main_process:
+        logger.info(f"Using checkpointing: {train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True}")
 
-# 早停参数
-patience = train_config['train'].get('patience', 20)
-max_epochs = train_config['train'].get('max_epochs', 200)
-steps_per_epoch = len(loader)
+    # 早停参数
+    patience = train_config['train'].get('patience', 20)
+    max_epochs = train_config['train'].get('max_epochs', 200)
+    steps_per_epoch = len(loader)
     
-# 训练循环 - 改为基于epoch
-for epoch in range(start_epoch, max_epochs):
-    if accelerator.is_main_process:
-        logger.info(f"Starting Epoch {epoch+1}/{max_epochs}")
-        print(f"🔄 Training loader has {len(loader)} batches")
+    # 训练循环 - 改为基于epoch
+    for epoch in range(start_epoch, max_epochs):
+        if accelerator.is_main_process:
+            logger.info(f"Starting Epoch {epoch+1}/{max_epochs}")
+            print(f"🔄 Training loader has {len(loader)} batches")
+                
+        epoch_loss = 0
+        epoch_steps = 0
+        running_loss = 0
+        log_steps = 0
+        start_time = time.time()
             
-    epoch_loss = 0
-    epoch_steps = 0
-    running_loss = 0
-    log_steps = 0
-    start_time = time.time()
-        
-    if accelerator.is_main_process:
-        print(f"🚀 Starting training loop for epoch {epoch+1}")
-        
-    # 使用tqdm显示训练进度
-    pbar = tqdm(enumerate(loader), total=len(loader), desc=f"Epoch {epoch+1}/{max_epochs}", disable=not accelerator.is_main_process)
-        
-    for batch_idx, batch in pbar:
-        if batch_idx == 0 and accelerator.is_main_process:
-            logger.info(f"Training epoch {epoch+1}, batch shape: {batch[0].shape}, labels: {batch[1].shape}")
-        
-        try:
-            device = accelerator.device
-                
-            # Unpack batch - DataLoader返回(latents, labels)元组
-            x, y = batch
-            x = x.to(device)
-            y = y.to(device, dtype=torch.long)
-                
-            # 前向传播 (考虑梯度累积) - 修复损失计算与官方一致
-            with accelerator.autocast():
-                loss_dict = transport.training_losses(model, x, model_kwargs=dict(y=y))
-                if 'cos_loss' in loss_dict:
-                    # 官方组合损失：cosine + mse
-                    mse_loss = loss_dict["loss"].mean()
-                    cos_loss = loss_dict["cos_loss"].mean()
-                    raw_loss = cos_loss + mse_loss
-                    if accelerator.is_main_process and batch_idx % 100 == 0:
-                        print(f"  MSE Loss: {mse_loss:.4f}, Cosine Loss: {cos_loss:.4f}, Total: {raw_loss:.4f}")
-                else:
-                    raw_loss = loss_dict["loss"].mean()
-                loss = raw_loss / gradient_accumulation_steps  # 归一化损失用于反向传播
-                
-            # 反向传播
-            accelerator.backward(loss)
-                
-            # 只在累积足够梯度后更新
-            if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                # 梯度裁剪 - 完全匹配官方：使用sync_gradients条件
-                if 'max_grad_norm' in train_config['optimizer']:
-                    if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
-                
-                # 优化器更新
-                opt.step()
-                if scheduler is not None:
-                    scheduler.step()
-                
-                # EMA更新 - 使用accelerator.unwrap_model确保获取正确的模型
-                update_ema(ema, accelerator.unwrap_model(model))
-                
-                step_count += 1
-                
-            # Log loss values:
-            running_loss += raw_loss.item()  # 使用原始损失值
-            epoch_loss += raw_loss.item()     # 使用原始损失值
-                
-            log_steps += 1
-            train_steps += 1
-            epoch_steps += 1
+        if accelerator.is_main_process:
+            print(f"🚀 Starting training loop for epoch {epoch+1}")
             
-            # 更新进度条显示当前batch的损失
-            if accelerator.is_main_process:
-                pbar.set_postfix({'loss': f"{raw_loss.item():.4f}", 'lr': f"{opt.param_groups[0]['lr']:.2e}"})
-            
-            # 定期记录 (只在优化器更新后)
-            if (batch_idx + 1) % gradient_accumulation_steps == 0 and train_steps % train_config['train']['log_every'] == 0:
-                # Measure training speed:
-                torch.cuda.synchronize()
-                end_time = time.time()
-                steps_per_sec = log_steps / (end_time - start_time)
-                # Reduce loss history over all processes:
-                avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                avg_loss = accelerator.gather(avg_loss).mean()  # 使用accelerator替代dist
-                avg_loss = avg_loss.item()
-                if accelerator.is_main_process:
-                    logger.info(f"[Epoch {epoch+1}/{max_epochs}, Step {train_steps:07d}] Train Loss: {avg_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}, Speed: {steps_per_sec:.2f} steps/sec")
-                    writer.add_scalar('Loss/train', avg_loss, train_steps)
-                    writer.add_scalar('Learning_rate', opt.param_groups[0]['lr'], train_steps)
-                # Reset monitoring variables:
-                running_loss = 0
-                log_steps = 0
-                start_time = time.time()
+        # 使用tqdm显示训练进度
+        pbar = tqdm(enumerate(loader), total=len(loader), desc=f"Epoch {epoch+1}/{max_epochs}", disable=not accelerator.is_main_process)
+        
+        for batch_idx, batch in pbar:
+            if batch_idx == 0 and accelerator.is_main_process:
+                logger.info(f"Training epoch {epoch+1}, batch shape: {batch[0].shape}, labels: {batch[1].shape}")
+        
+            try:
+                device = accelerator.device
                     
-        except Exception as e:
-            if accelerator.is_main_process:
-                print(f"❌ Error in batch {batch_idx}: {e}")
-                import traceback
-                traceback.print_exc()
-            raise e
+                # Unpack batch - DataLoader返回(latents, labels)元组
+                x, y = batch
+                x = x.to(device)
+                y = y.to(device, dtype=torch.long)
+                    
+                # 前向传播 (考虑梯度累积) - 修复损失计算与官方一致
+                with accelerator.autocast():
+                    loss_dict = transport.training_losses(model, x, model_kwargs=dict(y=y))
+                    if 'cos_loss' in loss_dict:
+                        # 官方组合损失：cosine + mse
+                        mse_loss = loss_dict["loss"].mean()
+                        cos_loss = loss_dict["cos_loss"].mean()
+                        raw_loss = cos_loss + mse_loss
+                        if accelerator.is_main_process and batch_idx % 100 == 0:
+                            print(f"  MSE Loss: {mse_loss:.4f}, Cosine Loss: {cos_loss:.4f}, Total: {raw_loss:.4f}")
+                    else:
+                        raw_loss = loss_dict["loss"].mean()
+                    loss = raw_loss / gradient_accumulation_steps  # 归一化损失用于反向传播
+                    
+                # 反向传播
+                accelerator.backward(loss)
+                
+                # 只在累积足够梯度后更新
+                if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                    # 梯度裁剪 - 完全匹配官方：使用sync_gradients条件
+                    if 'max_grad_norm' in train_config['optimizer']:
+                        if accelerator.sync_gradients:
+                            accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
+                    
+                    # 优化器更新
+                    opt.step()
+                    if scheduler is not None:
+                        scheduler.step()
+                    
+                    # EMA更新 - 使用accelerator.unwrap_model确保获取正确的模型
+                    update_ema(ema, accelerator.unwrap_model(model))
+                    
+                    step_count += 1
+                    
+                # Log loss values:
+                running_loss += raw_loss.item()  # 使用原始损失值
+                epoch_loss += raw_loss.item()     # 使用原始损失值
+                    
+                log_steps += 1
+                train_steps += 1
+                epoch_steps += 1
+                
+                # 更新进度条显示当前batch的损失
+                if accelerator.is_main_process:
+                    pbar.set_postfix({'loss': f"{raw_loss.item():.4f}", 'lr': f"{opt.param_groups[0]['lr']:.2e}"})
+                
+                # 定期记录 (只在优化器更新后)
+                if (batch_idx + 1) % gradient_accumulation_steps == 0 and train_steps % train_config['train']['log_every'] == 0:
+                    # Measure training speed:
+                    torch.cuda.synchronize()
+                    end_time = time.time()
+                    steps_per_sec = log_steps / (end_time - start_time)
+                    # Reduce loss history over all processes:
+                    avg_loss = torch.tensor(running_loss / log_steps, device=device)
+                    avg_loss = accelerator.gather(avg_loss).mean()  # 使用accelerator替代dist
+                    avg_loss = avg_loss.item()
+                    if accelerator.is_main_process:
+                        logger.info(f"[Epoch {epoch+1}/{max_epochs}, Step {train_steps:07d}] Train Loss: {avg_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}, Speed: {steps_per_sec:.2f} steps/sec")
+                        writer.add_scalar('Loss/train', avg_loss, train_steps)
+                        writer.add_scalar('Learning_rate', opt.param_groups[0]['lr'], train_steps)
+                    # Reset monitoring variables:
+                    running_loss = 0
+                    log_steps = 0
+                    start_time = time.time()
+                        
+            except Exception as e:
+                if accelerator.is_main_process:
+                    print(f"❌ Error in batch {batch_idx}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                raise e
 
-    # 关闭进度条以确保后续输出可见
-    if accelerator.is_main_process:
-        pbar.close()
+        # 关闭进度条以确保后续输出可见
+        if accelerator.is_main_process:
+            pbar.close()
         
         # Epoch结束，计算平均损失
         avg_epoch_loss = epoch_loss / epoch_steps if epoch_steps > 0 else 0
@@ -623,6 +623,9 @@ for epoch in range(start_epoch, max_epochs):
         logger.info(f"Best validation loss: {best_val_loss:.4f}")
 
     return accelerator
+
+
+
 
 
 
