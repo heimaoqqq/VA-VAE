@@ -694,10 +694,15 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # 反归一化 - 仅在使用了归一化时才需要
-            # 重要：现有latents已经被0.18215缩放了（根据diagnose_latent_scale.py测试结果）
-            # 直接使用samples，因为latent数据是未缩放的原始值
-            samples_for_decode = samples
+            # 反归一化 - 关键修复：从归一化空间恢复到原始空间
+            if train_config['data']['latent_norm']:
+                # 模型输出在归一化空间，需要反归一化到原始空间
+                samples_unnormalized = samples * latent_std + latent_mean
+                # 再应用latent_multiplier缩放
+                samples_for_decode = samples_unnormalized * latent_multiplier
+            else:
+                # 如果没有归一化，直接使用
+                samples_for_decode = samples
             
             # VAE解码为图像
             with torch.no_grad():
