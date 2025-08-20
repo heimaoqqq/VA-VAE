@@ -60,22 +60,28 @@ def diagnose_training():
         print(f"\n文件 {i+1}: {file.name}")
         print(f"  原始数据: mean={latent.mean():.4f}, std={latent.std():.4f}")
         
-        if latent_norm and 'mean' in locals():
+        # 模拟训练时的数据处理
+        if latent_norm and 'saved_mean' in locals():
             # 模拟训练时的归一化
-            # 注意：训练时mean和std是[1, C, 1, 1]形状
             normalized = (latent - saved_mean) / (saved_std + 1e-8)
-            normalized = normalized * latent_multiplier
             print(f"  归一化后: mean={normalized.mean():.4f}, std={normalized.std():.4f}")
             
             # 检查归一化是否接近N(0,1)
             if abs(normalized.mean()) > 0.1 or abs(normalized.std() - 1.0) > 0.2:
                 print(f"  ⚠️ 归一化后不是N(0,1)!")
-        
-        # 5. 模拟损失计算
-        if latent_norm:
-            # 创建一个随机噪声目标（模拟训练）
+            
+            # 模拟损失计算
             noise = torch.randn_like(normalized)
             mse = ((normalized - noise) ** 2).mean()
+            print(f"  模拟MSE损失: {mse:.4f}")
+        else:
+            # 无归一化情况：直接乘multiplier
+            scaled = latent * latent_multiplier
+            print(f"  缩放后: mean={scaled.mean():.4f}, std={scaled.std():.4f}")
+            
+            # 模拟损失计算
+            noise = torch.randn_like(scaled)
+            mse = ((scaled - noise) ** 2).mean()
             print(f"  模拟MSE损失: {mse:.4f}")
     
     # 6. 诊断建议
