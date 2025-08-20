@@ -42,7 +42,18 @@ def verify_config():
             
             for file in latent_files:
                 data = safetensors.torch.load_file(str(file))
-                latent = data['latent']
+                # 检查实际的键名
+                keys = list(data.keys())
+                print(f"  文件键名: {keys}")
+                
+                # 通常键名可能是'latents'或第一个键
+                if 'latents' in data:
+                    latent = data['latents']
+                elif len(keys) > 0:
+                    latent = data[keys[0]]  # 使用第一个键
+                else:
+                    continue
+                    
                 all_means.append(latent.mean().item())
                 all_stds.append(latent.std().item())
             
