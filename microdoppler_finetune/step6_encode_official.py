@@ -28,18 +28,22 @@ class MicroDopplerDataset(torch.utils.data.Dataset):
         self.transform = transform
         self.samples = []
         
-        # 收集所有图像和标签
-        for user_folder in sorted(os.listdir(root_dir)):
+        # 收集所有图像和标签 - 数据格式是 ID_1, ID_2, ..., ID_31
+        for user_id in range(1, 32):  # 31个用户
+            user_folder = f"ID_{user_id}"
             user_path = os.path.join(root_dir, user_folder)
+            
             if not os.path.isdir(user_path):
+                print(f"警告: 缺少用户文件夹 {user_path}")
                 continue
             
-            user_id = int(user_folder.replace('user_', ''))
+            # 标签从0开始，所以ID_1对应label=0
+            label = user_id - 1
             
             for img_file in os.listdir(user_path):
                 if img_file.endswith(('.jpg', '.png')):
                     img_path = os.path.join(user_path, img_file)
-                    self.samples.append((img_path, user_id))
+                    self.samples.append((img_path, label))
     
     def __len__(self):
         return len(self.samples)
@@ -208,11 +212,11 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # 修改为微多普勒数据路径
-    parser.add_argument("--data_path", type=str, default='G:/VA-VAE/sample_test_data/images')
+    # 修改为正确的Kaggle数据路径
+    parser.add_argument("--data_path", type=str, default='/kaggle/input/dataset')  # 原始数据路径
     parser.add_argument("--data_split", type=str, default='microdoppler_train')
-    parser.add_argument("--output_path", type=str, default="G:/VA-VAE/sample_test_data/latents_official")
-    parser.add_argument("--config", type=str, default="vavae_config_for_dit.yaml")
+    parser.add_argument("--output_path", type=str, default="/kaggle/working/latents_official")
+    parser.add_argument("--config", type=str, default="/kaggle/input/vavae-stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt")
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
