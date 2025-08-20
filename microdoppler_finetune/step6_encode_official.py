@@ -212,7 +212,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, default='G:/VA-VAE/sample_test_data/images')
     parser.add_argument("--data_split", type=str, default='microdoppler_train')
     parser.add_argument("--output_path", type=str, default="G:/VA-VAE/sample_test_data/latents_official")
-    parser.add_argument("--config", type=str, default="G:/VA-VAE/microdoppler_finetune/vavae_config_official.yaml")
+    parser.add_argument("--config", type=str, default="G:/VA-VAE/microdoppler_finetune/vavae_config_for_dit.yaml")
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
