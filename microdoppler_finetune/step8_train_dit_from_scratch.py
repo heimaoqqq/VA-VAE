@@ -114,10 +114,10 @@ class MicroDopplerLatentDataset(Dataset):
             if self.latent_norm:
                 # 使用全局统计进行归一化
                 for i in range(len(self.latents)):
-                    # 归一化: (x - mean) / std * multiplier
+                    # 归一化到N(0,1): (x - mean) / std
                     # latent_mean和latent_std已经是[1, C, 1, 1]形状，可以直接广播
                     self.latents[i] = (self.latents[i] - self.latent_mean.squeeze(0)) / (self.latent_std.squeeze(0) + 1e-8)
-                    self.latents[i] = self.latents[i] * self.latent_multiplier
+                    # 注意：VA-VAE训练时不需要再乘multiplier，只在生成时用于反归一化
         else:
             # 默认值，保持[1, C, 1, 1]形状
             self.latent_mean = torch.zeros(1, 32, 1, 1)  # 假设32维latent
@@ -697,16 +697,14 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # VA-VAE反归一化流程（与SD-VAE不同）
+            # VA-VAE生成流程（基于历史成功配置）
             if train_config['data']['latent_norm']:
-                # 训练时latent被归一化到N(0,1)，生成时需要反归一化
-                # VA-VAE特点：不使用SD-VAE的0.18215缩放因子
-                # 步骤1: 反归一化到原始latent分布 (samples * std + mean)
+                # 如果训练时归一化，需要反归一化
                 samples_unnormalized = samples * latent_std + latent_mean
-                # 步骤2: 应用multiplier（VA-VAE为1.0，SD-VAE为0.18215）
                 samples_for_decode = samples_unnormalized * latent_multiplier
             else:
-                # 未归一化训练：直接使用模型输出
+                # latent_norm=false时：训练时已乘0.18215缩放
+                # 模型输出已在缩放空间，直接解码即可
                 samples_for_decode = samples
             
             # VAE解码为图像
