@@ -344,66 +344,66 @@ def do_train(train_config, accelerator):
 
     train_config['train']['resume'] = train_config['train']['resume'] if 'resume' in train_config['train'] else False
 
-if train_config['train']['resume']:
-    # check if the checkpoint exists
-    checkpoint_files = glob(f"{checkpoint_dir}/*.pt")
-    if checkpoint_files:
-        checkpoint_files.sort(key=lambda x: os.path.getsize(x))
-        latest_checkpoint = checkpoint_files[-1]
-        checkpoint = torch.load(latest_checkpoint, map_location=lambda storage, loc: storage)
-        model.load_state_dict(checkpoint['model'])
-        # opt.load_state_dict(checkpoint['opt'])
-        ema.load_state_dict(checkpoint['ema'])
-        train_steps = int(latest_checkpoint.split('/')[-1].split('.')[0])
-        start_epoch = checkpoint.get('epoch', 0)
-        best_val_loss = checkpoint.get('best_val_loss', float('inf'))
-        patience_counter = checkpoint.get('patience_counter', 0)
-        if accelerator.is_main_process:
-            logger.info(f"Resuming training from checkpoint: {latest_checkpoint}")
-            logger.info(f"Starting from epoch {start_epoch}, step {train_steps}")
+    if train_config['train']['resume']:
+        # check if the checkpoint exists
+        checkpoint_files = glob(f"{checkpoint_dir}/*.pt")
+        if checkpoint_files:
+            checkpoint_files.sort(key=lambda x: os.path.getsize(x))
+            latest_checkpoint = checkpoint_files[-1]
+            checkpoint = torch.load(latest_checkpoint, map_location=lambda storage, loc: storage)
+            model.load_state_dict(checkpoint['model'])
+            # opt.load_state_dict(checkpoint['opt'])
+            ema.load_state_dict(checkpoint['ema'])
+            train_steps = int(latest_checkpoint.split('/')[-1].split('.')[0])
+            start_epoch = checkpoint.get('epoch', 0)
+            best_val_loss = checkpoint.get('best_val_loss', float('inf'))
+            patience_counter = checkpoint.get('patience_counter', 0)
+            if accelerator.is_main_process:
+                logger.info(f"Resuming training from checkpoint: {latest_checkpoint}")
+                logger.info(f"Starting from epoch {start_epoch}, step {train_steps}")
+        else:
+            if accelerator.is_main_process:
+                logger.info("No checkpoint found. Starting training from scratch.")
+            start_epoch = 0
+            best_val_loss = float('inf')
+            patience_counter = 0
     else:
-        if accelerator.is_main_process:
-            logger.info("No checkpoint found. Starting training from scratch.")
         start_epoch = 0
         best_val_loss = float('inf')
         patience_counter = 0
-else:
-    start_epoch = 0
-    best_val_loss = float('inf')
-    patience_counter = 0
-model.train()
-running_loss = 0.0
-step_count = 0
-start_time = time.time()
     
-best_loss = float('inf')
-patience_counter = 0
+    model.train()
+    running_loss = 0.0
+    step_count = 0
+    start_time = time.time()
     
-# Gradient accumulation设置 - 针对31 batch size优化
-gradient_accumulation_steps = train_config.get('gradient_accumulation_steps', 8)  # 增加到8步，有效batch=248
-batch_size = train_config.get('batch_size', 31)  # 每个batch包含所有31个用户
+    best_loss = float('inf')
     
-if accelerator.is_main_process:
-    logger.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
-    logger.info(f"Effective batch size: {train_config['train']['global_batch_size']} x {gradient_accumulation_steps} = {train_config['train']['global_batch_size'] * gradient_accumulation_steps}")
-    logger.info(f"With 31 users, each batch covers all users for balanced learning")
-model, opt, loader = accelerator.prepare(model, opt, loader)
-if 'valid_path' in train_config['data']:
-    valid_loader = accelerator.prepare(valid_loader)
-
-# Variables for monitoring/logging purposes:
-train_steps = 0
-start_epoch = 0
-
-# 重新创建EMA模型确保设备同步（accelerator.prepare后）
-with accelerator.main_process_first():
-    ema = deepcopy(accelerator.unwrap_model(model))
-    ema = ema.to(accelerator.device)
-    requires_grad(ema, False)
-    # Initialize EMA with model weights
-    update_ema(ema, accelerator.unwrap_model(model), decay=0)
+    # Gradient accumulation设置 - 针对31 batch size优化
+    gradient_accumulation_steps = train_config.get('gradient_accumulation_steps', 8)  # 增加到8步，有效batch=248
+    batch_size = train_config.get('batch_size', 31)  # 每个batch包含所有31个用户
+    
     if accelerator.is_main_process:
-        logger.info(f"Using checkpointing: {train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True}")
+        logger.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
+        logger.info(f"Effective batch size: {train_config['train']['global_batch_size']} x {gradient_accumulation_steps} = {train_config['train']['global_batch_size'] * gradient_accumulation_steps}")
+        logger.info(f"With 31 users, each batch covers all users for balanced learning")
+    model, opt, loader = accelerator.prepare(model, opt, loader)
+    if 'valid_path' in train_config['data']:
+        valid_loader = accelerator.prepare(valid_loader)
+
+    # Variables for monitoring/logging purposes:
+    train_steps = 0
+    start_epoch = 0
+
+    # 重新创建EMA模型确保设备同步（accelerator.prepare后）
+    with accelerator.main_process_first():
+        ema = deepcopy(accelerator.unwrap_model(model))
+        ema = ema.to(accelerator.device)
+        requires_grad(ema, False)
+        # Initialize EMA with model weights
+        update_ema(ema, accelerator.unwrap_model(model), decay=0)
+        if accelerator.is_main_process:
+            logger.info(f"Using checkpointing: {train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True}")
 
     # 早停参数
     patience = train_config['train'].get('patience', 20)
@@ -507,10 +507,9 @@ with accelerator.main_process_first():
                         
             except Exception as e:
                 if accelerator.is_main_process:
-                    print(f"❌ Error in batch {batch_idx}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                raise e
+                    logger.error(f"Error in training batch {batch_idx}: {str(e)}")
+                    logger.error(traceback.format_exc())
+                continue
 
         # 关闭进度条以确保后续输出可见
         if accelerator.is_main_process:
@@ -526,7 +525,7 @@ with accelerator.main_process_first():
             print(f"   📚 Learning Rate: {opt.param_groups[0]['lr']:.2e}")
             logger.info(f"Epoch {epoch+1}/{max_epochs} Summary - Train Loss: {avg_epoch_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}")
             
-        # 每个epoch结束进行验证
+        # 每个epoch结束后在验证集上评估
         if 'valid_path' in train_config['data']:
             if accelerator.is_main_process:
                 logger.info(f"Evaluating at epoch {epoch+1}")
@@ -586,7 +585,7 @@ with accelerator.main_process_first():
                 
                 logger.info(f"{'='*50}")
         
-        # 每个epoch生成演示样本
+        # 生成demo样本
         if True:  # 每个epoch都生成
             sample_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/demo_samples"
             generate_demo_samples(model, vae, transport, device, accelerator, train_config, epoch, sample_dir)
