@@ -19,7 +19,6 @@ from PIL import Image
 
 # 添加LightningDiT路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT'))
-from datasets.img_latent_dataset import ImgLatentDataset
 from tokenizer.vavae import VA_VAE
 
 # 微多普勒数据集类（替代ImageFolder）
@@ -49,13 +48,11 @@ class MicroDopplerDataset(torch.utils.data.Dataset):
         img_path, label = self.samples[idx]
         img = Image.open(img_path)
         
-        # 处理微多普勒图像格式
+        # 微多普勒时频图处理 - 保持彩色信息
         if img.mode == 'RGBA':
-            img = img.convert('RGB')
-        elif img.mode == 'L':
-            img = img.convert('RGB')
-        elif img.mode not in ['RGB']:
-            img = img.convert('RGB')
+            img = img.convert('RGB')  # 移除alpha通道
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')  # 确保是RGB格式
         
         img_tensor = self.transform(img)
         return img_tensor, label
@@ -199,12 +196,14 @@ def main(args):
         if rank == 0:
             print(f'Saved {save_filename}')
 
-    # 官方计算latent统计（第152-155行）
-    dist.barrier()
+    # 完成编码
     if rank == 0:
-        dataset = ImgLatentDataset(output_dir, latent_norm=True)
-    dist.barrier()
-    dist.destroy_process_group()
+        print("✅ 编码完成")
+    
+    # 清理分布式
+    if world_size > 1:
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
