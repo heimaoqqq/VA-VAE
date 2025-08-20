@@ -17,6 +17,7 @@ from safetensors.torch import save_file
 from pathlib import Path
 from PIL import Image
 import json
+from datetime import datetime
 
 # 添加LightningDiT路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT'))
