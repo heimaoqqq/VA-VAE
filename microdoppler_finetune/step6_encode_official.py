@@ -20,6 +20,7 @@ from PIL import Image
 # 添加LightningDiT路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT'))
 from tokenizer.vavae import VA_VAE
+import shutil
 
 # 微多普勒数据集类（替代ImageFolder）
 class MicroDopplerDataset(torch.utils.data.Dataset):
@@ -90,10 +91,8 @@ def main(args):
     if rank == 0:
         os.makedirs(output_dir, exist_ok=True)
 
-    # Create model (完全按官方方式)
-    tokenizer = VA_VAE(
-        args.config
-    )
+    # Create model (完全按官方方式) - 直接使用YAML配置文件
+    tokenizer = VA_VAE(args.config)
 
     # Setup data (修改为微多普勒数据集)
     datasets = [
@@ -216,7 +215,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, default='/kaggle/input/dataset')  # 原始数据路径
     parser.add_argument("--data_split", type=str, default='microdoppler_train')
     parser.add_argument("--output_path", type=str, default="/kaggle/working/latents_official")
-    parser.add_argument("--config", type=str, default="/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt")
+    parser.add_argument("--config", type=str, default="vavae_config_for_dit.yaml")  # YAML配置文件（包含ckpt_path）
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
