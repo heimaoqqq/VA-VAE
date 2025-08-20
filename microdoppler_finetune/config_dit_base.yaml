@@ -12,7 +12,7 @@ data:
   num_classes: 31        # 31个用户类别
   num_workers: 4         # 数据加载线程数
   latent_norm: true        # 开启归一化 - 与官方预训练权重匹配
-  latent_multiplier: 0.18215  # 缩放系数保持不变
+  latent_multiplier: 1.0  # 缩放系数保持不变
 
 # VAE配置（与微调的VA-VAE一致）
 vae:
