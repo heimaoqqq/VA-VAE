@@ -216,7 +216,7 @@ if __name__ == "__main__":
     parser.add_argument("--data_path", type=str, default='/kaggle/input/dataset')  # 原始数据路径
     parser.add_argument("--data_split", type=str, default='microdoppler_train')
     parser.add_argument("--output_path", type=str, default="/kaggle/working/latents_official")
-    parser.add_argument("--config", type=str, default="/kaggle/input/vavae-stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt")
+    parser.add_argument("--config", type=str, default="/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt")
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
