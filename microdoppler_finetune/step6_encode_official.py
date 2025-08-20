@@ -14,8 +14,9 @@ import argparse
 import os
 import sys
 from safetensors.torch import save_file
-from datetime import datetime
+from pathlib import Path
 from PIL import Image
+import json
 
 # 添加LightningDiT路径
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'LightningDiT'))
@@ -24,33 +25,46 @@ import shutil
 
 # 微多普勒数据集类（替代ImageFolder）
 class MicroDopplerDataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir, transform):
-        self.root_dir = root_dir
+    """微多普勒数据集 - 支持训练/验证划分"""
+    def __init__(self, data_root, split='all', split_file=None, transform=None):
+        self.data_root = Path(data_root)
         self.transform = transform
-        self.samples = []
+        self.split = split
         
-        # 收集所有图像和标签 - 数据格式是 ID_1, ID_2, ..., ID_31
-        for user_id in range(1, 32):  # 31个用户
-            user_folder = f"ID_{user_id}"
-            user_path = os.path.join(root_dir, user_folder)
+        # 收集图像
+        self.images = []
+        self.labels = []
+        
+        if split == 'all' or split_file is None:
+            # 使用所有数据（原始行为）
+            for user_id in range(1, 32):
+                user_folder = self.data_root / f"ID_{user_id}"
+                if user_folder.exists():
+                    user_images = sorted(user_folder.glob("*.jpg"))
+                    for img_path in user_images:
+                        self.images.append(str(img_path))
+                        self.labels.append(user_id - 1)  # 0-30
+        else:
+            # 使用划分文件
+            with open(split_file, 'r') as f:
+                dataset_split = json.load(f)
             
-            if not os.path.isdir(user_path):
-                print(f"警告: 缺少用户文件夹 {user_path}")
-                continue
-            
-            # 标签从0开始，所以ID_1对应label=0
-            label = user_id - 1
-            
-            for img_file in os.listdir(user_path):
-                if img_file.endswith(('.jpg', '.png')):
-                    img_path = os.path.join(user_path, img_file)
-                    self.samples.append((img_path, label))
-    
+            # 收集指定划分的所有图像
+            for user_id in range(1, 32):
+                user_key = f"ID_{user_id}"
+                if user_key in dataset_split[split]:
+                    user_images = dataset_split[split][user_key]
+                    for img_path in user_images:
+                        self.images.append(img_path)
+                        self.labels.append(user_id - 1)  # 0-30       
+                    
     def __len__(self):
-        return len(self.samples)
+        return len(self.images)
     
     def __getitem__(self, idx):
-        img_path, label = self.samples[idx]
+        img_path = self.images[idx]
+        label = self.labels[idx]
+        
         img = Image.open(img_path)
         
         # 微多普勒时频图处理 - 保持彩色信息
@@ -62,9 +76,9 @@ class MicroDopplerDataset(torch.utils.data.Dataset):
         img_tensor = self.transform(img)
         return img_tensor, label
 
-def main(args):
+def encode_split(args, split='all'):
     """
-    官方extract_features.py主函数，修改为微多普勒数据
+    编码指定的数据划分
     """
     assert torch.cuda.is_available(), "Extract features currently requires at least one GPU."
 
@@ -87,17 +101,21 @@ def main(args):
     torch.cuda.set_device(device)
 
     # Setup feature folders (保持官方结构)
-    output_dir = os.path.join(args.output_path, os.path.splitext(os.path.basename(args.config))[0], f'{args.data_split}_{args.image_size}')
+    data_split_name = f'{args.data_split}_{split}' if split != 'all' else args.data_split
+    output_dir = os.path.join(args.output_path, os.path.splitext(os.path.basename(args.config))[0], f'{data_split_name}_{args.image_size}')
     if rank == 0:
         os.makedirs(output_dir, exist_ok=True)
+        print(f"\n📁 输出目录: {output_dir}")
 
     # Create model (完全按官方方式) - 直接使用YAML配置文件
     tokenizer = VA_VAE(args.config)
 
     # Setup data (修改为微多普勒数据集)
     datasets = [
-        MicroDopplerDataset(args.data_path, transform=tokenizer.img_transform(p_hflip=0.0)),
-        MicroDopplerDataset(args.data_path, transform=tokenizer.img_transform(p_hflip=1.0))
+        MicroDopplerDataset(args.data_path, split=split, split_file=args.split_file, 
+                          transform=tokenizer.img_transform(p_hflip=0.0)),
+        MicroDopplerDataset(args.data_path, split=split, split_file=args.split_file,
+                          transform=tokenizer.img_transform(p_hflip=1.0))
     ]
     samplers = [
         DistributedSampler(
@@ -201,11 +219,37 @@ def main(args):
 
     # 完成编码
     if rank == 0:
-        print("✅ 编码完成")
+        print(f"✅ {split}集编码完成")
     
     # 清理分布式
     if world_size > 1:
         dist.barrier()
+    
+    return output_dir
+
+
+def main(args):
+    """
+    主函数：根据参数决定编码模式
+    """
+    if args.split_file and os.path.exists(args.split_file):
+        # 分别编码训练集和验证集
+        print("📊 使用数据划分文件，分别编码训练集和验证集")
+        print(f"   划分文件: {args.split_file}")
+        
+        for split in ['train', 'val']:
+            print(f"\n{'='*60}")
+            print(f"🎯 编码 {split} 集")
+            print(f"{'='*60}")
+            output_dir = encode_split(args, split=split)
+            print(f"✅ {split}集完成: {output_dir}")
+    else:
+        # 编码所有数据（原始行为）
+        print("📊 编码所有数据（未使用数据划分）")
+        encode_split(args, split='all')
+    
+    # 最终清理
+    if dist.is_initialized():
         dist.destroy_process_group()
 
 
@@ -213,12 +257,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # 修改为正确的Kaggle数据路径
     parser.add_argument("--data_path", type=str, default='/kaggle/input/dataset')  # 原始数据路径
-    parser.add_argument("--data_split", type=str, default='microdoppler_train')
+    parser.add_argument("--data_split", type=str, default='microdoppler')
     parser.add_argument("--output_path", type=str, default="/kaggle/working/latents_official")
     parser.add_argument("--config", type=str, default="vavae_config_for_dit.yaml")  # YAML配置文件（包含ckpt_path）
+    parser.add_argument("--split_file", type=str, default="/kaggle/working/data_split/dataset_split.json",
+                       help="数据划分文件，如果提供则分别编码训练/验证集")
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=20)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--num_workers", type=int, default=8)
+    parser.add_argument("--num_workers", type=int, default=4)  # 降低到4以避免警告
     args = parser.parse_args()
     main(args)
