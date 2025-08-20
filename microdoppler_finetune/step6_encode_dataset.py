@@ -389,6 +389,16 @@ class MicroDopplerLatentDataset(Dataset):
         label: 用户类别标签（0-30）
         """
         return self.latents[idx], self.labels[idx]
+    
+    def get_latent_stats(self):
+        """
+        返回latent统计信息，用于生成时的反归一化
+        """
+        if hasattr(self, '_latent_mean') and hasattr(self, '_latent_std'):
+            return self._latent_mean, self._latent_std
+        else:
+            # 如果没有加载统计信息，返回None
+            return None, None
 
 
 def create_latent_dataloader(data_path, batch_size, num_workers=4, shuffle=True, 
