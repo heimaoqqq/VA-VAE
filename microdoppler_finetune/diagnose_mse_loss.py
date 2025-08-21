@@ -40,24 +40,28 @@ def analyze_latent_files(latent_dir):
     try:
         with safe_open(sample_file, framework="pt", device="cpu") as f:
             keys = list(f.keys())
-            print(f"文件包含 {len(keys)} 个样本")
+            print(f"文件包含keys: {keys}")
             
-            # 加载前10个样本进行分析
-            for i, key in enumerate(keys[:10]):
-                if key.startswith('latent_'):
-                    try:
-                        latent = f.get_tensor(key)
-                        latent_data.append(latent)
-                        print(f"  成功加载: {key}, shape: {latent.shape}")
-                        
-                        # 获取对应的label
-                        label_key = key.replace('latent_', 'label_')
-                        if label_key in keys:
-                            label = f.get_tensor(label_key)
-                            labels.append(label.item())
-                    except Exception as e:
-                        print(f"  ❌ 加载{key}失败: {e}")
-                        continue
+            # 检查step6_encode_official.py的格式：latents, latents_flip, labels
+            if 'latents' in keys:
+                latents_tensor = f.get_tensor('latents')
+                labels_tensor = f.get_tensor('labels') if 'labels' in keys else None
+                
+                print(f"  ✅ 找到latents tensor: {latents_tensor.shape}")
+                if labels_tensor is not None:
+                    print(f"  ✅ 找到labels tensor: {labels_tensor.shape}")
+                
+                # 分析前10个样本（如果有的话）
+                num_samples = min(10, latents_tensor.shape[0])
+                for i in range(num_samples):
+                    latent_data.append(latents_tensor[i])
+                    if labels_tensor is not None and i < labels_tensor.shape[0]:
+                        labels.append(labels_tensor[i].item())
+                
+                print(f"  成功加载 {num_samples} 个样本进行分析")
+            else:
+                print(f"  ❌ 未找到预期的'latents' key，实际keys: {keys}")
+                return None
     except Exception as e:
         print(f"❌ 打开safetensor文件失败: {e}")
         return None
