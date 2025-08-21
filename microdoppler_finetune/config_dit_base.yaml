@@ -41,7 +41,7 @@ train:
   exp_name: 'dit_base_microdoppler_official'
   weight_init: null  # 从头训练32通道模型，避免4→32通道转换损失
   resume: false
-  log_every: 50                    # 减少日志频率（318步/epoch）
+  log_every: 100                    # 减少日志频率（318步/epoch）
   ckpt_every_epoch: 5              # 更频繁保存（小数据集训练快）
   
   # 早停配置
@@ -84,8 +84,8 @@ sample:
   rtol: 0.001                      # 相对误差容限
   reverse: false
   likelihood: false
-  num_sampling_steps: 100          # 减少采样步数提高速度
-  cfg_scale: 2.0                   # 小数据集使用更低CFG
+  num_sampling_steps: 150          # 增加采样步数提高质量
+  cfg_scale: 7.5                  # 提高CFG增强条件控制
   
   # 高级采样设置
   per_proc_batch_size: 4
