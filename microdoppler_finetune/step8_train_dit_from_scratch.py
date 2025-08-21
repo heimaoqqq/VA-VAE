@@ -110,6 +110,13 @@ class MicroDopplerLatentDataset(Dataset):
             self.latent_mean = all_latents.mean(dim=[0, 2, 3], keepdim=True)  # [1, C, 1, 1]
             self.latent_std = all_latents.std(dim=[0, 2, 3], keepdim=True)    # [1, C, 1, 1]
             
+            # 添加原始空间统计显示
+            original_mean = all_latents.mean().item()
+            original_std = all_latents.std().item()
+            print(f"\n📊 原始latent空间统计 (加载后):")
+            print(f"   Mean: {original_mean:.4f}")
+            print(f"   Std:  {original_std:.4f}")
+            
             # 按照官方LightningDiT方式处理
             for i in range(len(self.latents)):
                 if self.latent_norm:
@@ -130,6 +137,15 @@ class MicroDopplerLatentDataset(Dataset):
                 
                 # 官方总是乘multiplier（无论是否归一化）
                 self.latents[i] = self.latents[i] * self.latent_multiplier
+                
+            # 检查训练空间的统计（缩放后）
+            all_scaled = torch.stack(self.latents)  # 重新堆叠缩放后的数据
+            train_mean = all_scaled.mean().item()
+            train_std = all_scaled.std().item()
+            print(f"\n🎯 训练空间统计 (multiplier={self.latent_multiplier}应用后):")
+            print(f"   Mean: {train_mean:.4f}")
+            print(f"   Std:  {train_std:.4f}")
+            print(f"   {'✅ 接近目标' if abs(train_std - 1.0) < 0.2 else '⚠️ 偏离目标'} (目标std≈1.0)")
         else:
             # 默认值，保持[1, C, 1, 1]形状
             self.latent_mean = torch.zeros(1, 32, 1, 1)  # 假设32维latent
@@ -419,15 +435,29 @@ def do_train(train_config, accelerator):
 
     # 早停参数
     patience = train_config['train'].get('patience', 20)
-    max_epochs = train_config['train'].get('max_epochs', 200)
+    num_epochs = train_config['train'].get('max_epochs', 200)
     steps_per_epoch = len(loader)
     
     # 训练循环 - 改为基于epoch
-    for epoch in range(start_epoch, max_epochs):
+    for epoch in range(start_epoch, num_epochs):
         if accelerator.is_main_process:
-            logger.info(f"Starting Epoch {epoch+1}/{max_epochs}")
-            print(f"🔄 Training loader has {len(loader)} batches")
+            logger.info(f"Beginning epoch {epoch}...")
                 
+        # 每个epoch开始时验证数据分布
+        if epoch == 0:
+            print(f"\n🔍 首个Epoch数据分布验证:")
+            # 从dataloader取一个批次进行验证
+            for batch_idx, (z_check, y_check) in enumerate(loader):
+                if batch_idx == 0:
+                    z_mean = z_check.mean().item()
+                    z_std = z_check.std().item()
+                    print(f"   首批数据: mean={z_mean:.4f}, std={z_std:.4f}")
+                    print(f"   状态: {'✅ 理想范围' if abs(z_std - 1.0) < 0.2 else '⚠️ 需要调整multiplier'}")
+                    break
+        
+        loader.sampler.set_epoch(epoch)
+        print(f"🔄 Training loader has {len(loader)} batches")
+            
         epoch_loss = 0
         epoch_steps = 0
         running_loss = 0
@@ -435,10 +465,10 @@ def do_train(train_config, accelerator):
         start_time = time.time()
             
         if accelerator.is_main_process:
-            print(f"🚀 Starting training loop for epoch {epoch+1}")
+            print(f"🚀 Starting training loop for epoch {epoch}")
             
         # 使用tqdm显示训练进度
-        pbar = tqdm(enumerate(loader), total=len(loader), desc=f"Epoch {epoch+1}/{max_epochs}", disable=not accelerator.is_main_process)
+        pbar = tqdm(enumerate(loader), total=len(loader), desc=f"Epoch {epoch+1}/{num_epochs}", disable=not accelerator.is_main_process)
         
         for batch_idx, batch in pbar:
             if batch_idx == 0 and accelerator.is_main_process:
@@ -509,14 +539,24 @@ def do_train(train_config, accelerator):
                     avg_loss = accelerator.gather(avg_loss).mean()  # 使用accelerator替代dist
                     avg_loss = avg_loss.item()
                     if accelerator.is_main_process:
-                        logger.info(f"[Epoch {epoch+1}/{max_epochs}, Step {train_steps:07d}] Train Loss: {avg_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}, Speed: {steps_per_sec:.2f} steps/sec")
+                        logger.info(f"[Epoch {epoch+1}/{num_epochs}, Step {train_steps:07d}] Train Loss: {avg_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}, Speed: {steps_per_sec:.2f} steps/sec")
                         writer.add_scalar('Loss/train', avg_loss, train_steps)
                         writer.add_scalar('Learning_rate', opt.param_groups[0]['lr'], train_steps)
                     # Reset monitoring variables:
                     running_loss = 0
                     log_steps = 0
                     start_time = time.time()
-                        
+                    
+                # 训练批次统计检查（每100步）
+                if train_steps % 100 == 0:
+                    batch_mean = x.mean().item()
+                    batch_std = x.std().item()
+                    if accelerator.is_main_process:
+                        logger.info(f"📊 Batch统计 [Step {train_steps}]: mean={batch_mean:.4f}, std={batch_std:.4f}")
+                        # 添加到tensorboard
+                        writer.add_scalar('train/batch_mean', batch_mean, train_steps)
+                        writer.add_scalar('train/batch_std', batch_std, train_steps)
+            
             except Exception as e:
                 if accelerator.is_main_process:
                     logger.error(f"Error in training batch {batch_idx}: {str(e)}")
@@ -531,11 +571,11 @@ def do_train(train_config, accelerator):
         avg_epoch_loss = epoch_loss / epoch_steps if epoch_steps > 0 else 0
         if accelerator.is_main_process:
             print(f"\n{'='*60}")
-            print(f"📊 Epoch {epoch+1}/{max_epochs} Summary:")
+            print(f"📊 Epoch {epoch+1}/{num_epochs} Summary:")
             print(f"   📉 Average Training Loss: {avg_epoch_loss:.4f}")
             print(f"   🔢 Total Steps: {train_steps}")
             print(f"   📚 Learning Rate: {opt.param_groups[0]['lr']:.2e}")
-            logger.info(f"Epoch {epoch+1}/{max_epochs} Summary - Train Loss: {avg_epoch_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}")
+            logger.info(f"Epoch {epoch+1}/{num_epochs} Summary - Train Loss: {avg_epoch_loss:.4f}, LR: {opt.param_groups[0]['lr']:.2e}")
             
         # 每个epoch结束后在验证集上评估
         if 'valid_path' in train_config['data']:
@@ -637,11 +677,6 @@ def do_train(train_config, accelerator):
     return accelerator
 
 
-
-
-
-
-
 @torch.no_grad()
 def generate_demo_samples(model, vae, transport, device, accelerator, train_config, epoch, sample_dir):
     """生成演示样本，基于官方inference.py实现
@@ -683,20 +718,19 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
         latent_mean = torch.zeros(32, 1, 1, device=device)  # VA-VAE f16d32是32通道
         latent_std = torch.ones(32, 1, 1, device=device)
     else:
-        latent_mean = latent_mean.to(device)
-        latent_std = latent_std.to(device)
-        
-        # 显示原始数据统计（用于反归一化）
-        print(f"\n📊 生成时使用的统计信息（用于反归一化）:")
-        print(f"   原始数据: mean={latent_mean.mean():.4f}, std={latent_std.mean():.4f}")
-        
-        # 验证归一化效果：显示训练数据的实际统计
+        print(f"\n💾 Dataset统计信息:")
+        print(f"   原始latent: mean={latent_mean.mean():.4f}, std={latent_std.mean():.4f}")
+        print(f"   缩放因子: {latent_multiplier}")
         if train_config['data']['latent_norm']:
             # 归一化后的理论值应该是mean≈0, std≈1
             print(f"   归一化后（理论）: mean≈0.0000, std≈1.0000")
             print(f"   说明: 训练时数据已归一化到N(0,1)，生成时将反归一化回原始空间")
         else:
-            print(f"   未启用归一化，直接使用原始数据")
+            print(f"   未启用归一化，仅通过缩放调整")
+            expected_std = latent_std.mean().item() * latent_multiplier
+            print(f"   预期训练空间: mean≈{latent_mean.mean().item() * latent_multiplier:.4f}, std≈{expected_std:.4f}")
+            if abs(expected_std - 1.0) > 0.2:
+                print(f"   ⚠️ 警告: 训练空间std={expected_std:.4f}偏离理想值1.0")
     
     if accelerator.is_main_process:
         print(f"🎨 Generating demo samples for epoch {epoch+1}...")
