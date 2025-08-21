@@ -124,7 +124,9 @@ class MicroDopplerLatentDataset(Dataset):
                     if i == 0:  # 只检查第一个样本避免过多输出
                         norm_mean = self.latents[i].mean().item()
                         norm_std = self.latents[i].std().item()
-                        print(f"🔍 归一化后样本{i}: mean={norm_mean:.4f}, std={norm_std:.4f}")
+                        print(f"\n✅ 归一化验证（训练数据样本0）:")
+                        print(f"   归一化后: mean={norm_mean:.4f}, std={norm_std:.4f}")
+                        print(f"   状态: {'正常' if abs(norm_mean) < 0.1 and abs(norm_std - 1.0) < 0.1 else '异常'}")
                 
                 # 官方总是乘multiplier（无论是否归一化）
                 self.latents[i] = self.latents[i] * self.latent_multiplier
@@ -679,7 +681,18 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
     else:
         latent_mean = latent_mean.to(device)
         latent_std = latent_std.to(device)
-        print(f"✅ 加载统计信息: mean={latent_mean.mean():.4f}, std={latent_std.mean():.4f}")
+        
+        # 显示原始数据统计（用于反归一化）
+        print(f"\n📊 生成时使用的统计信息（用于反归一化）:")
+        print(f"   原始数据: mean={latent_mean.mean():.4f}, std={latent_std.mean():.4f}")
+        
+        # 验证归一化效果：显示训练数据的实际统计
+        if train_config['data']['latent_norm']:
+            # 归一化后的理论值应该是mean≈0, std≈1
+            print(f"   归一化后（理论）: mean≈0.0000, std≈1.0000")
+            print(f"   说明: 训练时数据已归一化到N(0,1)，生成时将反归一化回原始空间")
+        else:
+            print(f"   未启用归一化，直接使用原始数据")
     
     if accelerator.is_main_process:
         print(f"🎨 Generating demo samples for epoch {epoch+1}...")
@@ -707,14 +720,23 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # 按官方方式反向处理：先除以multiplier，再反归一化
+            # 反归一化流程（与训练时的归一化相反）
             # 训练时: (latent - mean)/std * multiplier
             # 生成时: samples / multiplier * std + mean
-            samples_descaled = samples / latent_multiplier  # 先除以multiplier
+            
+            # Step 1: 除以multiplier还原到归一化空间
+            samples_descaled = samples / latent_multiplier
             
             if train_config['data']['latent_norm']:
-                # 反归一化到原始空间
+                # Step 2: 反归一化到原始空间
+                # 从N(0,1) → 原始分布
                 samples_for_decode = samples_descaled * latent_std + latent_mean
+                
+                # 首次生成时显示反归一化验证
+                if label == demo_labels[0] and epoch == 0:
+                    print(f"\n🔄 反归一化验证（首个生成样本）:")
+                    print(f"   生成样本（归一化空间）: mean={samples_descaled.mean():.4f}, std={samples_descaled.std():.4f}")
+                    print(f"   反归一化后（原始空间）: mean={samples_for_decode.mean():.4f}, std={samples_for_decode.std():.4f}")
             else:
                 # 无归一化，直接使用
                 samples_for_decode = samples_descaled
