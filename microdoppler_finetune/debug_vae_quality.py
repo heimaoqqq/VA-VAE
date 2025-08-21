@@ -40,11 +40,24 @@ def test_vae_reconstruction():
         vae.model.load_state_dict(vae_state_dict, strict=True)
         print("✅ VA-VAE权重加载成功")
     
-    # 测试数据目录
-    test_data_dir = '/kaggle/working/data_resized'
+    # 测试数据目录 - 修正为正确的Kaggle输入路径
+    test_data_dir = '/kaggle/input/dataset'
     if not os.path.exists(test_data_dir):
         print(f"❌ 测试数据目录不存在: {test_data_dir}")
-        return
+        # 尝试备用路径
+        alt_paths = [
+            '/kaggle/working/data_resized',
+            '/kaggle/working/dataset', 
+            '/kaggle/input/microdoppler-dataset'
+        ]
+        for alt_path in alt_paths:
+            if os.path.exists(alt_path):
+                test_data_dir = alt_path
+                print(f"✅ 找到备用数据目录: {test_data_dir}")
+                break
+        else:
+            print("❌ 所有可能的数据目录都不存在")
+            return
     
     # 随机选择几张图像进行重建测试
     image_files = list(Path(test_data_dir).rglob("*.png"))
@@ -110,12 +123,32 @@ def check_latent_statistics():
     """检查latent的统计分布"""
     from safetensors.torch import load_file
     
-    # 检查编码后的latent文件
-    latent_dir = Path('/kaggle/working/latents_official/vavae_config_for_dit/microdoppler_train_256')
-    latent_files = list(latent_dir.glob("*.safetensors"))
+    # 检查编码后的latent文件 - 支持多种可能的路径
+    base_dir = Path('/kaggle/working/latents_official/vavae_config_for_dit')
+    possible_subdirs = [
+        'microdoppler_train_256',
+        'microdoppler_val_256', 
+        'microdoppler_all_256',
+        'microdoppler_256'
+    ]
+    
+    latent_files = []
+    found_dir = None
+    
+    for subdir in possible_subdirs:
+        latent_dir = base_dir / subdir
+        if latent_dir.exists():
+            files = list(latent_dir.glob("*.safetensors"))
+            if files:
+                latent_files = files
+                found_dir = latent_dir
+                print(f"✅ 找到latent文件目录: {found_dir}")
+                break
     
     if not latent_files:
         print("❌ 未找到latent文件")
+        print(f"   搜索路径: {base_dir}")
+        print(f"   尝试的子目录: {possible_subdirs}")
         return
     
     all_latents = []
