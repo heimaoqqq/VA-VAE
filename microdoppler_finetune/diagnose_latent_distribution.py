@@ -5,7 +5,7 @@ import glob
 import os
 
 # 检查本地latent文件
-latent_dir = "g:/VA-VAE/latents_official/vavae_config_for_dit/microdoppler_train_256"
+latent_dir = "/kaggle/working/latents_official/vavae_config_for_dit/microdoppler_train_256"
 
 if not os.path.exists(latent_dir):
     print(f"找不到目录: {latent_dir}")
