@@ -600,7 +600,8 @@ def do_train(train_config, accelerator):
         # 生成demo样本
         if True:  # 每个epoch都生成
             sample_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/demo_samples"
-            generate_demo_samples(model, vae, transport, device, accelerator, train_config, epoch, sample_dir)
+            # 使用EMA模型进行生成（关键修复：之前错误地使用了model而不是ema）
+            generate_demo_samples(ema, vae, transport, device, accelerator, train_config, epoch, sample_dir)
             if accelerator.is_main_process:
                 print(f"{'='*60}")
         
@@ -643,13 +644,16 @@ def do_train(train_config, accelerator):
 
 @torch.no_grad()
 def generate_demo_samples(model, vae, transport, device, accelerator, train_config, epoch, sample_dir):
-    """生成演示样本，基于官方inference.py实现"""
+    """生成演示样本，基于官方inference.py实现
+    
+    注意：model参数应该是EMA模型，不是训练模型
+    """
     model.eval()
     
     # 采样配置
     cfg_scale = train_config['sample']['cfg_scale']
     cfg_interval_start = train_config['sample'].get('cfg_interval_start', 0.11)
-    timestep_shift = train_config['sample'].get('timestep_shift', 0.1)
+    timestep_shift = train_config['sample'].get('timestep_shift', 0.0)  # 修复：与配置文件一致
     num_samples = 8  # 生成8个样本做成2x4网格
     
     # 创建sampler
@@ -704,7 +708,8 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
         for label in demo_labels:
             # 创建噪声和标签
             latent_size = train_config['data']['image_size'] // train_config['vae']['downsample_ratio']
-            unwrapped_model = accelerator.unwrap_model(model)
+            # 注意：这里的model已经是EMA模型
+            unwrapped_model = model if not hasattr(model, 'module') else model.module
             z = torch.randn(1, unwrapped_model.in_channels, latent_size, latent_size, device=device)
             y = torch.tensor([label], device=device)
             
