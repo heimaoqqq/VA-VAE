@@ -17,7 +17,7 @@ def test_inference():
     """测试推理，诊断问题"""
     
     # 1. 加载配置
-    config_path = "g:/VA-VAE/microdoppler_finetune/config_dit_base.yaml"
+    config_path = "/kaggle/working/VA-VAE/microdoppler_finetune/config_dit_base.yaml"
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     
