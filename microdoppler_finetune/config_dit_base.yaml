@@ -11,8 +11,9 @@ data:
   image_size: 256        # 原始图像尺寸
   num_classes: 31        # 31个用户类别
   num_workers: 4         # 数据加载线程数
-  latent_norm: false       # 保持VA-VAE原始latent分布
-  latent_multiplier: 1.0   # VA-VAE不需要额外缩放
+  # 关键配置：VA-VAE latent原始std=1.54，需缩放到~1.0
+  latent_norm: false       # 不归一化，保持通道间相对关系
+  latent_multiplier: 0.65  # 缩放因子: 1.0/1.54≈0.65，使std接近1.0
 
 # VAE配置（与微调的VA-VAE一致）
 vae:
