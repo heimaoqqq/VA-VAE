@@ -725,26 +725,29 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
             samples, _ = samples.chunk(2, dim=0)  # 移除null class样本
             
-            # 反归一化流程（与训练时的归一化相反）
-            # 训练时: (latent - mean)/std * multiplier
-            # 生成时: samples / multiplier * std + mean
+            # 反缩放流程
+            # 训练时: latent * multiplier (缩小方差)
+            # 生成时: samples / multiplier (还原到原始尺度)
             
-            # Step 1: 除以multiplier还原到归一化空间
-            samples_descaled = samples / latent_multiplier
+            # 除以multiplier还原到原始VAE空间
+            samples_for_decode = samples / latent_multiplier
             
             if train_config['data']['latent_norm']:
-                # Step 2: 反归一化到原始空间
+                # 如果启用了归一化，还需要反归一化
                 # 从N(0,1) → 原始分布
-                samples_for_decode = samples_descaled * latent_std + latent_mean
+                samples_for_decode = samples_for_decode * latent_std + latent_mean
                 
                 # 首次生成时显示反归一化验证
                 if label == demo_labels[0] and epoch == 0:
                     print(f"\n🔄 反归一化验证（首个生成样本）:")
-                    print(f"   生成样本（归一化空间）: mean={samples_descaled.mean():.4f}, std={samples_descaled.std():.4f}")
-                    print(f"   反归一化后（原始空间）: mean={samples_for_decode.mean():.4f}, std={samples_for_decode.std():.4f}")
+                    print(f"   生成样本（缩放空间）: mean={samples.mean():.4f}, std={samples.std():.4f}")
+                    print(f"   还原后（VAE空间）: mean={samples_for_decode.mean():.4f}, std={samples_for_decode.std():.4f}")
             else:
-                # 无归一化，直接使用
-                samples_for_decode = samples_descaled
+                # 首次生成时显示缩放验证
+                if label == demo_labels[0] and epoch == 0:
+                    print(f"\n🔄 缩放验证（首个生成样本）:")
+                    print(f"   生成样本（缩放空间）: mean={samples.mean():.4f}, std={samples.std():.4f}")
+                    print(f"   还原后（VAE空间）: mean={samples_for_decode.mean():.4f}, std={samples_for_decode.std():.4f}")
             
             # VAE解码为图像
             with torch.no_grad():
