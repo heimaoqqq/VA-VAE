@@ -455,7 +455,9 @@ def do_train(train_config, accelerator):
                     print(f"   状态: {'✅ 理想范围' if abs(z_std - 1.0) < 0.2 else '⚠️ 需要调整multiplier'}")
                     break
         
-        loader.sampler.set_epoch(epoch)
+        # 只有DistributedSampler才有set_epoch方法
+        if hasattr(loader.sampler, 'set_epoch'):
+            loader.sampler.set_epoch(epoch)
         print(f"🔄 Training loader has {len(loader)} batches")
             
         epoch_loss = 0
