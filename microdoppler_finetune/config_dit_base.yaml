@@ -53,18 +53,18 @@ train:
   
 # 优化器配置 - 针对小batch size调整
 optimizer:
-  lr: 0.0003  # 从头训练可以用稍大学习率
+  lr: 0.0001  # 官方0.0002的一半，适合小数据集防过拟合
   beta1: 0.9  # 标准动量值
   beta2: 0.999  # 提高beta2增加稳定性（小batch噪声大）
   max_grad_norm: 1.0
-  weight_decay: 0.05  # 加入权重衰减防止过拟合
+  weight_decay: 0.0   # 禁用正则化优先降低损失
   eps: 1e-8  # Adam epsilon
 
 # 学习率调度器配置 - 解决训练停滞问题
 scheduler:
   type: 'cosine'  # 余弦退火调度器
-  warmup_steps: 200  # 小数据集使用更短warmup
-  min_lr: 1e-6  # 最小学习率（原始lr的1/100）
+  warmup_steps: 200  # 增加warmup避免初期不稳定（约2/3 epoch）
+  min_lr: 1e-7  # 最小学习率（原始lr的1/800）
 
 # Transport配置（扩散过程）- 与官方完全一致
 transport:
