@@ -108,8 +108,19 @@ def check_data_consistency(train_dir, val_dir):
     """检查训练集和验证集数据一致性"""
     print("\n🔄 检查数据一致性...")
     
-    train_stats = analyze_latent_files(train_dir) if train_dir.exists() else None
-    val_stats = analyze_latent_files(val_dir) if val_dir.exists() else None
+    train_stats = None
+    if train_dir.exists():
+        print(f"📁 检查训练集: {train_dir}")
+        train_stats = analyze_latent_files(train_dir)
+    else:
+        print(f"❌ 训练集目录不存在: {train_dir}")
+    
+    val_stats = None  
+    if val_dir.exists():
+        print(f"📁 检查验证集: {val_dir}")
+        val_stats = analyze_latent_files(val_dir)
+    else:
+        print(f"❌ 验证集目录不存在: {val_dir}")
     
     if train_stats and val_stats:
         # 比较分布差异
@@ -149,6 +160,33 @@ def simulate_dit_forward(latent_shape, num_classes=31):
     if noisy_latent.abs().max() > 100:
         print("⚠️  警告: 加噪后数值过大，可能导致训练不稳定")
 
+def simple_directory_check(base_path):
+    """简单检查目录结构"""
+    print(f"\n📁 检查目录结构: {base_path}")
+    
+    if not base_path.exists():
+        print(f"❌ 目录不存在: {base_path}")
+        return
+    
+    # 列出所有子目录和文件
+    items = list(base_path.iterdir())
+    print(f"📋 找到 {len(items)} 个项目:")
+    
+    for item in sorted(items):
+        if item.is_dir():
+            # 检查子目录内容
+            sub_files = list(item.glob("*.safetensors"))
+            print(f"  📂 {item.name}/ - {len(sub_files)} 个safetensors文件")
+            
+            # 检查第一个文件的大小
+            if sub_files:
+                first_file = sub_files[0]
+                size_mb = first_file.stat().st_size / (1024*1024)
+                print(f"    📄 样本: {first_file.name} ({size_mb:.1f}MB)")
+        else:
+            size_mb = item.stat().st_size / (1024*1024)
+            print(f"  📄 {item.name} ({size_mb:.1f}MB)")
+
 def main():
     """主诊断流程"""
     print("🔍 MSE损失过高深度诊断")
@@ -169,28 +207,47 @@ def main():
     
     if not found_path:
         print("❌ 未找到latent数据目录")
+        # 检查所有可能的父目录
+        for base_path in base_paths:
+            parent = base_path.parent
+            if parent.exists():
+                print(f"🔍 检查父目录: {parent}")
+                simple_directory_check(parent)
         return
     
     print(f"✅ 使用数据路径: {found_path}")
+    
+    # 首先简单检查目录结构
+    simple_directory_check(found_path)
     
     # 检查训练集和验证集
     train_dir = found_path / 'microdoppler_train_256'
     val_dir = found_path / 'microdoppler_val_256'
     
-    # 分析数据质量
+    print(f"\n🎯 预期目录:")
+    print(f"  训练集: {train_dir} - {'✅存在' if train_dir.exists() else '❌不存在'}")
+    print(f"  验证集: {val_dir} - {'✅存在' if val_dir.exists() else '❌不存在'}")
+    
+    # 只有目录存在时才进行详细分析
     train_stats = None
-    if train_dir.exists():
-        train_stats = analyze_latent_files(train_dir)
-    
     val_stats = None
-    if val_dir.exists():
-        val_stats = analyze_latent_files(val_dir)
-    
-    # 检查一致性
-    check_data_consistency(train_dir, val_dir)
+    try:
+        # 检查一致性
+        check_data_consistency(train_dir, val_dir)
+        
+        # 如果目录存在，获取统计信息用于后续分析
+        if train_dir.exists():
+            train_stats = analyze_latent_files(train_dir)
+        if val_dir.exists():
+            val_stats = analyze_latent_files(val_dir)
+            
+    except Exception as e:
+        print(f"❌ 分析过程出错: {e}")
+        import traceback
+        traceback.print_exc()
     
     # 模拟模型检查
-    if train_stats:
+    if train_stats and train_stats.get('shape'):
         simulate_dit_forward(train_stats['shape'])
     
     # 生成诊断报告
