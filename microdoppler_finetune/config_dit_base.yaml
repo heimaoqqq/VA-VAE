@@ -42,57 +42,58 @@ train:
   exp_name: 'dit_base_microdoppler_official'
   weight_init: null  # 从头训练32通道模型，避免4→32通道转换损失
   resume: false
-  log_every: 50                    # 减少日志频率（318步/epoch）
+  log_every: 100                    # 减少日志频率（318步/epoch）
   ckpt_every_epoch: 5              # 更频繁保存（小数据集训练快）
   
   # 早停配置
   patience: 15                     # 小数据集早停防过拟合
   
-  # 正则化技术
-  dropout_rate: 0.1                # 添加dropout防过拟合
+  # 正则化技术（官方不使用，注释掉）
+  # dropout_rate: 0.1              # 官方DiT模型不使用dropout
   use_checkpoint: false
   
-# 优化器配置 - 针对小batch size调整
+# 优化器配置 - 针对小batch# 优化器配置 - 修正为官方设置
 optimizer:
-  lr: 0.0001  # 官方0.0002的一半，适合小数据集防过拟合
-  beta1: 0.9  # 标准动量值
-  beta2: 0.999  # 提高beta2增加稳定性（小batch噪声大）
+  lr: 2e-4        # 官方学习率0.0002（较小数据集可保持）
+  beta1: 0.9      # 保持默认
+  beta2: 0.95     # 官方使用0.95，而非0.999
   max_grad_norm: 1.0
   weight_decay: 0.0   # 禁用正则化优先降低损失
-  eps: 1e-8  # Adam epsilon
+  eps: 1e-8      # Adam epsilon
 
-# 学习率调度器配置 - 解决训练停滞问题
-scheduler:
-  type: 'cosine'  # 余弦退火调度器
-  warmup_steps: 200  # 增加warmup避免初期不稳定（约2/3 epoch）
-  min_lr: 1e-7  # 最小学习率（原始lr的1/800）
+# 学习率调度器配置 - 官方不使用调度器，固定学习率更稳定
+# scheduler:
+#   type: 'cosine'  # 余弦退火调度器
+#   warmup_steps: 200  # 增加warmup避免初期不稳定（约2/3 epoch）
+#   min_lr: 1e-6  # 最小学习率调整（如启用）
+# 注释：官方使用固定学习率，小数据集建议也保持固定避免过度优化
 
 # Transport配置（扩散过程）- 与官方完全一致
 transport:
   path_type: 'Linear'              # 线性扩散路径（与官方一致）
   prediction: 'velocity'           # 预测速度（与官方一致）
-  loss_weight: 'uniform'           # 使用uniform权重平衡不同时间步损失
+  loss_weight: null                # 官方使用null，不是uniform
   sample_eps: null                 # 采样epsilon（与官方一致）
   train_eps: null                  # 训练epsilon（与官方一致）
   use_cosine_loss: true            # 启用cosine loss
   use_lognorm: true                # 启用lognorm
 
-# 采样配置（用于推理）
+# 采样配置（用于推理）- 修正为官方推荐
 sample:
   mode: 'ODE'                      # ODE求解模式
-  sampling_method: 'dopri5'        # 高精度ODE求解器（适合时频图像）
+  sampling_method: 'euler'         # 官方推荐euler求解器
   atol: 0.000001                   # 绝对误差容限
   rtol: 0.001                      # 相对误差容限
   reverse: false
   likelihood: false
-  num_sampling_steps: 150          # 增加采样步数提高质量
-  cfg_scale: 5.0                   # 提高CFG增强条件控制
+  num_sampling_steps: 250          # 官方使用250步
+  cfg_scale: 10.0                  # 官方推荐高CFG（微调可适当降低）
   
   # 高级采样设置
   per_proc_batch_size: 4
   fid_num: 50000
   cfg_interval_start: 0.11         # CFG区间开始
-  timestep_shift: 0.0              # 移除时间步偏移，使用标准采样
+  timestep_shift: 0.1            # 官方推荐0.3，重要参数！
 
 # 分布式训练配置（Kaggle T4x2）
 distributed:
