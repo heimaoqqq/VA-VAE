@@ -37,21 +37,30 @@ def analyze_latent_files(latent_dir):
     latent_data = []
     labels = []
     
-    with safe_open(sample_file, framework="pt", device="cpu") as f:
-        keys = list(f.keys())
-        print(f"文件包含 {len(keys)} 个样本")
-        
-        # 加载前10个样本进行分析
-        for i, key in enumerate(keys[:10]):
-            if key.startswith('latent_'):
-                latent = f.get_tensor(key)
-                latent_data.append(latent)
-                
-                # 获取对应的label
-                label_key = key.replace('latent_', 'label_')
-                if label_key in keys:
-                    label = f.get_tensor(label_key)
-                    labels.append(label.item())
+    try:
+        with safe_open(sample_file, framework="pt", device="cpu") as f:
+            keys = list(f.keys())
+            print(f"文件包含 {len(keys)} 个样本")
+            
+            # 加载前10个样本进行分析
+            for i, key in enumerate(keys[:10]):
+                if key.startswith('latent_'):
+                    try:
+                        latent = f.get_tensor(key)
+                        latent_data.append(latent)
+                        print(f"  成功加载: {key}, shape: {latent.shape}")
+                        
+                        # 获取对应的label
+                        label_key = key.replace('latent_', 'label_')
+                        if label_key in keys:
+                            label = f.get_tensor(label_key)
+                            labels.append(label.item())
+                    except Exception as e:
+                        print(f"  ❌ 加载{key}失败: {e}")
+                        continue
+    except Exception as e:
+        print(f"❌ 打开safetensor文件失败: {e}")
+        return None
     
     if not latent_data:
         print("❌ 没有找到有效的latent数据")
