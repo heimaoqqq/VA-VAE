@@ -711,28 +711,50 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
         latent_multiplier=train_config['data'].get('latent_multiplier', 1.0),
     )
     
-    # 获取统计信息
+    # 获取统计信息 - 注意dataset返回的是原始统计（未应用multiplier）
     latent_mean, latent_std = dataset.get_latent_stats()
     latent_multiplier = train_config['data'].get('latent_multiplier', 1.0)
     
     if latent_mean is None or latent_std is None:
         print("⚠️ 警告：无法获取latent统计信息，将无法正确反归一化")
-        latent_mean = torch.zeros(32, 1, 1, device=device)  # VA-VAE f16d32是32通道
-        latent_std = torch.ones(32, 1, 1, device=device)
+        latent_mean = torch.zeros(1, 32, 1, 1, device=device)  # VA-VAE f16d32是32通道
+        latent_std = torch.ones(1, 32, 1, 1, device=device)
     else:
-        print(f"\n💾 Dataset统计信息:")
-        print(f"   原始latent: mean={latent_mean.mean():.4f}, std={latent_std.mean():.4f}")
-        print(f"   缩放因子: {latent_multiplier}")
-        if train_config['data']['latent_norm']:
-            # 归一化后的理论值应该是mean≈0, std≈1
-            print(f"   归一化后（理论）: mean≈0.0000, std≈1.0000")
-            print(f"   说明: 训练时数据已归一化到N(0,1)，生成时将反归一化回原始空间")
+        # 将统计信息移到正确设备
+        latent_mean = latent_mean.to(device)  # [1, C, 1, 1]
+        latent_std = latent_std.to(device)    # [1, C, 1, 1]
+        
+        # 从训练数据集重新加载一批数据来验证实际的统计
+        sample_loader = DataLoader(dataset, batch_size=128, shuffle=False)
+        sample_batch = next(iter(sample_loader))
+        actual_mean = sample_batch[0].mean().item()  # 这是应用multiplier后的实际值
+        actual_std = sample_batch[0].std().item()    # 这是应用multiplier后的实际值
+        
+        # 计算原始空间的实际统计（从多个样本）
+        original_samples = []
+        for i in range(min(100, len(dataset))):
+            original_samples.append(dataset.latents[i])  # 这是原始latent（已应用multiplier）
+        if original_samples:
+            orig_tensor = torch.stack(original_samples)
+            # 反向计算原始空间统计
+            orig_mean = (orig_tensor.mean() / latent_multiplier).item()
+            orig_std = (orig_tensor.std() / latent_multiplier).item()
         else:
-            print(f"   未启用归一化，仅通过缩放调整")
-            expected_std = latent_std.mean().item() * latent_multiplier
-            print(f"   预期训练空间: mean≈{latent_mean.mean().item() * latent_multiplier:.4f}, std≈{expected_std:.4f}")
-            if abs(expected_std - 1.0) > 0.2:
-                print(f"   ⚠️ 警告: 训练空间std={expected_std:.4f}偏离理想值1.0")
+            orig_mean = latent_mean.mean().item()
+            orig_std = latent_std.mean().item()
+        
+        print(f"\n💾 生成时统计信息（实时计算）:")
+        print(f"   原始VAE空间: mean={orig_mean:.4f}, std={orig_std:.4f}")
+        print(f"   训练空间（实测）: mean={actual_mean:.4f}, std={actual_std:.4f}")
+        print(f"   缩放因子: {latent_multiplier}")
+        print(f"   验证: {orig_std:.4f} × {latent_multiplier} = {orig_std * latent_multiplier:.4f} {'✅' if abs(actual_std - orig_std * latent_multiplier) < 0.05 else '⚠️'}")
+        
+        if train_config['data']['latent_norm']:
+            print(f"   模式: 归一化到N(0,1)")
+        else:
+            print(f"   模式: 仅缩放调整")
+            if abs(actual_std - 1.0) > 0.1:
+                print(f"   ⚠️ 注意: 训练空间std={actual_std:.4f}，{'偏高' if actual_std > 1.1 else '偏低'}")
     
     if accelerator.is_main_process:
         print(f"🎨 Generating demo samples for epoch {epoch+1}...")
@@ -774,16 +796,17 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
                 samples_for_decode = samples_for_decode * latent_std + latent_mean
                 
                 # 首次生成时显示反归一化验证
-                if label == demo_labels[0] and epoch == 0:
+                if label == demo_labels[0]:
                     print(f"\n🔄 反归一化验证（首个生成样本）:")
-                    print(f"   生成样本（缩放空间）: mean={samples.mean():.4f}, std={samples.std():.4f}")
+                    print(f"   生成样本（训练空间）: mean={samples.mean():.4f}, std={samples.std():.4f}")
                     print(f"   还原后（VAE空间）: mean={samples_for_decode.mean():.4f}, std={samples_for_decode.std():.4f}")
             else:
                 # 首次生成时显示缩放验证
-                if label == demo_labels[0] and epoch == 0:
-                    print(f"\n🔄 缩放验证（首个生成样本）:")
-                    print(f"   生成样本（缩放空间）: mean={samples.mean():.4f}, std={samples.std():.4f}")
+                if label == demo_labels[0]:
+                    print(f"\n🔄 生成验证（首个样本）:")
+                    print(f"   生成样本（训练空间）: mean={samples.mean():.4f}, std={samples.std():.4f}")
                     print(f"   还原后（VAE空间）: mean={samples_for_decode.mean():.4f}, std={samples_for_decode.std():.4f}")
+                    print(f"   理论还原std: {samples.std():.4f} / {latent_multiplier} = {samples.std().item()/latent_multiplier:.4f}")
             
             # VAE解码为图像
             with torch.no_grad():
