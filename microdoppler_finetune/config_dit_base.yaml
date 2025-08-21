@@ -52,9 +52,9 @@ train:
   # dropout_rate: 0.1              # 官方DiT模型不使用dropout
   use_checkpoint: false
   
-# 优化器配置 - 针对小batch# 优化器配置 - 修正为官方设置
+# 优化器配置 - 修正为官方设置
 optimizer:
-  lr: 2e-4        # 官方学习率0.0002（较小数据集可保持）
+  lr: 0.0002      # 官方学习率（避免科学计数法被解析为字符串）
   beta1: 0.9      # 保持默认
   beta2: 0.95     # 官方使用0.95，而非0.999
   max_grad_norm: 1.0
