@@ -114,8 +114,18 @@ class MicroDopplerLatentDataset(Dataset):
             for i in range(len(self.latents)):
                 if self.latent_norm:
                     # 归一化到N(0,1): (x - mean) / std
-                    # 保持[1, C, 1, 1]形状用于广播
-                    self.latents[i] = (self.latents[i] - self.latent_mean.squeeze(0)) / (self.latent_std.squeeze(0) + 1e-8)
+                    # self.latents[i]形状是[C, H, W]，需要正确广播
+                    # latent_mean/std形状是[1, C, 1, 1]，squeeze(0)后是[C, 1, 1]
+                    mean_broadcast = self.latent_mean.squeeze(0)  # [C, 1, 1]
+                    std_broadcast = self.latent_std.squeeze(0)    # [C, 1, 1] 
+                    self.latents[i] = (self.latents[i] - mean_broadcast) / (std_broadcast + 1e-8)
+                    
+                    # 调试：检查归一化结果
+                    if i == 0:  # 只检查第一个样本避免过多输出
+                        norm_mean = self.latents[i].mean().item()
+                        norm_std = self.latents[i].std().item()
+                        print(f"🔍 归一化后样本{i}: mean={norm_mean:.4f}, std={norm_std:.4f}")
+                
                 # 官方总是乘multiplier（无论是否归一化）
                 self.latents[i] = self.latents[i] * self.latent_multiplier
         else:
