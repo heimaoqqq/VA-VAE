@@ -41,7 +41,7 @@ train:
   exp_name: 'dit_base_microdoppler_official'
   weight_init: null  # 从头训练32通道模型，避免4→32通道转换损失
   resume: false
-  log_every: 100                    # 减少日志频率（318步/epoch）
+  log_every: 50                    # 减少日志频率（318步/epoch）
   ckpt_every_epoch: 5              # 更频繁保存（小数据集训练快）
   
   # 早停配置
@@ -85,13 +85,13 @@ sample:
   reverse: false
   likelihood: false
   num_sampling_steps: 150          # 增加采样步数提高质量
-  cfg_scale: 7.5                  # 提高CFG增强条件控制
+  cfg_scale: 5.0                   # 提高CFG增强条件控制
   
   # 高级采样设置
   per_proc_batch_size: 4
   fid_num: 50000
   cfg_interval_start: 0.11         # CFG区间开始
-  timestep_shift: 0.1              # 时间步偏移（微多普勒需要保留弱信号，不用官方0.3）
+  timestep_shift: 0.0              # 移除时间步偏移，使用标准采样
 
 # 分布式训练配置（Kaggle T4x2）
 distributed:
