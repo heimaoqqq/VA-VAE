@@ -159,7 +159,18 @@ class MicroDopplerLatentDataset(Dataset):
         return len(self.latents)
     
     def __getitem__(self, idx):
-        return self.latents[idx], self.labels[idx]
+        latent = self.latents[idx]
+        label = self.labels[idx]
+        
+        # 数据增强 - 仅在训练时添加轻量级噪声
+        if hasattr(self, 'training') and self.training:
+            # 添加少量高斯噪声作为正则化
+            noise_strength = 0.02  # 很小的噪声，不破坏特征
+            if torch.rand(1).item() > 0.5:  # 50%概率
+                noise = torch.randn_like(latent) * noise_strength
+                latent = latent + noise
+        
+        return latent, label
 
 def do_train(train_config, accelerator):
     """
@@ -290,19 +301,21 @@ def do_train(train_config, accelerator):
     train_config['optimizer']['beta2'] = train_config.get('optimizer', {}).get('beta2', 0.999)  # 从config读取
     train_config['optimizer']['max_grad_norm'] = train_config.get('optimizer', {}).get('max_grad_norm', 1.0)
     
-    # 完全匹配官方：weight_decay=0, beta1固定0.9
+    # 添加权重衰减防止过拟合
+    weight_decay = train_config.get('optimizer', {}).get('weight_decay', 1e-4)  # 添加L2正则化
     opt = torch.optim.AdamW(
         model.parameters(), 
         lr=train_config['optimizer']['lr'], 
-        weight_decay=0,  # 官方使用0
+        weight_decay=weight_decay,  # 使用权重衰减防止过拟合
         betas=(0.9, train_config['optimizer']['beta2'])  # 官方beta1固定为0.9
     )
     
     if accelerator.is_main_process:
         logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
-        logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
+        logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}, weight_decay={weight_decay}")
         logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
         logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
+        logger.info(f"🛡️ Regularization: weight_decay={weight_decay}")
     
     # Setup data - 使用兼容的微多普勒latent数据集
     dataset = MicroDopplerLatentDataset(
@@ -310,6 +323,7 @@ def do_train(train_config, accelerator):
         latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
         latent_multiplier=train_config['data'].get('latent_multiplier', 1.0),  # 使用1.0作为默认值
     )
+    dataset.training = True  # 启用训练模式的数据增强
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
     global_batch_size = batch_size_per_gpu * accelerator.num_processes
     loader = DataLoader(
@@ -440,8 +454,18 @@ def do_train(train_config, accelerator):
             logger.info(f"Using checkpointing: {train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True}")
 
     # 早停参数
-    patience = train_config['train'].get('patience', 20)
+    patience = train_config['train'].get('patience', 20)  # 保持20 epochs合理
+    min_delta = train_config['train'].get('min_delta', 1e-4)  # 最小改善阈值
     num_epochs = train_config['train'].get('max_epochs', 200)
+    
+    # 学习率调度器 - 余弦退火
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, 
+        T_max=num_epochs, 
+        eta_min=1e-6
+    )
+    if accelerator.is_main_process:
+        logger.info(f"📉 Learning rate scheduler: CosineAnnealingLR (T_max={num_epochs}, eta_min=1e-6)")
     steps_per_epoch = len(loader)
     
     # 训练循环 - 改为基于epoch
@@ -577,6 +601,10 @@ def do_train(train_config, accelerator):
         
         # Epoch结束，计算平均损失
         avg_epoch_loss = epoch_loss / epoch_steps if epoch_steps > 0 else 0
+        
+        # 更新学习率调度器
+        scheduler.step()
+        current_lr = opt.param_groups[0]['lr']
         if accelerator.is_main_process:
             print(f"\n{'='*60}")
             print(f"📊 Epoch {epoch+1}/{num_epochs} Summary:")
@@ -610,8 +638,9 @@ def do_train(train_config, accelerator):
                 else:
                     print(f"   🚨 Overfitting detected - consider regularization")
                 
-                # 检查是否是最佳模型
-                if val_loss < best_val_loss:
+                # 检查是否是最佳模型 - 考虑过拟合程度
+                # 允许轻微过拟合但要有改善
+                if val_loss < best_val_loss - min_delta and overfitting_ratio < 1.5:
                     improvement = (best_val_loss - val_loss) / best_val_loss * 100 if best_val_loss != float('inf') else 100
                     best_val_loss = val_loss
                     patience_counter = 0
@@ -638,10 +667,24 @@ def do_train(train_config, accelerator):
                     print(f"   💾 New best model saved: {best_checkpoint_path}")
                 else:
                     patience_counter += 1
-                    logger.info(f"  ⚠️ No improvement. Patience: {patience_counter}/{patience}")
+                    gap = val_loss - best_val_loss
+                    logger.info(f"  ⚠️ No improvement. Patience: {patience_counter}/{patience}, Gap: {gap:.5f}")
+                    
+                    # 过拟合时额外降低学习率（在余弦退火基础上）
+                    if overfitting_ratio > 1.3 and patience_counter == 10:
+                        # 手动降低学习率
+                        for param_group in opt.param_groups:
+                            param_group['lr'] *= 0.5
+                        logger.info(f"  📉 Overfitting detected - Extra LR reduction applied")
+                    
+                    # 早停条件：考虑过拟合程度
                     if patience_counter >= patience:
-                        logger.info("  🛑 Early stopping triggered!")
-                        break
+                        if overfitting_ratio > 1.5:
+                            logger.info("  🛑 Early stopping - Severe overfitting detected")
+                            break
+                        else:
+                            logger.info("  🛑 Early stopping - No validation improvement")
+                            break
                 
                 logger.info(f"{'='*50}")
         
