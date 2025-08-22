@@ -14,6 +14,9 @@ data:
   # 关键配置：使用官方推荐的标准化方式
   latent_norm: true        # 标准化到mean=0, std=1（官方推荐）
   latent_multiplier: 1.0   # 标准化后保持std=1.0
+  
+  # 数据增强配置（在训练脚本中实现）
+  augment_training: true   # 启用训练时数据增强
 
 # VAE配置（与微调的VA-VAE一致）
 vae:
@@ -46,7 +49,8 @@ train:
   ckpt_every_epoch: 5              # 更频繁保存（小数据集训练快）
   
   # 早停配置
-  patience: 15                     # 小数据集早停防过拟合
+  patience: 20                     # 恢复到20 epochs合理值
+  min_delta: 0.0001                # 最小改善阈值
   
   # 正则化技术（官方不使用，注释掉）
   # dropout_rate: 0.1              # 官方DiT模型不使用dropout
@@ -54,19 +58,19 @@ train:
   
 # 优化器配置 - 修正为官方设置
 optimizer:
-  lr: 0.0002      # 官方学习率（避免科学计数法被解析为字符串）
+  lr: 0.0001      # 降低学习率防止过拟合（从0.0002降到0.0001）
   beta1: 0.9      # 保持默认
-  beta2: 0.95     # 官方使用0.95，而非0.999
+  beta2: 0.999    # 改回标准值0.999
   max_grad_norm: 1.0
-  weight_decay: 0.0   # 禁用正则化优先降低损失
+  weight_decay: 0.0001   # 添加权重衰减防止过拟合
   eps: 1e-8      # Adam epsilon
 
-# 学习率调度器配置 - 官方不使用调度器，固定学习率更稳定
-# scheduler:
-#   type: 'cosine'  # 余弦退火调度器
-#   warmup_steps: 200  # 增加warmup避免初期不稳定（约2/3 epoch）
-#   min_lr: 1e-6  # 最小学习率调整（如启用）
-# 注释：官方使用固定学习率，小数据集建议也保持固定避免过度优化
+# 学习率调度器配置 - 添加余弦退火防止过拟合
+scheduler:
+  type: 'cosine'  # 余弦退火调度器
+  T_max: 150      # 与max_epochs一致
+  eta_min: 0.000001  # 最小学习率1e-6
+# 注释：针对过拟合问题，添加学习率调度提高泛化能力
 
 # Transport配置（扩散过程）- 与官方完全一致
 transport:
@@ -78,7 +82,7 @@ transport:
   use_cosine_loss: true            # 启用cosine loss
   use_lognorm: true                # 启用lognorm
 
-# 采样配置（用于推理）- 修正为官方推荐
+# 采样配置（用于推理）- 针对微多普勒优化
 sample:
   mode: 'ODE'                      # ODE求解模式
   sampling_method: 'euler'         # 官方推荐euler求解器
