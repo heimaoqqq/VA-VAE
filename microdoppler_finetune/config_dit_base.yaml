@@ -15,8 +15,8 @@ data:
   latent_norm: true        # 标准化到mean=0, std=1（官方推荐）
   latent_multiplier: 1.0   # 标准化后保持std=1.0
   
-  # 数据增强配置（在训练脚本中实现）
-  augment_training: true   # 启用训练时数据增强
+  # 数据增强配置 - 对微多普勒信号不适用
+  augment_training: false  # 禁用数据增强，保持时频特征精度
 
 # VAE配置（与微调的VA-VAE一致）
 vae:
