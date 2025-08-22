@@ -776,7 +776,7 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             y_null = torch.tensor([train_config['data']['num_classes']], device=device)
             y = torch.cat([y, y_null], 0)
             
-            model_kwargs = dict(y=y, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
+            model_kwargs = dict(y=y, cfg_scale=cfg_scale, cfg_interval=False, cfg_interval_start=cfg_interval_start)
             model_fn = unwrapped_model.forward_with_cfg
             
             # 采样
