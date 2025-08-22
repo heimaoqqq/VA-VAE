@@ -785,15 +785,13 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             
             # 反缩放流程
             # 训练时: latent * multiplier (缩小方差)
-            # 生成时: samples / multiplier (还原到原始尺度)
-            
-            # 除以multiplier还原到原始VAE空间
-            samples_for_decode = samples / latent_multiplier
+            # 生成时: 按照官方方式反归一化
+            # 官方公式: (samples * latent_std) / latent_multiplier + latent_mean
             
             if train_config['data']['latent_norm']:
-                # 如果启用了归一化，还需要反归一化
-                # 从N(0,1) → 原始分布
-                samples_for_decode = samples_for_decode * latent_std + latent_mean
+                # 反归一化：从N(0,1) → 原始分布
+                # 官方公式：(samples * std) / multiplier + mean
+                samples_for_decode = (samples * latent_std) / latent_multiplier + latent_mean
                 
                 # 首次生成时显示反归一化验证
                 if label == demo_labels[0]:
@@ -801,6 +799,9 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
                     print(f"   生成样本（训练空间）: mean={samples.mean():.4f}, std={samples.std():.4f}")
                     print(f"   还原后（VAE空间）: mean={samples_for_decode.mean():.4f}, std={samples_for_decode.std():.4f}")
             else:
+                # 仅反缩放
+                samples_for_decode = samples / latent_multiplier
+                
                 # 首次生成时显示缩放验证
                 if label == demo_labels[0]:
                     print(f"\n🔄 生成验证（首个样本）:")
