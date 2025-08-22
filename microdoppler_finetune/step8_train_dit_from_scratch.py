@@ -162,13 +162,8 @@ class MicroDopplerLatentDataset(Dataset):
         latent = self.latents[idx]
         label = self.labels[idx]
         
-        # 数据增强 - 仅在训练时添加轻量级噪声
-        if hasattr(self, 'training') and self.training:
-            # 添加少量高斯噪声作为正则化
-            noise_strength = 0.02  # 很小的噪声，不破坏特征
-            if torch.rand(1).item() > 0.5:  # 50%概率
-                noise = torch.randn_like(latent) * noise_strength
-                latent = latent + noise
+        # 移除数据增强 - 微多普勒时频图需要保持精确的物理意义
+        # 噪声可能破坏关键的时频特征和用户间的细微差别
         
         return latent, label
 
@@ -323,7 +318,7 @@ def do_train(train_config, accelerator):
         latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
         latent_multiplier=train_config['data'].get('latent_multiplier', 1.0),  # 使用1.0作为默认值
     )
-    dataset.training = True  # 启用训练模式的数据增强
+    # dataset.training = True  # 移除数据增强 - 保持微多普勒信号的精确性
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
     global_batch_size = batch_size_per_gpu * accelerator.num_processes
     loader = DataLoader(
