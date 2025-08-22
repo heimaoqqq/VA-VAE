@@ -204,6 +204,7 @@ def do_train(train_config, accelerator):
     model = LightningDiT_models[train_config['model']['model_type']](
         input_size=latent_size,
         num_classes=train_config['data']['num_classes'],
+        class_dropout_prob=0.1,  # 官方默认值，用于训练时随机dropout类别条件
         use_qknorm=train_config['model']['use_qknorm'],
         use_swiglu=train_config['model']['use_swiglu'] if 'use_swiglu' in train_config['model'] else False,
         use_rope=train_config['model']['use_rope'] if 'use_rope' in train_config['model'] else False,
@@ -687,10 +688,10 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
     """
     model.eval()
     
-    # 采样配置
+    # 采样配置 - 从配置文件读取
     cfg_scale = train_config['sample']['cfg_scale']
     cfg_interval_start = train_config['sample'].get('cfg_interval_start', 0.11)
-    timestep_shift = train_config['sample'].get('timestep_shift', 0.0)  # 修复：与配置文件一致
+    timestep_shift = train_config['sample'].get('timestep_shift', 0.0)
     num_samples = 8  # 生成8个样本做成2x4网格
     
     # 创建sampler
@@ -773,7 +774,7 @@ def generate_demo_samples(model, vae, transport, device, accelerator, train_conf
             
             # CFG设置
             z = torch.cat([z, z], 0)
-            y_null = torch.tensor([train_config['data']['num_classes']], device=device)
+            y_null = torch.tensor([train_config['data']['num_classes']], device=device)  # 31作为null类别
             y = torch.cat([y, y_null], 0)
             
             model_kwargs = dict(y=y, cfg_scale=cfg_scale, cfg_interval=False, cfg_interval_start=cfg_interval_start)
