@@ -408,14 +408,19 @@ def do_train(train_config, accelerator):
     
     best_loss = float('inf')
     
-    # Gradient accumulation设置 - 针对31 batch size优化
-    gradient_accumulation_steps = train_config.get('gradient_accumulation_steps', 8)  # 增加到8步，有效batch=248
-    batch_size = train_config.get('batch_size', 31)  # 每个batch包含所有31个用户
+    # Gradient accumulation设置 - 修复配置
+    gradient_accumulation_steps = train_config['train'].get('gradient_accumulation_steps', 1)  # 默认无累积
+    global_batch_size = train_config['train']['global_batch_size']  # 16
+    world_size = accelerator.num_processes  # 2 (T4x2)
+    per_device_batch_size = global_batch_size // world_size  # 8 per GPU
     
     if accelerator.is_main_process:
-        logger.info(f"Gradient accumulation steps: {gradient_accumulation_steps}")
-        logger.info(f"Effective batch size: {train_config['train']['global_batch_size']} x {gradient_accumulation_steps} = {train_config['train']['global_batch_size'] * gradient_accumulation_steps}")
-        logger.info(f"With 31 users, each batch covers all users for balanced learning")
+        logger.info(f"Batch size配置:")
+        logger.info(f"  Global batch size: {global_batch_size}")
+        logger.info(f"  World size: {world_size}")
+        logger.info(f"  Per device batch size: {per_device_batch_size}")
+        logger.info(f"  Gradient accumulation steps: {gradient_accumulation_steps}")
+        logger.info(f"  Effective batch size: {global_batch_size * gradient_accumulation_steps}")
     model, opt, loader = accelerator.prepare(model, opt, loader)
     if 'valid_path' in train_config['data']:
         valid_loader = accelerator.prepare(valid_loader)
