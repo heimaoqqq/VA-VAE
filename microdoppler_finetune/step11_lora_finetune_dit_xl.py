@@ -288,7 +288,7 @@ def encode_images_to_latents(vae_model, data_split_dir, original_data_dir, devic
                     continue
                     
                 image = Image.open(full_img_path).convert('RGB')
-                img_tensor = transform(image).unsqueeze(0).half().to(device_vae)
+                img_tensor = transform(image).unsqueeze(0).float().to(device_vae)  # 修复: 使用float匹配VA-VAE
                 
                 # 使用VA-VAE编码
                 with torch.no_grad():
@@ -486,18 +486,20 @@ def train_lora_model(model, dataloader, config, device):
     print("✅ LoRA微调训练完成")
     return model
 
-def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
-    """模型并行LoRA微调训练"""
-    print(f"\n🚀 开始模型并行LoRA微调训练")
+def train_lora_model_parallel(model, vae_model, dataloader, config):
+    """模型并行训练 - DiT XL和VA-VAE分布在不同GPU"""
+    print("🚀 开始模型并行LoRA微调训练")
     
-    device_dit = config['device_dit']
-    device_vae = config['device_vae']
+    # 设备分配
+    device_dit = torch.device('cuda:0')  # DiT XL放在GPU0
+    device_vae = torch.device('cuda:1')  # VA-VAE放在GPU1
     
-    # 训练配置
-    num_epochs = config.get('num_epochs', 10)
+    # 训练参数
+    num_epochs = config.get('num_epochs', 20)
     learning_rate = config.get('learning_rate', 1e-4)
     save_interval = config.get('save_interval', 2)
     gradient_accumulation_steps = config.get('gradient_accumulation_steps', 4)
+    mixed_precision = config.get('mixed_precision', True)  # 添加mixed_precision定义
     
     print(f"   DiT XL设备: {device_dit}")
     print(f"   VA-VAE设备: {device_vae}")
@@ -516,16 +518,23 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
     # 损失函数
     criterion = nn.MSELoss()
     
-    # 确保模型在正确设备上（FP16）
-    dit_model = dit_model.half().to(device_dit)
+    # 改为FP32训练 - 测试显存和数值稳定性
+    dit_model = dit_model.float().to(device_dit)  # 改为FP32
     if vae_model is not None:
-        vae_model = vae_model.half().to(device_vae)
-        print(f"   VA-VAE设备: {device_vae}")
+        vae_model = vae_model.float().to(device_vae)  # 保持FP32
+        print(f"   VA-VAE设备: {device_vae} (FP32精度)")
     else:
         print(f"   VA-VAE: 不可用，使用模拟数据")
     
-    print(f"   模型精度: FP16")
+    # 显存使用统计
+    torch.cuda.empty_cache()
+    dit_memory_before = torch.cuda.memory_allocated(device_dit) / (1024**3)
+    vae_memory_before = torch.cuda.memory_allocated(device_vae) / (1024**3) if vae_model else 0
+    
+    print(f"   模型精度: FP32 (测试显存)")
     print(f"   LoRA参数量: {sum(p.numel() for p in lora_params):,}")
+    print(f"   DiT XL显存: {dit_memory_before:.1f}GB")
+    print(f"   VA-VAE显存: {vae_memory_before:.1f}GB")
     
     # 训练循环
     for epoch in range(num_epochs):
@@ -581,15 +590,15 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
             
             for step, batch in enumerate(progress_bar):
                 try:
-                    # 数据移动到DiT设备
+                    # 数据移动到DiT设备 - FP32格式
                     if isinstance(batch, dict):
-                        latents = batch['latent'].half().to(device_dit)
+                        latents = batch['latent'].float().to(device_dit)  # 改为FP32
                     elif isinstance(batch, (list, tuple)):
                         # TensorDataset返回的是tuple/list格式: (latents, labels)
-                        latents = batch[0].half().to(device_dit)
+                        latents = batch[0].float().to(device_dit)  # 改为FP32
                         labels = batch[1].to(device_dit) if len(batch) > 1 else None
                     else:
-                        latents = batch.half().to(device_dit)
+                        latents = batch.float().to(device_dit)  # 改为FP32
                         labels = None
                     
                     batch_size = latents.shape[0]
@@ -608,18 +617,23 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
                     else:
                         y = torch.randint(0, 1000, (batch_size,), device=device_dit)  # 随机标签
                     
-                    # 前向传播 - 修复autocast警告和NaN问题
-                    with torch.amp.autocast('cuda', enabled=mixed_precision):
+                    # 前向传播 - FP32训练，无需autocast
+                    if mixed_precision:
+                        with torch.amp.autocast('cuda', enabled=True):
+                            pred_noise = dit_model(noisy_latents, timesteps, y)
+                            loss = criterion(pred_noise, noise)
+                    else:
+                        # FP32直接计算，更稳定
                         pred_noise = dit_model(noisy_latents, timesteps, y)
                         loss = criterion(pred_noise, noise)
+                    
+                    # 检查NaN
+                    if torch.isnan(loss):
+                        print(f"\n⚠️ 检测到NaN损失，跳过批次")
+                        optimizer.zero_grad()
+                        continue
                         
-                        # 检查NaN
-                        if torch.isnan(loss):
-                            print(f"\n⚠️ 检测到NaN损失，跳过批次")
-                            optimizer.zero_grad()
-                            continue
-                            
-                        loss = loss / gradient_accumulation_steps
+                    loss = loss / gradient_accumulation_steps
                     
                     # 反向传播 - 使用梯度缩放器
                     if scaler is not None:
@@ -732,7 +746,7 @@ def main():
         'lora_rank': 16,
         'lora_alpha': 32,
         'save_interval': 5,
-        'mixed_precision': True,
+        'mixed_precision': False,  # 改为FP32训练测试显存
         'gradient_accumulation_steps': 4,  # 梯度累积补偿小批次
         'original_data_dir': '/kaggle/input/dataset/',
         'data_split_dir': '/kaggle/working/data_split/',
