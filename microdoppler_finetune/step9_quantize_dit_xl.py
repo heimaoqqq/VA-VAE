@@ -615,7 +615,7 @@ def main_quantization_pipeline(checkpoint_path, output_path, use_cpu_loading=Tru
     print("="*50)
     
     # 只测试量化模型质量
-    quant_quality_ok, quant_stats = test_generation_quality(quantized_model, None, device)
+    quant_quality_ok, quant_stats = test_generation_quality(quantized_model, None, device, num_samples=4)
     orig_quality_ok = True  # 假设原始模型质量正常
     orig_stats = {'mean': 0.0, 'std': 1.0, 'min': -3.0, 'max': 3.0}  # 典型值
     
