@@ -3,6 +3,17 @@
 
 import torch
 from pathlib import Path
+import sys
+import os
+
+# 添加必要的路径
+sys.path.append('/kaggle/working/VA-VAE')
+sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
+
+try:
+    from models.lightningdit import LightningDiT_models
+except ImportError:
+    print("⚠️ 无法导入LightningDiT模型，跳过模型结构验证")
 
 def quick_check():
     quantized_path = "/kaggle/working/dit_xl_quantized.pt"
