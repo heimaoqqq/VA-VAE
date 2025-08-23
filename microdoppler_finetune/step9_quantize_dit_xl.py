@@ -364,15 +364,27 @@ def benchmark_memory_usage(model, model_name, device):
     """基准测试内存使用"""
     print(f"\n💾 测试 {model_name} 内存使用...")
     
-    # 清空缓存
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats()
+    # 检查是否为量化模型（在CPU上）
+    is_quantized = any(hasattr(module, '_packed_params') for module in model.modules())
+    model_device = next(model.parameters()).device
     
-    # 测试数据
+    if is_quantized or model_device.type == 'cpu':
+        # 量化模型使用CPU
+        actual_device = 'cpu'
+        print(f"   量化模型使用CPU内存测试")
+        memory_mb = 0  # CPU内存不易精确测量，设为0
+    else:
+        # 原始模型使用GPU
+        actual_device = device
+        # 清空缓存
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+    
+    # 测试数据（使用模型实际所在设备）
     batch_size = 4
-    test_latents = torch.randn(batch_size, 32, 16, 16).to(device)
-    test_timesteps = torch.randint(0, 1000, (batch_size,)).to(device)
-    test_labels = torch.randint(0, 31, (batch_size,)).to(device)
+    test_latents = torch.randn(batch_size, 32, 16, 16).to(actual_device)
+    test_timesteps = torch.randint(0, 1000, (batch_size,)).to(actual_device)
+    test_labels = torch.randint(0, 1001, (batch_size,)).to(actual_device)  # 1001 classes
     
     # 执行推理
     model.eval()
@@ -380,10 +392,13 @@ def benchmark_memory_usage(model, model_name, device):
         _ = model(test_latents, test_timesteps, y=test_labels)
     
     # 获取内存使用
-    memory_mb = torch.cuda.max_memory_allocated() / (1024**2)
+    if actual_device != 'cpu':
+        memory_mb = torch.cuda.max_memory_allocated() / (1024**2)
+        print(f"   峰值显存使用: {memory_mb:.1f}MB")
+    else:
+        print(f"   CPU内存使用: 不易精确测量")
+        
     model_size_mb = measure_model_size(model, model_name)
-    
-    print(f"   峰值显存使用: {memory_mb:.1f}MB")
     print(f"   模型文件大小: {model_size_mb:.1f}MB")
     
     return memory_mb, model_size_mb
