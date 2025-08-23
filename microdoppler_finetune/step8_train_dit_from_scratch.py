@@ -296,8 +296,8 @@ def do_train(train_config, accelerator):
     train_config['optimizer']['beta2'] = train_config.get('optimizer', {}).get('beta2', 0.999)  # 从config读取
     train_config['optimizer']['max_grad_norm'] = train_config.get('optimizer', {}).get('max_grad_norm', 1.0)
     
-    # 添加权重衰减防止过拟合
-    weight_decay = train_config.get('optimizer', {}).get('weight_decay', 1e-4)  # 添加L2正则化
+    # 加强权重衰减防止过拟合
+    weight_decay = train_config.get('optimizer', {}).get('weight_decay', 1e-3)  # 大幅增加L2正则化
     opt = torch.optim.AdamW(
         model.parameters(), 
         lr=train_config['optimizer']['lr'], 
@@ -448,9 +448,10 @@ def do_train(train_config, accelerator):
         if accelerator.is_main_process:
             logger.info(f"Using checkpointing: {train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True}")
 
-    # 早停参数
-    patience = train_config['train'].get('patience', 20)  # 保持20 epochs合理
-    min_delta = train_config['train'].get('min_delta', 1e-4)  # 最小改善阈值
+    # 早停参数 - 加强过拟合控制
+    patience = train_config['train'].get('patience', 15)  # 降低patience
+    min_delta = train_config['train'].get('min_delta', 5e-4)  # 增加最小改善阈值
+    overfitting_threshold = train_config['train'].get('overfitting_threshold', 1.2)  # 过拟合阈值
     num_epochs = train_config['train'].get('max_epochs', 200)
     
     # 学习率调度器 - 余弦退火
@@ -633,9 +634,9 @@ def do_train(train_config, accelerator):
                 else:
                     print(f"   🚨 Overfitting detected - consider regularization")
                 
-                # 检查是否是最佳模型 - 考虑过拟合程度
-                # 允许轻微过拟合但要有改善
-                if val_loss < best_val_loss - min_delta and overfitting_ratio < 1.5:
+                # 检查是否是最佳模型 - 更严格的过拟合控制
+                # 只在没有过拟合时保存模型
+                if val_loss < best_val_loss - min_delta and overfitting_ratio < overfitting_threshold:
                     improvement = (best_val_loss - val_loss) / best_val_loss * 100 if best_val_loss != float('inf') else 100
                     best_val_loss = val_loss
                     patience_counter = 0
@@ -665,21 +666,26 @@ def do_train(train_config, accelerator):
                     gap = val_loss - best_val_loss
                     logger.info(f"  ⚠️ No improvement. Patience: {patience_counter}/{patience}, Gap: {gap:.5f}")
                     
-                    # 过拟合时额外降低学习率（在余弦退火基础上）
-                    if overfitting_ratio > 1.3 and patience_counter == 10:
+                    # 更早的过拟合干预
+                    if overfitting_ratio > overfitting_threshold and patience_counter == 5:
                         # 手动降低学习率
                         for param_group in opt.param_groups:
-                            param_group['lr'] *= 0.5
-                        logger.info(f"  📉 Overfitting detected - Extra LR reduction applied")
+                            param_group['lr'] *= 0.3  # 更大幅度降低
+                        logger.info(f"  📉 Early overfitting intervention - LR reduced by 70%")
                     
-                    # 早停条件：考虑过拟合程度
+                    # 早停条件：更严格的过拟合控制
                     if patience_counter >= patience:
-                        if overfitting_ratio > 1.5:
-                            logger.info("  🛑 Early stopping - Severe overfitting detected")
+                        if overfitting_ratio > 1.4:
+                            logger.info(f"  🛑 Early stopping - Overfitting ratio {overfitting_ratio:.3f} > 1.4")
                             break
                         else:
-                            logger.info("  🛑 Early stopping - No validation improvement")
+                            logger.info(f"  🛑 Early stopping - No validation improvement for {patience} epochs")
                             break
+                    
+                    # 额外的过拟合检查
+                    elif overfitting_ratio > 1.5:
+                        logger.info(f"  🛑 Emergency stop - Severe overfitting ratio {overfitting_ratio:.3f}")
+                        break
                 
                 logger.info(f"{'='*50}")
         
