@@ -96,6 +96,31 @@ def load_dit_xl_with_lora(checkpoint_path, device):
     """加载DiT XL模型用于LoRA微调"""
     print(f"📂 加载DiT XL模型: {checkpoint_path}")
     
+    # 检查文件是否存在
+    if not os.path.exists(checkpoint_path):
+        print(f"❌ 模型文件不存在: {checkpoint_path}")
+        
+        # 尝试其他可能的路径
+        alternative_paths = [
+            "/kaggle/working/VA-VAE/models/lightningdit-xl-imagenet256-64ep.pt",
+            "/kaggle/input/lightningdit-xl/lightningdit-xl-imagenet256-64ep.pt",
+            "/kaggle/working/models/lightningdit-xl-imagenet256-64ep.pt"
+        ]
+        
+        for alt_path in alternative_paths:
+            if os.path.exists(alt_path):
+                print(f"✅ 找到模型文件: {alt_path}")
+                checkpoint_path = alt_path
+                break
+        else:
+            print("\n❌ 未找到DiT XL模型文件")
+            print("请先运行以下步骤下载模型:")
+            print("1. python step2_download_models.py")
+            print("2. 或手动下载模型到 /kaggle/working/")
+            print("\n模型下载地址:")
+            print("https://github.com/Alpha-VLLM/LightningDiT/releases/download/v0.1.0/lightningdit-xl-imagenet256-64ep.pt")
+            return None
+    
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
     
     if 'model' in checkpoint:
