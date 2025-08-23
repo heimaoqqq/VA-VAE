@@ -12,6 +12,7 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
 from torch.cuda.amp import GradScaler, autocast
+from torch.optim import AdamW
 import sys
 import os
 from pathlib import Path
@@ -237,36 +238,24 @@ def train_ddp_worker(rank, world_size, config):
     dataloader = create_distributed_dataloader(config, rank, world_size)
     
     # 🔧 激进显存优化配置
-    scaler = GradScaler(
+    scaler = torch.amp.GradScaler('cuda',
         init_scale=2**10,    # 更低初始缩放
         growth_factor=1.5,   # 更保守增长
         backoff_factor=0.25, # 更激进回退
         growth_interval=2000 # 更长检查间隔
     )
     
-    # 🔧 显存优化的优化器 - 使用8bit AdamW
-    try:
-        import bitsandbytes as bnb
-        optimizer = bnb.optim.AdamW8bit(  # 8bit优化器节省50%显存
-            model.parameters(),
-            lr=config['learning_rate'],
-            betas=(0.9, 0.95),
-            weight_decay=0.1,
-            eps=1e-4
-        )
-        if rank == 0:
-            print("✅ 使用8bit AdamW优化器")
-    except ImportError:
-        # 回退到标准AdamW但使用更少状态
-        optimizer = AdamW(
-            model.parameters(),
-            lr=config['learning_rate'],
-            betas=(0.9, 0.95),
-            weight_decay=0.1,
-            eps=1e-4
-        )
-        if rank == 0:
-            print("⚠️ 使用标准AdamW优化器")
+    # 🔧 显存优化的优化器配置
+    # 注意：Kaggle环境可能没有bitsandbytes，使用标准AdamW
+    optimizer = AdamW(
+        model.parameters(),
+        lr=config['learning_rate'],
+        betas=(0.9, 0.95),
+        weight_decay=0.1,
+        eps=1e-4
+    )
+    if rank == 0:
+        print("⚠️ 使用标准AdamW优化器 (Kaggle环境限制)")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     criterion = nn.MSELoss()
     
