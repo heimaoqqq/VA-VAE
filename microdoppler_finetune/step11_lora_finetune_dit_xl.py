@@ -329,40 +329,62 @@ def encode_images_to_latents(vae_model, data_split_dir, original_data_dir, devic
     
     return latents_dir if latents_list else None
 
-def create_lora_dataloader(config, vae_model, device_vae):
+def create_lora_dataloader(vae_model, config, device_vae):
     """创建LoRA训练数据加载器"""
     print(f"📊 创建数据加载器:")
     
-    data_split_dir = config.get('data_split_dir')
-    original_data_dir = config.get('original_data_dir') 
     batch_size = config.get('batch_size', 1)
     
+    # 优先检查step6_encode_official.py编码的最新数据
+    official_train_dir = Path("/kaggle/working/latents_official/vavae_config_for_dit/microdoppler_train_256")
+    official_train_file = official_train_dir / "latents_rank00_shard000.safetensors"
+    
+    if official_train_file.exists():
+        print(f"   ✅ 找到step6编码的latents: {official_train_file}")
+        try:
+            # 使用safetensors加载
+            latents_data = safetensors.load_file(str(official_train_file))
+            latents = latents_data['latents']  
+            labels = latents_data['labels']
+            
+            print(f"   📊 数据集加载成功: {len(latents)} 个样本 (来自step6编码)")
+            
+            # 创建数据集和加载器
+            dataset = LatentDataset(latents, labels)
+            dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+            return dataloader
+            
+        except Exception as e:
+            print(f"   ⚠️ 加载step6编码latents失败: {e}")
+    
+    # 检查旧的数据划分路径
+    data_split_dir = config.get('data_split_dir')
+    original_data_dir = config.get('original_data_dir') 
     print(f"   数据划分目录: {data_split_dir}")
     print(f"   原始数据目录: {original_data_dir}")
     print(f"   批次大小: {batch_size}")
     
-    # 检查是否存在预编码的latents
     latents_dir = Path(data_split_dir) / "latents"
     latents_file = latents_dir / "train_latents.pt"
     
     if latents_file.exists():
         print(f"   ✅ 找到预编码latents: {latents_file}")
-        # 加载预编码的latents
         try:
-            data = torch.load(latents_file)
-            latents = data['latents']
-            labels = data['labels']
+            # 加载预编码的latents
+            latents_data = torch.load(latents_file, map_location='cpu')
+            latents = latents_data['latents']  
+            labels = latents_data['labels']
             
-            # 创建数据集
-            from torch.utils.data import TensorDataset, DataLoader
-            dataset = TensorDataset(latents, labels)
-            dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+            print(f"   📊 数据集加载成功: {len(latents)} 个样本")
             
-            print(f"   📊 数据集加载成功: {len(dataset)} 个样本")
+            # 创建数据集和加载器
+            dataset = LatentDataset(latents, labels)
+            dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0)
             return dataloader
             
         except Exception as e:
             print(f"   ⚠️ 加载预编码latents失败: {e}")
+            print(f"   🎨 切换到实时编码模式")
     
     # 如果没有预编码latents，进行实时编码
     print(f"   🎨 没有找到预编码latents，开始实时编码...")
