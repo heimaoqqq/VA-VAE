@@ -11,8 +11,12 @@ def quick_check():
         print("❌ 量化模型文件不存在")
         return
     
-    # 加载模型
-    model = torch.load(quantized_path, map_location='cpu')
+    # 加载模型（PyTorch 2.6+ 需要 weights_only=False）
+    try:
+        model = torch.load(quantized_path, map_location='cpu', weights_only=False)
+    except Exception as e:
+        print(f"❌ 模型加载失败: {e}")
+        return
     
     # 检查是否有量化层
     quantized_layers = 0
