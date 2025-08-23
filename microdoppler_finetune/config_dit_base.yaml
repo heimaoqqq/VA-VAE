@@ -37,9 +37,9 @@ model:
 
 # 训练配置
 train:
-  # 训练规模
+  # 训练规模 - 调整防止过拟合
   max_epochs: 150                   # 先测试较少epochs观察收敛
-  global_batch_size: 16            # 小数据集适用的batch size
+  global_batch_size: 8             # 减小批次大小增强正则化效果
   global_seed: 42                  # 随机种子
   output_dir: '/kaggle/working/output'
   exp_name: 'dit_base_microdoppler_official'
@@ -48,21 +48,22 @@ train:
   log_every: 100                    # 减少日志频率（318步/epoch）
   ckpt_every_epoch: 5              # 更频繁保存（小数据集训练快）
   
-  # 早停配置
-  patience: 20                     # 恢复到20 epochs合理值
-  min_delta: 0.0001                # 最小改善阈值
+  # 早停配置 - 更严格的过拟合控制
+  patience: 15                     # 降低patience，更早停止
+  min_delta: 0.0005                # 增加最小改善阈值，要求显著改善
+  overfitting_threshold: 1.2       # 过拟合比率阈值
   
   # 正则化技术（官方不使用，注释掉）
   # dropout_rate: 0.1              # 官方DiT模型不使用dropout
   use_checkpoint: false
   
-# 优化器配置 - 修正为官方设置
+# 优化器配置 - 加强正则化防止过拟合
 optimizer:
-  lr: 0.0001      # 降低学习率防止过拟合（从0.0002降到0.0001）
+  lr: 0.00005     # 进一步降低学习率（0.0001→0.00005）
   beta1: 0.9      # 保持默认
   beta2: 0.999    # 改回标准值0.999
-  max_grad_norm: 1.0
-  weight_decay: 0.0001   # 添加权重衰减防止过拟合
+  max_grad_norm: 0.5  # 降低梯度裁剪阈值，更保守
+  weight_decay: 0.001   # 大幅增加权重衰减（0.0001→0.001）
   eps: 1e-8      # Adam epsilon
 
 # 学习率调度器配置 - 添加余弦退火防止过拟合
