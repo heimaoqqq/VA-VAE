@@ -276,7 +276,8 @@ def benchmark_inference_speed(model, model_name, device, num_runs=50):
     if is_quantized:
         # 量化模型按PyTorch官方标准在CPU上推理
         actual_device = 'cpu'
-        if model.device.type != 'cpu':
+        model_device = next(model.parameters()).device
+        if model_device.type != 'cpu':
             model = model.cpu()  # 确保量化模型在CPU上
         batch_size = 2
         num_runs = min(num_runs, 10)  # CPU测试次数少一些
