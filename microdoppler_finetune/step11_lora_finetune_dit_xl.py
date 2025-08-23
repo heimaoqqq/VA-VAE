@@ -604,8 +604,13 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
                     # 数据移动到DiT设备
                     if isinstance(batch, dict):
                         latents = batch['latent'].half().to(device_dit)
+                    elif isinstance(batch, (list, tuple)):
+                        # TensorDataset返回的是tuple/list格式: (latents, labels)
+                        latents = batch[0].half().to(device_dit)
+                        labels = batch[1].to(device_dit) if len(batch) > 1 else None
                     else:
                         latents = batch.half().to(device_dit)
+                        labels = None
                     
                     batch_size = latents.shape[0]
                     
@@ -614,8 +619,11 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
                     timesteps = torch.randint(0, 1000, (batch_size,), device=device_dit)
                     noisy_latents = latents + noise * 0.1  # 简化噪声调度
                     
-                    # 模拟类别标签
-                    y = torch.randint(0, 1000, (batch_size,), device=device_dit)
+                    # 使用真实标签或生成随机标签
+                    if labels is not None:
+                        y = labels.to(device_dit)  # 使用数据集中的用户标签
+                    else:
+                        y = torch.randint(0, 1000, (batch_size,), device=device_dit)  # 随机标签
                     
                     # 前向传播
                     with torch.cuda.amp.autocast():
