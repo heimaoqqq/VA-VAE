@@ -11,6 +11,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
+from torch.cuda.amp import GradScaler, autocast
 import sys
 import os
 from pathlib import Path
@@ -20,6 +21,11 @@ from tqdm import tqdm
 import numpy as np
 import safetensors.torch as safetensors
 import argparse
+
+# 🔧 关键显存优化设置
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.deterministic = False
 
 # 添加路径
 sys.path.append('/kaggle/working/VA-VAE')
@@ -98,7 +104,7 @@ def load_dit_xl_for_full_finetune(checkpoint_path, rank=None):
     print(f"   输出通道: {out_channels}")
     print(f"   MLP类型: {'SwiGLU' if has_swiglu else 'GELU'}")
     
-    # 🔧 关键：在CPU上完成所有模型初始化
+    # 🔧 关键：在CPU上完成所有模型初始化 + 启用梯度检查点
     model = LightningDiT_models['LightningDiT-XL/1'](
         input_size=input_size,
         num_classes=num_classes,
@@ -109,7 +115,7 @@ def load_dit_xl_for_full_finetune(checkpoint_path, rank=None):
         use_rmsnorm=True,
         wo_shift=False,
         in_channels=out_channels,
-        use_checkpoint=False,
+        use_checkpoint=True,  # 🔧 启用梯度检查点节省显存！
     )
     
     # 确保模型在CPU上
@@ -150,6 +156,11 @@ def setup_ddp(rank, world_size):
     
     # 设置当前GPU
     torch.cuda.set_device(rank)
+    
+    # 🔧 显存优化配置
+    torch.cuda.empty_cache()
+    if hasattr(torch.cuda, 'memory_stats'):
+        torch.cuda.reset_peak_memory_stats(rank)
 
 def cleanup_ddp():
     """清理DDP进程组"""
@@ -220,6 +231,9 @@ def train_ddp_worker(rank, world_size, config):
     # 创建分布式数据加载器
     dataloader = create_distributed_dataloader(config, rank, world_size)
     
+    # 🔧 混合精度训练组件
+    scaler = GradScaler()
+    
     # 优化器和调度器
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
@@ -228,6 +242,8 @@ def train_ddp_worker(rank, world_size, config):
     if rank == 0:
         param_count = sum(p.numel() for p in model.parameters())
         print(f"✅ DDP模型就绪 - 参数量: {param_count/1e6:.1f}M")
+        print(f"🔧 梯度检查点: 已启用 (节省显存)")
+        print(f"🔧 混合精度: FP16 (节省显存)")
         if vae_model is not None:
             print(f"✅ VA-VAE模型就绪")
         else:
@@ -260,24 +276,26 @@ def train_ddp_worker(rank, world_size, config):
         
         for step, (latents, labels) in enumerate(progress_bar):
             try:
-                # 数据准备
-                latents = latents.to(device, dtype=torch.float32)
+                # 🔧 显存优化：使用FP16数据类型
+                latents = latents.to(device, dtype=torch.half)  # FP32→FP16
                 labels = labels.to(device)
                 
                 batch_size = latents.shape[0]
                 
-                # 扩散过程
-                noise = torch.randn_like(latents)
-                timesteps = torch.randint(0, 1000, (batch_size,), device=device).float()
-                
-                # 添加噪声 (DDPM forward process)
-                alpha_t = 1 - timesteps / 1000
-                alpha_t = alpha_t.view(-1, 1, 1, 1)
-                noisy_latents = torch.sqrt(alpha_t) * latents + torch.sqrt(1 - alpha_t) * noise
-                
-                # 前向传播 - 简洁的FP32计算
-                pred_noise = model(noisy_latents, timesteps, labels)
-                loss = criterion(pred_noise, noise) / gradient_accumulation_steps
+                # 🔧 混合精度前向传播
+                with autocast():
+                    # 扩散过程
+                    noise = torch.randn_like(latents)
+                    timesteps = torch.randint(0, 1000, (batch_size,), device=device).float()
+                    
+                    # 添加噪声 (DDPM forward process)
+                    alpha_t = 1 - timesteps / 1000
+                    alpha_t = alpha_t.view(-1, 1, 1, 1)
+                    noisy_latents = torch.sqrt(alpha_t) * latents + torch.sqrt(1 - alpha_t) * noise
+                    
+                    # 前向传播 - FP16自动混合精度
+                    pred_noise = model(noisy_latents, timesteps, labels)
+                    loss = criterion(pred_noise, noise) / gradient_accumulation_steps
                 
                 # 检查NaN
                 if torch.isnan(loss):
@@ -285,13 +303,16 @@ def train_ddp_worker(rank, world_size, config):
                     optimizer.zero_grad()
                     continue
                 
-                # 反向传播
-                loss.backward()
+                # 🔧 混合精度反向传播
+                scaler.scale(loss).backward()
                 epoch_loss += loss.item() * gradient_accumulation_steps
                 
                 if (step + 1) % gradient_accumulation_steps == 0:
+                    # 🔧 混合精度梯度更新
+                    scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    optimizer.step()
+                    scaler.step(optimizer)
+                    scaler.update()
                     optimizer.zero_grad()
                 
                 # 更新进度条 (只在rank 0)
@@ -303,7 +324,12 @@ def train_ddp_worker(rank, world_size, config):
                 
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    print(f"\n⚠️ 显存不足，跳过批次: {e}")
+                    print(f"\n⚠️ 显存不足，执行紧急清理: {e}")
+                    # 🔧 紧急显存清理
+                    if 'pred_noise' in locals(): del pred_noise
+                    if 'noisy_latents' in locals(): del noisy_latents
+                    if 'noise' in locals(): del noise
+                    optimizer.zero_grad()
                     torch.cuda.empty_cache()
                     continue
                 else:
@@ -477,14 +503,14 @@ def main():
         props = torch.cuda.get_device_properties(i)
         print(f"   GPU{i}: {props.name} - {props.total_memory/1024**3:.1f}GB")
     
-    # DDP训练配置
+    # 🔧 优化后的DDP训练配置 (降低显存压力)
     config = {
         'learning_rate': 1e-5,
         'num_epochs': 20,
-        'batch_size': 1,
+        'batch_size': 1,  # 保持最小批次
         'save_interval': 5,
-        'gradient_accumulation_steps': 4,
-        'num_workers': 2,
+        'gradient_accumulation_steps': 8,  # 增加累积步数补偿小批次
+        'num_workers': 1,  # 减少worker降低显存竞争
     }
     
     print(f"\n📋 DDP配置:")
