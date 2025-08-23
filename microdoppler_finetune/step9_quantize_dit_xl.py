@@ -121,19 +121,23 @@ def load_trained_dit_xl(checkpoint_path, device):
     final_layer_shape = None
     has_swiglu = False
     
+    print(f"🔍 分析checkpoint权重键...")
     for key, tensor in state_dict.items():
         if key == 'pos_embed':
             pos_embed_shape = tensor.shape  # [1, seq_len, dim]
+            print(f"   找到pos_embed: {pos_embed_shape}")
         elif key == 'y_embedder.embedding_table.weight':
             y_embed_shape = tensor.shape    # [num_classes, dim]
+            print(f"   找到y_embedder: {y_embed_shape}")
         elif key == 'final_layer.linear.weight':
             final_layer_shape = tensor.shape  # [out_channels, dim]
+            print(f"   找到final_layer: {final_layer_shape}")
         elif 'mlp.w12' in key:
             has_swiglu = True
     
-    # 推断参数
-    input_size = int((pos_embed_shape[1])**0.5) if pos_embed_shape else 16
-    num_classes = y_embed_shape[0] if y_embed_shape else 1000
+    # 推断参数 - 精确匹配checkpoint中的配置
+    input_size = int((pos_embed_shape[1])**0.5) if pos_embed_shape else 256  # ImageNet标准256
+    num_classes = y_embed_shape[0] if y_embed_shape else 1000  # 从checkpoint读取实际类别数
     out_channels = final_layer_shape[0] if final_layer_shape else 32
     patch_size = 1  # 官方XL预训练模型使用patch_size=1 (LightningDiT-XL/1)
     
