@@ -270,11 +270,24 @@ def benchmark_inference_speed(model, model_name, device, num_runs=50):
     """基准测试推理速度（带OOM保护）"""
     print(f"\n⏱️ 测试 {model_name} 推理速度...")
     
-    # 自适应batch size以避免OOM
-    if device == 'cpu':
+    # 检查是否为量化模型
+    is_quantized = any(hasattr(module, '_packed_params') for module in model.modules())
+    
+    if is_quantized:
+        # 量化模型强制使用CPU
+        actual_device = 'cpu'
+        model = model.cpu()  # 确保量化模型在CPU上
+        batch_size = 2
+        num_runs = min(num_runs, 10)  # CPU测试次数少一些
+        print(f"   量化模型检测，强制使用CPU推理")
+        print(f"   CPU batch size: {batch_size}")
+    elif device == 'cpu':
+        actual_device = 'cpu'
         batch_size = 2  # CPU使用更小batch
         num_runs = min(num_runs, 10)  # CPU测试次数少一些
     else:
+        # 原始模型可以使用GPU
+        actual_device = device
         # 根据GPU显存动态调整batch size
         gpu_id = int(device.split(':')[1]) if ':' in device else 0
         free_memory = get_gpu_free_memory(gpu_id)
@@ -290,9 +303,9 @@ def benchmark_inference_speed(model, model_name, device, num_runs=50):
     
     try:
         # 准备测试数据
-        test_latents = torch.randn(batch_size, 32, 16, 16).to(device)  # VA-VAE latent format
-        test_timesteps = torch.randint(0, 1000, (batch_size,)).to(device)
-        test_labels = torch.randint(0, 31, (batch_size,)).to(device)
+        test_latents = torch.randn(batch_size, 32, 16, 16).to(actual_device)  # VA-VAE latent format
+        test_timesteps = torch.randint(0, 1000, (batch_size,)).to(actual_device)
+        test_labels = torch.randint(0, 1001, (batch_size,)).to(actual_device)  # 1001 classes
     except RuntimeError as e:
         if "out of memory" in str(e).lower():
             print(f"   ❌ 创建测试数据OOM，跳过性能测试")
