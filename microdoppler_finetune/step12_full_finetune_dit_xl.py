@@ -222,8 +222,13 @@ def train_ddp_worker(rank, world_size, config):
     if rank == 0:
         print(f"🔄 第4步：DDP包装模型...")
     
-    # Step 4: DDP包装模型（在GPU上）
-    model = DDP(model, device_ids=[rank], output_device=rank)
+    # Step 4: 包装为DDP - 允许未使用参数
+    model = DistributedDataParallel(
+        model, 
+        device_ids=[device], 
+        find_unused_parameters=True,  # 解决未使用参数错误
+        gradient_as_bucket_view=True  # 优化梯度同步
+    )
     
     if rank == 0:
         print(f"✅ DDP包装完成 - 模型准备就绪")
@@ -231,19 +236,47 @@ def train_ddp_worker(rank, world_size, config):
     # 创建分布式数据加载器
     dataloader = create_distributed_dataloader(config, rank, world_size)
     
-    # 🔧 混合精度训练组件
-    scaler = GradScaler()
+    # 🔧 激进显存优化配置
+    scaler = GradScaler(
+        init_scale=2**10,    # 更低初始缩放
+        growth_factor=1.5,   # 更保守增长
+        backoff_factor=0.25, # 更激进回退
+        growth_interval=2000 # 更长检查间隔
+    )
     
-    # 优化器和调度器
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
+    # 🔧 显存优化的优化器 - 使用8bit AdamW
+    try:
+        import bitsandbytes as bnb
+        optimizer = bnb.optim.AdamW8bit(  # 8bit优化器节省50%显存
+            model.parameters(),
+            lr=config['learning_rate'],
+            betas=(0.9, 0.95),
+            weight_decay=0.1,
+            eps=1e-4
+        )
+        if rank == 0:
+            print("✅ 使用8bit AdamW优化器")
+    except ImportError:
+        # 回退到标准AdamW但使用更少状态
+        optimizer = AdamW(
+            model.parameters(),
+            lr=config['learning_rate'],
+            betas=(0.9, 0.95),
+            weight_decay=0.1,
+            eps=1e-4
+        )
+        if rank == 0:
+            print("⚠️ 使用标准AdamW优化器")
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     criterion = nn.MSELoss()
     
     if rank == 0:
         param_count = sum(p.numel() for p in model.parameters())
+        effective_batch = batch_size * gradient_accumulation_steps * world_size
         print(f"✅ DDP模型就绪 - 参数量: {param_count/1e6:.1f}M")
         print(f"🔧 梯度检查点: 已启用 (节省显存)")
-        print(f"🔧 混合精度: FP16 (节省显存)")
+        print(f"🔧 混合精度: 稳定型FP16 (节省显存)")
+        print(f"📊 批次配置: {batch_size}×{gradient_accumulation_steps}×{world_size} = {effective_batch}")
         if vae_model is not None:
             print(f"✅ VA-VAE模型就绪")
         else:
@@ -276,14 +309,14 @@ def train_ddp_worker(rank, world_size, config):
         
         for step, (latents, labels) in enumerate(progress_bar):
             try:
-                # 🔧 显存优化：使用FP16数据类型
-                latents = latents.to(device, dtype=torch.half)  # FP32→FP16
+                # 🔧 数据类型优化 (保持输入FP32提高稳定性)
+                latents = latents.to(device, dtype=torch.float32)  # 保持FP32输入
                 labels = labels.to(device)
                 
                 batch_size = latents.shape[0]
                 
                 # 🔧 混合精度前向传播
-                with autocast():
+                with torch.amp.autocast('cuda'):  # 修复废弃API警告
                     # 扩散过程
                     noise = torch.randn_like(latents)
                     timesteps = torch.randint(0, 1000, (batch_size,), device=device).float()
@@ -297,10 +330,13 @@ def train_ddp_worker(rank, world_size, config):
                     pred_noise = model(noisy_latents, timesteps, labels)
                     loss = criterion(pred_noise, noise) / gradient_accumulation_steps
                 
-                # 检查NaN
-                if torch.isnan(loss):
-                    print(f"\n⚠️ 检测到NaN损失，跳过批次")
+                # 🔧 强化的数值稳定性检查
+                if torch.isnan(loss) or torch.isinf(loss) or loss.item() > 100.0:
+                    print(f"\n⚠️ 检测到不稳定损失: {loss.item():.4f}，跳过批次")
+                    # 降低缩放因子
+                    scaler._scale = scaler._scale * 0.5
                     optimizer.zero_grad()
+                    torch.cuda.empty_cache()
                     continue
                 
                 # 🔧 混合精度反向传播
@@ -308,19 +344,39 @@ def train_ddp_worker(rank, world_size, config):
                 epoch_loss += loss.item() * gradient_accumulation_steps
                 
                 if (step + 1) % gradient_accumulation_steps == 0:
-                    # 🔧 混合精度梯度更新
+                    # 🔧 稳定的混合精度梯度更新
                     scaler.unscale_(optimizer)
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    
+                    # 🔧 激进梯度裁剪和稳定性检查
+                    scaler.unscale_(optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['max_grad_norm'])
+                    
+                    # 🛡️ 严格梯度检查
+                    if grad_norm > 5.0 or torch.isnan(grad_norm):
+                        if rank == 0:
+                            print(f"⚠️ 梯度异常: {grad_norm:.2f}, 跳过更新")
+                        scaler.update()
+                        optimizer.zero_grad(set_to_none=True)  # 释放梯度内存
+                        continue
+                    
+                    # 🧹 定期清理显存碎片
+                    if step % config['empty_cache_freq'] == 0:
+                        torch.cuda.empty_cache()
+                        if rank == 0 and step % 50 == 0:
+                            mem_used = torch.cuda.memory_allocated(device) / 1024**3
+                            print(f"🧹 显存清理 - 当前使用: {mem_used:.1f}GB")
+                    
+                    # 📈 执行优化器步骤
                     scaler.step(optimizer)
                     scaler.update()
-                    optimizer.zero_grad()
-                
-                # 更新进度条 (只在rank 0)
-                if rank == 0:
-                    progress_bar.set_postfix({
-                        'loss': f'{loss.item() * gradient_accumulation_steps:.4f}',
-                        'gpu_mem': f'{torch.cuda.memory_allocated(device) / (1024**3):.1f}GB'
-                    })
+                    optimizer.zero_grad(set_to_none=True)  # set_to_none=True释放更多内存
+                    
+                    # 更新进度条 (只在rank 0)
+                    if rank == 0:
+                        progress_bar.set_postfix({
+                            'loss': f'{loss.item() * gradient_accumulation_steps:.4f}',
+                            'gpu_mem': f'{torch.cuda.memory_allocated(device) / (1024**3):.1f}GB'
+                        })
                 
             except RuntimeError as e:
                 if "out of memory" in str(e):
@@ -503,21 +559,28 @@ def main():
         props = torch.cuda.get_device_properties(i)
         print(f"   GPU{i}: {props.name} - {props.total_memory/1024**3:.1f}GB")
     
-    # 🔧 优化后的DDP训练配置 (降低显存压力)
+    # 🔧 稳定性优先的DDP配置
     config = {
-        'learning_rate': 1e-5,
+        'learning_rate': 5e-6,  # 稳定的学习率
         'num_epochs': 20,
-        'batch_size': 1,  # 保持最小批次
-        'save_interval': 5,
-        'gradient_accumulation_steps': 8,  # 增加累积步数补偿小批次
-        'num_workers': 1,  # 减少worker降低显存竞争
+        'batch_size': 1,        # 每GPU批次大小
+        'save_interval': 5,     # 减少IO开销
+        'gradient_accumulation_steps': 12, # 更大累积步数减少显存压力
+        'num_workers': 0,       # 禁用多进程减少内存
+        'warmup_steps': 100,    # 添加热身阶段
+        'use_fp32': False,      # 设为True即可回退FP32训练
+        'max_grad_norm': 0.5,   # 更严格梯度裁剪
+        'empty_cache_freq': 10, # 每10步清理缓存
     }
     
-    print(f"\n📋 DDP配置:")
+    print(f"\n📋 DDP配置 (稳定性优先):")
     print(f"   World Size: {world_size}")
     print(f"   Backend: NCCL")
+    effective_batch = config['batch_size'] * config['gradient_accumulation_steps'] * world_size
+    print(f"   有效批次大小: {effective_batch} ({config['batch_size']}×{config['gradient_accumulation_steps']}×{world_size})")
     for key, value in config.items():
-        print(f"   {key}: {value}")
+        if key != 'batch_size' and key != 'gradient_accumulation_steps':
+            print(f"   {key}: {value}")
     
     if world_size > 1:
         # 启动DDP多进程训练
