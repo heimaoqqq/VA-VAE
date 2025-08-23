@@ -7,6 +7,20 @@ from pathlib import Path
 def quick_check():
     quantized_path = "/kaggle/working/dit_xl_quantized.pt"
     
+    print(f"🔍 检查量化模型: {quantized_path}")
+    
+    # 检查文件大小
+    if Path(quantized_path).exists():
+        file_size_mb = Path(quantized_path).stat().st_size / (1024**2)
+        print(f"📁 文件大小: {file_size_mb:.1f}MB")
+        
+        if file_size_mb < 1000:  # 小于1GB
+            print("⚠️ 文件太小，可能量化失败")
+        else:
+            print("✅ 文件大小正常，可能是真实量化")
+    else:
+        print("❌ 文件不存在")
+    
     if not Path(quantized_path).exists():
         print("❌ 量化模型文件不存在")
         return
