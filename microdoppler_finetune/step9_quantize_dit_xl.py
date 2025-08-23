@@ -453,7 +453,7 @@ def comprehensive_benchmark(original_model, quantized_model, device):
     
     return results
 
-def test_generation_quality(model, vae, device, num_samples=16):
+def test_generation_quality(model, vae, device, num_samples=4):
     """测试生成质量"""
     print(f"\n🎨 测试生成质量 ({num_samples} samples)...")
     
