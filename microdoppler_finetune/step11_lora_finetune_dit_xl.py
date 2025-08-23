@@ -538,7 +538,11 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
     
     # 确保模型在正确设备上（FP16）
     dit_model = dit_model.half().to(device_dit)
-    vae_model = vae_model.half().to(device_vae)
+    if vae_model is not None:
+        vae_model = vae_model.half().to(device_vae)
+        print(f"   VA-VAE设备: {device_vae}")
+    else:
+        print(f"   VA-VAE: 不可用，使用模拟数据")
     
     print(f"   模型精度: FP16")
     print(f"   LoRA参数量: {sum(p.numel() for p in lora_params):,}")
