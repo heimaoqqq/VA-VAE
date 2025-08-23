@@ -92,7 +92,7 @@ def add_lora_to_model(model, rank=16, alpha=32, target_modules=['qkv', 'proj', '
     
     return model, lora_modules
 
-def load_trained_dit_xl_for_lora(checkpoint_path, device):
+def load_dit_xl_with_lora(checkpoint_path, device):
     """加载DiT XL模型用于LoRA微调"""
     print(f"📂 加载DiT XL模型: {checkpoint_path}")
     
