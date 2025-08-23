@@ -223,15 +223,13 @@ def train_ddp_worker(rank, world_size, config):
     if rank == 0:
         print(f"🔄 第4步：DDP包装模型...")
     
-    # Step 4: 包装为DDP - 修复梯度检查点冲突
+    # Step 4: 包装为DDP - 允许未使用参数
     model = DDP(
         model, 
         device_ids=[device], 
         find_unused_parameters=True,  # 解决未使用参数错误
         gradient_as_bucket_view=True  # 优化梯度同步
     )
-    # 🔧 关键修复：解决梯度检查点+DDP冲突
-    model._set_static_graph()  # 告诉DDP图结构不变
     
     if rank == 0:
         print(f"✅ DDP包装完成 - 模型准备就绪")
@@ -339,7 +337,6 @@ def train_ddp_worker(rank, world_size, config):
                     scaler.unscale_(optimizer)
                     
                     # 🔧 激进梯度裁剪和稳定性检查
-                    scaler.unscale_(optimizer)
                     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['max_grad_norm'])
                     
                     # 🛡️ 严格梯度检查
