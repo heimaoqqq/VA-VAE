@@ -274,12 +274,13 @@ def benchmark_inference_speed(model, model_name, device, num_runs=50):
     is_quantized = any(hasattr(module, '_packed_params') for module in model.modules())
     
     if is_quantized:
-        # 量化模型强制使用CPU
+        # 量化模型按PyTorch官方标准在CPU上推理
         actual_device = 'cpu'
-        model = model.cpu()  # 确保量化模型在CPU上
+        if model.device.type != 'cpu':
+            model = model.cpu()  # 确保量化模型在CPU上
         batch_size = 2
         num_runs = min(num_runs, 10)  # CPU测试次数少一些
-        print(f"   量化模型检测，强制使用CPU推理")
+        print(f"   量化模型按PyTorch官方标准使用CPU推理")
         print(f"   CPU batch size: {batch_size}")
     elif device == 'cpu':
         actual_device = 'cpu'
@@ -322,7 +323,7 @@ def benchmark_inference_speed(model, model_name, device, num_runs=50):
             _ = model(test_latents, test_timesteps, y=test_labels)
     
     # 正式测试（带OOM保护）
-    if device != 'cpu':
+    if actual_device != 'cpu':
         torch.cuda.synchronize()
         
     with torch.no_grad():
@@ -330,7 +331,7 @@ def benchmark_inference_speed(model, model_name, device, num_runs=50):
             try:
                 start_time = time.time()
                 _ = model(test_latents, test_timesteps, y=test_labels)
-                if device != 'cpu':
+                if actual_device != 'cpu':
                     torch.cuda.synchronize()
                 times.append(time.time() - start_time)
             except RuntimeError as e:
