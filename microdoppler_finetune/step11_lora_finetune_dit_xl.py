@@ -21,7 +21,6 @@ sys.path.append('/kaggle/working/VA-VAE')
 sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
 
 from models.lightningdit import LightningDiT_models
-from datasets import create_dataset
 
 class LoRALayer(nn.Module):
     """LoRA适配器层"""
