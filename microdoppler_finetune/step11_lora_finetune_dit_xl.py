@@ -190,85 +190,81 @@ def load_dit_xl_with_lora(checkpoint_path, device):
 
 def load_vae_model(device):
     """加载预训练VA-VAE模型"""
+    print(f"📂 加载VA-VAE模型:")
+    
+    # VA-VAE模型路径
+    vae_checkpoint_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+        
+    if not os.path.exists(vae_checkpoint_path):
+        print(f"   ⚠️ 未找到VA-VAE权重文件: {vae_checkpoint_path}")
+        print("   LoRA微调仅需DiT XL模型，VA-VAE用于可选的生成质量验证")
+        return None
+            
+    # 加载检查点
+    checkpoint = torch.load(vae_checkpoint_path, map_location='cpu')
+    
+    # 从检查点中提取VA-VAE模型
+    if 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    elif 'model' in checkpoint:
+        state_dict = checkpoint['model']
+    else:
+        state_dict = checkpoint
+            
+    # 尝试多种方式导入VA-VAE模型类
+    vae_model = None
+        
+    # 尝试导入方式1: Lightning模块
     try:
-        print("   正在加载VA-VAE检查点...")
-        vae_checkpoint_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
-        
-        if not os.path.exists(vae_checkpoint_path):
-            print(f"   ⚠️ 未找到VA-VAE权重文件: {vae_checkpoint_path}")
-            print("   LoRA微调仅需DiT XL模型，VA-VAE用于可选的生成质量验证")
-            return None
-            
-        # 加载检查点
-        checkpoint = torch.load(vae_checkpoint_path, map_location='cpu')
-        
-        # 从检查点中提取VA-VAE模型
-        if 'state_dict' in checkpoint:
-            state_dict = checkpoint['state_dict']
-        elif 'model' in checkpoint:
-            state_dict = checkpoint['model']
-        else:
-            state_dict = checkpoint
-            
-        # 尝试多种方式导入VA-VAE模型类
-        vae_model = None
-        
-        # 尝试导入方式1: Lightning模块
-        try:
-            import lightning.pytorch as pl
-            # 直接加载Lightning检查点
-            vae_model = pl.LightningModule.load_from_checkpoint(vae_checkpoint_path)
-            vae_model.eval()
-            vae_model = vae_model.to(device)
-            print(f"   ✅ VA-VAE模型加载成功 (Lightning)")
-            return vae_model
-        except Exception as e:
-            print(f"   ⚠️ Lightning方式加载失败: {e}")
-        
-        # 尝试导入方式2: 从LightningDiT路径
-        try:
-            sys.path.append('/kaggle/working/VA-VAE')
-            from models.vae import VAE  
-            
-            vae_model = VAE(
-                in_channels=3,
-                out_channels=32,
-                latent_channels=32,
-                downsample_factor=16
-            )
-            vae_model.load_state_dict(state_dict, strict=False)
-            vae_model.eval().to(device)
-            print(f"   ✅ VA-VAE模型加载成功 (VAE)")
-            return vae_model
-        except Exception as e:
-            print(f"   ⚠️ VAE方式加载失败: {e}")
-        
-        # 尝试导入方式3: 检查点中的模型架构
-        try:
-            if 'hyper_parameters' in checkpoint:
-                print(f"   📋 检查点超参数: {checkpoint['hyper_parameters']}")
-            if 'model_name' in checkpoint:
-                print(f"   📋 模型名称: {checkpoint['model_name']}")
-            
-            # 尝试直接从检查点恢复
-            if hasattr(checkpoint, 'model'):
-                vae_model = checkpoint.model
-                vae_model.eval().to(device) 
-                print(f"   ✅ VA-VAE模型加载成功 (直接)")
-                return vae_model
-        except Exception as e:
-            print(f"   ⚠️ 直接加载失败: {e}")
-        
-        # 所有方式都失败
-        print("   ❌ 所有VA-VAE导入方式都失败")
-        print(f"   📂 检查点键: {list(checkpoint.keys())}")
-        return None
-            
+        import lightning.pytorch as pl
+        # 直接加载Lightning检查点
+        vae_model = pl.LightningModule.load_from_checkpoint(vae_checkpoint_path)
+        vae_model.eval()
+        vae_model = vae_model.to(device)
+        print(f"   ✅ VA-VAE模型加载成功 (Lightning)")
+        return vae_model
     except Exception as e:
-        print(f"   ⚠️ VA-VAE加载失败: {e}")
-        print("   LoRA微调将继续进行，不影响DiT训练")
-        return None
-
+        print(f"   ⚠️ Lightning方式加载失败: {e}")
+        
+    # 尝试导入方式2: 从LightningDiT路径
+    try:
+        sys.path.append('/kaggle/working/VA-VAE')
+        from models.vae import VAE  
+        
+        vae_model = VAE(
+            in_channels=3,
+            out_channels=32,
+            latent_channels=32,
+            downsample_factor=16
+        )
+        vae_model.load_state_dict(state_dict, strict=False)
+        vae_model.eval().to(device)
+        print(f"   ✅ VA-VAE模型加载成功 (VAE)")
+        return vae_model
+    except Exception as e:
+        print(f"   ⚠️ VAE方式加载失败: {e}")
+        
+    # 尝试导入方式3: 检查点中的模型架构
+    try:
+        if 'hyper_parameters' in checkpoint:
+            print(f"   📋 检查点超参数: {checkpoint['hyper_parameters']}")
+        if 'model_name' in checkpoint:
+            print(f"   📋 模型名称: {checkpoint['model_name']}")
+            
+        # 尝试直接从检查点恢复
+        if hasattr(checkpoint, 'model'):
+            vae_model = checkpoint.model
+            vae_model.eval().to(device) 
+            print(f"   ✅ VA-VAE模型加载成功 (直接)")
+            return vae_model
+    except Exception as e:
+        print(f"   ⚠️ 直接加载失败: {e}")
+        
+    # 所有方式都失败
+    print("   ❌ 所有VA-VAE导入方式都失败")
+    print(f"   📂 检查点键: {list(checkpoint.keys())}")
+    return None
+            
 def encode_images_to_latents(vae_model, data_split_dir, original_data_dir, device_vae):
     """将原始图像编码为latent向量"""
     print(f"🎨 编码原始图像为latent向量...")
@@ -726,13 +722,16 @@ def main():
 
     # 训练配置
     config = {
-        'num_epochs': 20,
         'learning_rate': 1e-4,
-        'batch_size': 1,
-        'gradient_accumulation_steps': 4,
+        'num_epochs': 20,
+        'batch_size': 1,  # 降低批次大小
+        'lora_rank': 16,
+        'lora_alpha': 32,
         'save_interval': 5,
-        'data_split_dir': '/kaggle/working/data_split/',
+        'mixed_precision': True,
+        'gradient_accumulation_steps': 4,  # 梯度累积补偿小批次
         'original_data_dir': '/kaggle/input/dataset/',
+        'data_split_dir': '/kaggle/working/data_split/',
         'checkpoint_dir': '/kaggle/working/lora_checkpoints/',
         'device_dit': device_dit,
         'device_vae': device_vae
