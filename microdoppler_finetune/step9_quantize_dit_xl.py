@@ -453,11 +453,21 @@ def comprehensive_benchmark(original_model, quantized_model, device):
     
     return results
 
-def test_generation_quality(model, vae_model, device, num_samples=16):
-    """测试生成质量（简单验证）"""
+def test_generation_quality(model, vae, device, num_samples=16):
+    """测试生成质量"""
     print(f"\n🎨 测试生成质量 ({num_samples} samples)...")
     
     model.eval()
+    
+    # 检查是否为量化模型，确定实际设备
+    is_quantized = any(hasattr(module, '_packed_params') for module in model.modules())
+    model_device = next(model.parameters()).device
+    
+    if is_quantized or model_device.type == 'cpu':
+        actual_device = 'cpu'
+        print(f"   量化模型使用CPU生成")
+    else:
+        actual_device = device
     
     # 创建transport用于采样
     transport = create_transport(
@@ -470,11 +480,11 @@ def test_generation_quality(model, vae_model, device, num_samples=16):
     
     # 生成样本
     with torch.no_grad():
-        # 随机噪声
-        latents = torch.randn(num_samples, 32, 16, 16).to(device)
+        # 随机噪声（使用模型所在设备）
+        latents = torch.randn(num_samples, 32, 16, 16).to(actual_device)
         
-        # 随机用户标签
-        labels = torch.randint(0, 31, (num_samples,)).to(device)
+        # 随机用户标签（使用模型所在设备）
+        labels = torch.randint(0, 1001, (num_samples,)).to(actual_device)  # 1001 classes
         
         # 使用dopri5采样器（高质量）
         sampler = Sampler(transport)
