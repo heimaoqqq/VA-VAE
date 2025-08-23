@@ -792,7 +792,7 @@ def main():
 
     # 创建数据加载器
     print("\n📊 创建数据加载器...")
-    dataloader = create_lora_dataloader(config, vae_model, device_vae)
+    dataloader = create_lora_dataloader(vae_model, config, device_vae)
 
     # 开始训练（模型并行）
     print("\n🚀 开始LoRA微调训练...")
