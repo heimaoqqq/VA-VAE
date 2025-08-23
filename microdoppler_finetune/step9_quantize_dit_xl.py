@@ -132,16 +132,19 @@ def load_trained_dit_xl(checkpoint_path, device):
             print(f"   {pattern} 相关键: {matching_keys}")
     
     for key, tensor in state_dict.items():
-        if key == 'pos_embed':
+        # 处理DataParallel保存的模型权重键（去除module.前缀）
+        clean_key = key.replace('module.', '') if key.startswith('module.') else key
+        
+        if clean_key == 'pos_embed':
             pos_embed_shape = tensor.shape  # [1, seq_len, dim]
-            print(f"   ✓ 找到pos_embed: {pos_embed_shape}")
-        elif key == 'y_embedder.embedding_table.weight':
+            print(f"   ✓ 找到pos_embed: {pos_embed_shape} (键: {key})")
+        elif clean_key == 'y_embedder.embedding_table.weight':
             y_embed_shape = tensor.shape    # [num_classes, dim]
-            print(f"   ✓ 找到y_embedder: {y_embed_shape}")
-        elif key == 'final_layer.linear.weight':
+            print(f"   ✓ 找到y_embedder: {y_embed_shape} (键: {key})")
+        elif clean_key == 'final_layer.linear.weight':
             final_layer_shape = tensor.shape  # [out_channels, dim]
-            print(f"   ✓ 找到final_layer: {final_layer_shape}")
-        elif 'mlp.w12' in key and not has_swiglu:
+            print(f"   ✓ 找到final_layer: {final_layer_shape} (键: {key})")
+        elif 'mlp.w12' in clean_key and not has_swiglu:
             has_swiglu = True
             print(f"   ✓ 检测到SwiGLU: {key}")
     
@@ -174,22 +177,29 @@ def load_trained_dit_xl(checkpoint_path, device):
     # 创建模型架构 - 使用官方XL/1配置（与预训练权重匹配）
     model = LightningDiT_models['LightningDiT-XL/1'](
         input_size=input_size,      # 从权重推断
-        num_classes=num_classes,    # ImageNet 1000类 
-        class_dropout_prob=0.0,     # 推理时不dropout
-        use_qknorm=False,          # 官方XL预训练模型：use_qknorm=false
-        use_swiglu=has_swiglu,     # 从权重检测，官方：true
-        use_rope=True,             # 官方：true
-        use_rmsnorm=True,          # 官方：true
-        wo_shift=False,            # 官方：false
-        in_channels=out_channels,   # 与final_layer输出匹配，官方：32
-        use_checkpoint=False,       # 推理不需要checkpoint
+        num_classes=num_classes,    # 从权重推断
+        class_dropout_prob=0.0,     # 推理时不使用dropout
+        use_qknorm=False,           # 官方配置
+        use_swiglu=has_swiglu,      # 从权重检测
+        use_rope=True,              # 官方配置
+        use_rmsnorm=True,           # 官方配置 
+        wo_shift=False,             # 官方配置
+        in_channels=out_channels,   # 从权重推断
+        use_checkpoint=False,       # 推理时不使用checkpoint
     )
     
-    # 移除可能的'module.'前缀
+    # 处理DataParallel保存的权重（去除module.前缀）
     if any(key.startswith('module.') for key in state_dict.keys()):
-        state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+        print(f"🔧 检测到DataParallel权重，去除module.前缀...")
+        clean_state_dict = {}
+        for key, value in state_dict.items():
+            clean_key = key.replace('module.', '') if key.startswith('module.') else key
+            clean_state_dict[clean_key] = value
+        state_dict = clean_state_dict
+        print(f"   处理完成，权重键数量: {len(state_dict)}")
     
-    # 尝试加载权重，使用strict=False以忽略不匹配的层
+    # 加载权重
+    print(f"🔧 加载模型权重...")
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     
     if missing_keys:
