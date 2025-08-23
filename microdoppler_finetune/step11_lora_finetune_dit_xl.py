@@ -22,6 +22,18 @@ sys.path.append('/kaggle/working/VA-VAE/LightningDiT')
 
 from models.lightningdit import LightningDiT_models
 
+class LatentDataset(torch.utils.data.Dataset):
+    """Latent向量数据集"""
+    def __init__(self, latents, labels):
+        self.latents = latents
+        self.labels = labels
+    
+    def __len__(self):
+        return len(self.latents)
+    
+    def __getitem__(self, idx):
+        return self.latents[idx], self.labels[idx]
+
 class LoRALayer(nn.Module):
     """LoRA适配器层"""
     def __init__(self, original_layer, rank=16, alpha=32):
@@ -392,7 +404,7 @@ def create_lora_dataloader(vae_model, config, device_vae):
     
     if latents_dir:
         # 递归调用加载编码后的数据
-        return create_lora_dataloader(config, vae_model, device_vae)
+        return create_lora_dataloader(vae_model, config, device_vae)
     else:
         print(f"   ⚠️ 编码失败，使用模拟数据")
         return None
