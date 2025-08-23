@@ -205,11 +205,24 @@ def train_ddp_worker(rank, world_size, config):
     if rank == 0:
         print(f"🔄 第2步：转移模型到GPU{rank}...")
         
-    # Step 2: 安全转移到对应GPU（每个进程独立进行）
+    # Step 2: 分阶段模型转移到GPU (减少进程资源竞争)
     torch.cuda.empty_cache()  # 清理显存
     pre_gpu_memory = torch.cuda.memory_allocated(device) / (1024**3)
     
-    model = model.to(device)  # CPU → GPU转移
+    # 🔄 错峰转移策略：减少系统资源竞争
+    if world_size > 1:
+        # DDP环境：按rank错峰转移
+        time.sleep(rank * 3)  # rank 0先转，rank 1等3秒后转
+        if rank == 0:
+            print(f"🔄 Rank {rank}: 开始转移模型到GPU...")
+        model = model.to(device)
+        if rank == 0:
+            print(f"✅ Rank {rank}: 模型转移完成")
+        # 等待所有rank完成转移
+        dist.barrier()
+    else:
+        # 单GPU环境
+        model = model.to(device)
     
     post_gpu_memory = torch.cuda.memory_allocated(device) / (1024**3)
     
@@ -223,13 +236,15 @@ def train_ddp_worker(rank, world_size, config):
     if rank == 0:
         print(f"🔄 第4步：DDP包装模型...")
     
-    # Step 4: 包装为DDP - 允许未使用参数
+    # Step 4: 包装为DDP - 修复梯度检查点冲突
     model = DDP(
         model, 
         device_ids=[device], 
         find_unused_parameters=True,  # 解决未使用参数错误
         gradient_as_bucket_view=True  # 优化梯度同步
     )
+    # 🔧 关键修复：解决梯度检查点+DDP冲突
+    model._set_static_graph()  # 告诉DDP图结构不变
     
     if rank == 0:
         print(f"✅ DDP包装完成 - 模型准备就绪")
