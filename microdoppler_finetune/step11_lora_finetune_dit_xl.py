@@ -522,12 +522,13 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
     print(f"   学习率: {learning_rate}")
     print(f"   梯度累积步数: {gradient_accumulation_steps}")
     
-    # 优化器（只优化LoRA参数）
+    # 优化器 - 降低学习率避免NaN
     lora_params = [p for p in dit_model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(lora_params, lr=learning_rate, weight_decay=0.01)
-    
-    # 学习率调度器
+    optimizer = torch.optim.AdamW(lora_params, lr=learning_rate * 0.1, weight_decay=0.01)  # 降低10倍学习率
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
+    
+    # FP16训练的梯度缩放器
+    scaler = torch.cuda.amp.GradScaler() if mixed_precision else None
     
     # 损失函数
     criterion = nn.MSELoss()
@@ -610,10 +611,13 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
                     
                     batch_size = latents.shape[0]
                     
-                    # 添加噪声和时间步
+                    # 添加噪声和时间步 - 改进噪声调度
                     noise = torch.randn_like(latents, device=device_dit)
-                    timesteps = torch.randint(0, 1000, (batch_size,), device=device_dit)
-                    noisy_latents = latents + noise * 0.1  # 简化噪声调度
+                    timesteps = torch.randint(0, 1000, (batch_size,), device=device_dit).float()
+                    
+                    # 使用更稳定的噪声调度
+                    noise_level = (timesteps / 1000.0).view(-1, 1, 1, 1)  # 归一化时间步
+                    noisy_latents = latents * (1 - noise_level) + noise * noise_level
                     
                     # 使用真实标签或生成随机标签
                     if labels is not None:
@@ -621,19 +625,36 @@ def train_lora_model_parallel(dit_model, vae_model, dataloader, config):
                     else:
                         y = torch.randint(0, 1000, (batch_size,), device=device_dit)  # 随机标签
                     
-                    # 前向传播
-                    with torch.cuda.amp.autocast():
+                    # 前向传播 - 修复autocast警告和NaN问题
+                    with torch.amp.autocast('cuda', enabled=mixed_precision):
                         pred_noise = dit_model(noisy_latents, timesteps, y)
                         loss = criterion(pred_noise, noise)
+                        
+                        # 检查NaN
+                        if torch.isnan(loss):
+                            print(f"\n⚠️ 检测到NaN损失，跳过批次")
+                            optimizer.zero_grad()
+                            continue
+                            
                         loss = loss / gradient_accumulation_steps
                     
-                    # 反向传播
-                    loss.backward()
+                    # 反向传播 - 使用梯度缩放器
+                    if scaler is not None:
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                    
                     epoch_loss += loss.item() * gradient_accumulation_steps
                     
                     if (step + 1) % gradient_accumulation_steps == 0:
-                        torch.nn.utils.clip_grad_norm_(lora_params, max_norm=1.0)
-                        optimizer.step()
+                        if scaler is not None:
+                            scaler.unscale_(optimizer)
+                            torch.nn.utils.clip_grad_norm_(lora_params, max_norm=0.5)  # 更严格的梯度裁剪
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            torch.nn.utils.clip_grad_norm_(lora_params, max_norm=0.5)
+                            optimizer.step()
                         optimizer.zero_grad()
                     
                     # 更新进度条
@@ -722,7 +743,7 @@ def main():
 
     # 训练配置
     config = {
-        'learning_rate': 1e-4,
+        'learning_rate': 1e-5,  # 降低学习率避免NaN
         'num_epochs': 20,
         'batch_size': 1,  # 降低批次大小
         'lora_rank': 16,
