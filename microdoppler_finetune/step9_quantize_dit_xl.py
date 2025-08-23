@@ -633,7 +633,7 @@ def main_quantization_pipeline(checkpoint_path, output_path, use_cpu_loading=Tru
     
     # 保存量化模型和结果
     save_data = {
-        'quantized_model': quantized_model.state_dict(),
+        'quantized_model': quantized_model,
         'quantization_config': {
             'method': 'dynamic',
             'dtype': 'int8',
