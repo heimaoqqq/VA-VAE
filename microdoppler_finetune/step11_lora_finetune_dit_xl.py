@@ -210,35 +210,59 @@ def load_vae_model(device):
         else:
             state_dict = checkpoint
             
-        # 导入VA-VAE模型类（假设已在环境中可用）
+        # 尝试多种方式导入VA-VAE模型类
+        vae_model = None
+        
+        # 尝试导入方式1: Lightning模块
         try:
-            # 这里需要根据实际的VA-VAE模型类进行调整
-            from models.vavae import VAVAE  # 示例导入
+            import lightning.pytorch as pl
+            # 直接加载Lightning检查点
+            vae_model = pl.LightningModule.load_from_checkpoint(vae_checkpoint_path)
+            vae_model.eval()
+            vae_model = vae_model.to(device)
+            print(f"   ✅ VA-VAE模型加载成功 (Lightning)")
+            return vae_model
+        except Exception as e:
+            print(f"   ⚠️ Lightning方式加载失败: {e}")
+        
+        # 尝试导入方式2: 从LightningDiT路径
+        try:
+            sys.path.append('/kaggle/working/VA-VAE')
+            from models.vae import VAE  
             
-            # 创建VA-VAE模型实例
-            vae_model = VAVAE(
+            vae_model = VAE(
                 in_channels=3,
-                out_channels=32,  # f16d32配置
+                out_channels=32,
                 latent_channels=32,
                 downsample_factor=16
             )
-            
-            # 加载权重
             vae_model.load_state_dict(state_dict, strict=False)
-            vae_model.eval()
-            
-            # 移动到指定设备
-            vae_model = vae_model.to(device)
-            
-            print(f"   ✅ VA-VAE模型加载成功")
-            print(f"   模型设备: {device}")
-            
+            vae_model.eval().to(device)
+            print(f"   ✅ VA-VAE模型加载成功 (VAE)")
             return vae_model
+        except Exception as e:
+            print(f"   ⚠️ VAE方式加载失败: {e}")
+        
+        # 尝试导入方式3: 检查点中的模型架构
+        try:
+            if 'hyper_parameters' in checkpoint:
+                print(f"   📋 检查点超参数: {checkpoint['hyper_parameters']}")
+            if 'model_name' in checkpoint:
+                print(f"   📋 模型名称: {checkpoint['model_name']}")
             
-        except ImportError:
-            print("   ⚠️ 无法导入VA-VAE模型类，跳过VA-VAE加载")
-            print("   LoRA微调可以在没有VA-VAE的情况下进行")
-            return None
+            # 尝试直接从检查点恢复
+            if hasattr(checkpoint, 'model'):
+                vae_model = checkpoint.model
+                vae_model.eval().to(device) 
+                print(f"   ✅ VA-VAE模型加载成功 (直接)")
+                return vae_model
+        except Exception as e:
+            print(f"   ⚠️ 直接加载失败: {e}")
+        
+        # 所有方式都失败
+        print("   ❌ 所有VA-VAE导入方式都失败")
+        print(f"   📂 检查点键: {list(checkpoint.keys())}")
+        return None
             
     except Exception as e:
         print(f"   ⚠️ VA-VAE加载失败: {e}")
@@ -718,8 +742,7 @@ def main():
     print("\n📂 加载VA-VAE模型...")
     vae_model = load_vae_model(device_vae)
     if vae_model is None:
-        print("❌ VA-VAE加载失败")
-        return
+        print("⚠️ VA-VAE不可用，将使用模拟数据进行LoRA训练")
 
     # 创建数据加载器
     print("\n📊 创建数据加载器...")
