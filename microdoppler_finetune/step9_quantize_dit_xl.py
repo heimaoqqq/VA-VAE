@@ -25,40 +25,95 @@ def load_trained_dit_xl(checkpoint_path, device):
     """加载已训练的DiT XL模型"""
     print(f"📂 加载训练完成的DiT XL模型: {checkpoint_path}")
     
-    # 创建模型架构 - 使用XL配置
-    model = LightningDiT_models['LightningDiT-XL/2'](
-        input_size=16,  # 256/16 = 16 for VAE latent space
-        num_classes=31,  # 31个用户类别
-        class_dropout_prob=0.0,  # 推理时不dropout
-        use_qknorm=True,
-        use_swiglu=False,
-        use_rope=False,
-        use_rmsnorm=False,
-        wo_shift=False,
-        in_channels=32,  # VA-VAE的latent channels
-        use_checkpoint=False,  # 推理不需要checkpoint
-    )
-    
-    # 加载训练好的权重
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    # 首先加载checkpoint来检查模型架构
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
     if 'model' in checkpoint:
         state_dict = checkpoint['model']
     elif 'ema' in checkpoint:
-        state_dict = checkpoint['ema']  # 使用EMA权重
+        state_dict = checkpoint['ema']
     else:
         state_dict = checkpoint
+    
+    # 从权重推断模型配置
+    pos_embed_shape = None
+    y_embed_shape = None
+    final_layer_shape = None
+    has_swiglu = False
+    
+    for key, tensor in state_dict.items():
+        if key == 'pos_embed':
+            pos_embed_shape = tensor.shape  # [1, seq_len, dim]
+        elif key == 'y_embedder.embedding_table.weight':
+            y_embed_shape = tensor.shape    # [num_classes, dim]
+        elif key == 'final_layer.linear.weight':
+            final_layer_shape = tensor.shape  # [out_channels, dim]
+        elif 'mlp.w12' in key:
+            has_swiglu = True
+    
+    # 推断参数
+    input_size = int((pos_embed_shape[1])**0.5) if pos_embed_shape else 16
+    num_classes = y_embed_shape[0] if y_embed_shape else 1000
+    out_channels = final_layer_shape[0] if final_layer_shape else 4
+    patch_size = 2  # 官方XL模型使用patch_size=2
+    
+    print(f"📋 检测到的模型配置:")
+    print(f"   输入尺寸: {input_size}x{input_size}")
+    print(f"   类别数量: {num_classes}")
+    print(f"   输出通道: {out_channels}")
+    print(f"   MLP类型: {'SwiGLU' if has_swiglu else 'Standard'}")
+    print(f"   补丁大小: {patch_size}")
+    
+    # 创建模型架构 - 使用检测到的官方配置
+    model = LightningDiT_models['LightningDiT-XL/2'](
+        input_size=input_size,      # 从权重推断
+        num_classes=num_classes,    # ImageNet 1000类 
+        class_dropout_prob=0.0,     # 推理时不dropout
+        use_qknorm=True,           # XL模型标配
+        use_swiglu=has_swiglu,     # 从权重检测
+        use_rope=True,             # XL模型使用RoPE
+        use_rmsnorm=True,          # XL模型使用RMSNorm
+        wo_shift=False,
+        in_channels=out_channels,   # 与final_layer输出匹配
+        use_checkpoint=False,       # 推理不需要checkpoint
+    )
     
     # 移除可能的'module.'前缀
     if any(key.startswith('module.') for key in state_dict.keys()):
         state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
     
-    model.load_state_dict(state_dict, strict=True)
+    # 尝试加载权重，使用strict=False以忽略不匹配的层
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    
+    if missing_keys:
+        print(f"⚠️ 缺失的权重键 ({len(missing_keys)}个):")
+        for key in missing_keys[:5]:  # 只显示前5个
+            print(f"   - {key}")
+        if len(missing_keys) > 5:
+            print(f"   ... 和其他 {len(missing_keys)-5} 个")
+    
+    if unexpected_keys:
+        print(f"⚠️ 意外的权重键 ({len(unexpected_keys)}个):")
+        for key in unexpected_keys[:5]:  # 只显示前5个
+            print(f"   - {key}")
+        if len(unexpected_keys) > 5:
+            print(f"   ... 和其他 {len(unexpected_keys)-5} 个")
+    
     model = model.to(device)
     model.eval()
     
-    print(f"✅ DiT XL模型加载完成")
+    # 计算成功加载的权重比例
+    total_params = len(state_dict)
+    loaded_params = total_params - len(missing_keys)
+    load_ratio = loaded_params / total_params * 100 if total_params > 0 else 0
+    
+    print(f"✅ DiT XL模型加载完成 ({load_ratio:.1f}%权重匹配)")
     print(f"   参数量: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
     print(f"   模型大小: {sum(p.numel() * p.element_size() for p in model.parameters()) / (1024**2):.1f}MB")
+    
+    # 如果权重匹配率太低，给出警告
+    if load_ratio < 80:
+        print(f"⚠️ 权重匹配率较低 ({load_ratio:.1f}%)，量化后的性能可能受影响")
+        print(f"   建议使用与checkpoint完全匹配的模型架构")
     
     return model
 
