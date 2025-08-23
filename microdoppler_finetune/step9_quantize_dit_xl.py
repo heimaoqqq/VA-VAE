@@ -478,14 +478,12 @@ def test_generation_quality(model, vae_model, device, num_samples=16):
         
         # 使用dopri5采样器（高质量）
         sampler = Sampler(transport)
-        samples = sampler.sample_ode(
-            latents, 
-            model, 
-            steps=150,
-            method='dopri5',
-            cfg_scale=7.0,
-            model_kwargs={'y': labels}
+        sample_fn = sampler.sample_ode(
+            sampling_method='dopri5',
+            num_steps=150,
+            timestep_shift=0.1,
         )
+        samples = sample_fn(latents, model, y=labels)
         
         # 检查输出范围和分布
         sample_mean = samples.mean().item()
