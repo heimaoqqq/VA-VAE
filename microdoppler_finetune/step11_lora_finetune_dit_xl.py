@@ -709,7 +709,7 @@ def main():
 
     # 加载预训练DiT XL并添加LoRA到指定GPU
     print("\n📂 加载DiT XL模型并添加LoRA适配器...")
-    dit_xl_path = "/kaggle/working/lightningdit-xl-imagenet256-64ep.pt"
+    dit_xl_path = "/kaggle/working/VA-VAE/models/lightningdit-xl-imagenet256-64ep.pt"
     model = load_dit_xl_with_lora(dit_xl_path, device_dit)
     if model is None:
         return
