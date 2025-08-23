@@ -122,18 +122,28 @@ def load_trained_dit_xl(checkpoint_path, device):
     has_swiglu = False
     
     print(f"🔍 分析checkpoint权重键...")
+    print(f"   Checkpoint包含 {len(state_dict)} 个权重键")
+    
+    # 列出关键权重键以便调试
+    key_patterns = ['pos_embed', 'y_embedder', 'final_layer', 'mlp.w12']
+    for pattern in key_patterns:
+        matching_keys = [k for k in state_dict.keys() if pattern in k]
+        if matching_keys:
+            print(f"   {pattern} 相关键: {matching_keys}")
+    
     for key, tensor in state_dict.items():
         if key == 'pos_embed':
             pos_embed_shape = tensor.shape  # [1, seq_len, dim]
-            print(f"   找到pos_embed: {pos_embed_shape}")
+            print(f"   ✓ 找到pos_embed: {pos_embed_shape}")
         elif key == 'y_embedder.embedding_table.weight':
             y_embed_shape = tensor.shape    # [num_classes, dim]
-            print(f"   找到y_embedder: {y_embed_shape}")
+            print(f"   ✓ 找到y_embedder: {y_embed_shape}")
         elif key == 'final_layer.linear.weight':
             final_layer_shape = tensor.shape  # [out_channels, dim]
-            print(f"   找到final_layer: {final_layer_shape}")
-        elif 'mlp.w12' in key:
+            print(f"   ✓ 找到final_layer: {final_layer_shape}")
+        elif 'mlp.w12' in key and not has_swiglu:
             has_swiglu = True
+            print(f"   ✓ 检测到SwiGLU: {key}")
     
     # 推断参数 - 精确匹配checkpoint中的实际配置
     if pos_embed_shape:
@@ -146,6 +156,13 @@ def load_trained_dit_xl(checkpoint_path, device):
     num_classes = y_embed_shape[0] if y_embed_shape else 1000  # 从checkpoint读取实际类别数
     out_channels = final_layer_shape[0] if final_layer_shape else 32
     patch_size = 1  # 官方XL预训练模型使用patch_size=1 (LightningDiT-XL/1)
+    
+    # 调试输出变量状态
+    print(f"   📊 变量检查:")
+    print(f"     pos_embed_shape: {pos_embed_shape}")
+    print(f"     y_embed_shape: {y_embed_shape}")
+    print(f"     final_layer_shape: {final_layer_shape}")
+    print(f"     has_swiglu: {has_swiglu}")
     
     print(f"📋 检测到的模型配置:")
     print(f"   输入尺寸: {input_size}x{input_size}")
