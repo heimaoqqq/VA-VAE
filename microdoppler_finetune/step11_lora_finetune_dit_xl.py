@@ -174,6 +174,21 @@ def load_dit_xl_with_lora(checkpoint_path, device):
     print(f"   输出通道: {out_channels}")
     print(f"   MLP类型: {'SwiGLU' if has_swiglu else 'GELU'}")
     
+    # 🚨 调试：检查实际加载的权重形状
+    print(f"🔍 权重文件调试:")
+    for key, tensor in list(clean_state_dict.items())[:5]:
+        print(f"   {key}: {tensor.shape}")
+    print(f"   总权重键数量: {len(clean_state_dict)}")
+    
+    # 🚨 检查关键层的维度
+    if 'blocks.0.attn.qkv.weight' in clean_state_dict:
+        qkv_shape = clean_state_dict['blocks.0.attn.qkv.weight'].shape
+        print(f"   注意力层维度: {qkv_shape} (应该是3456x1152 for XL)")
+    
+    if 'blocks.0.mlp.w12.weight' in clean_state_dict:
+        mlp_shape = clean_state_dict['blocks.0.mlp.w12.weight'].shape  
+        print(f"   MLP层维度: {mlp_shape} (应该是9216x1152 for XL)")
+    
     model = LightningDiT_models['LightningDiT-XL/1'](
         input_size=input_size,
         num_classes=num_classes,
