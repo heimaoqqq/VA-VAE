@@ -236,26 +236,35 @@ def load_trained_dit_xl(checkpoint_path, device):
     return model
 
 def apply_dynamic_quantization(model):
-    """应用PyTorch动态量化"""
-    print("\n🔧 开始应用动态量化...")
+    """应用动态量化到模型（带兼容性检查）"""
+    print(f"\n🔧 开始应用动态量化...")
     
-    # 设置模型为评估模式
-    model.eval()
+    # 将模型移到CPU进行量化
+    model_cpu = model.cpu()
     
-    # 应用动态量化 - 只量化Linear层（最稳定）
-    quantized_model = quantization.quantize_dynamic(
-        model,
-        {torch.nn.Linear},  # 只量化Linear层
-        dtype=torch.qint8,   # 使用8位整数
-        inplace=False        # 不修改原模型
-    )
-    
-    print("✅ 动态量化完成")
-    print("   量化目标: Linear layers only")
-    print("   量化精度: INT8")
-    print("   量化方式: 动态量化（推理时实时量化activation）")
-    
-    return quantized_model
+    try:
+        # 尝试应用动态量化 - 只量化Linear层
+        quantized_model = torch.quantization.quantize_dynamic(
+            model_cpu,           # 原始模型（CPU）
+            {torch.nn.Linear},   # 要量化的层类型
+            dtype=torch.qint8,   # 量化精度
+            inplace=False         # 不修改原模型
+        )
+        
+        print("✅ 动态量化完成")
+        print("   量化目标: Linear layers only")
+        print("   量化精度: INT8")
+        print("   量化方式: 动态量化（推理时实时量化activation）")
+        
+        return quantized_model
+        
+    except (RuntimeError, NotImplementedError) as e:
+        print(f"⚠️ 动态量化失败: {str(e)}")
+        print("   回退到原始模型（CPU版本）")
+        print("   这可能是由于模型架构兼容性问题")
+        
+        # 返回CPU版本的原始模型作为fallback
+        return model_cpu
 
 def measure_model_size(model, model_name):
     """测量模型大小"""
