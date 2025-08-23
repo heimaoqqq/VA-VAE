@@ -508,7 +508,7 @@ def train_lora_model_parallel(model, vae_model, dataloader, config):
     print(f"   梯度累积步数: {gradient_accumulation_steps}")
     
     # 优化器 - 降低学习率避免NaN
-    lora_params = [p for p in dit_model.parameters() if p.requires_grad]
+    lora_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(lora_params, lr=learning_rate * 0.1, weight_decay=0.01)  # 降低10倍学习率
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
     
@@ -519,7 +519,7 @@ def train_lora_model_parallel(model, vae_model, dataloader, config):
     criterion = nn.MSELoss()
     
     # 改为FP32训练 - 测试显存和数值稳定性
-    dit_model = dit_model.float().to(device_dit)  # 改为FP32
+    model = model.float().to(device_dit)  # 改为FP32
     if vae_model is not None:
         vae_model = vae_model.float().to(device_vae)  # 保持FP32
         print(f"   VA-VAE设备: {device_vae} (FP32精度)")
@@ -538,7 +538,7 @@ def train_lora_model_parallel(model, vae_model, dataloader, config):
     
     # 训练循环
     for epoch in range(num_epochs):
-        dit_model.train()
+        model.train()
         epoch_loss = 0.0
         optimizer.zero_grad()
         
@@ -551,19 +551,14 @@ def train_lora_model_parallel(model, vae_model, dataloader, config):
             
             for step in range(4 // gradient_accumulation_steps):  # 模拟几个步骤
                 # 模拟输入：随机latent向量 (batch_size, 32, 16, 16)
-                x = torch.randn(batch_size, 32, 16, 16, dtype=torch.float16, device=device_dit)
-                # 模拟噪声时间步
-                t = torch.randint(0, 1000, (batch_size,), device=device_dit)
-                # 模拟类别标签
-                y = torch.randint(0, 1000, (batch_size,), device=device_dit)
-                # 模拟目标噪声
-                noise = torch.randn_like(x, device=device_dit)
+                fake_latents = torch.randn(batch_size, 32, 16, 16, dtype=torch.float32, device=device_dit)
+                fake_noise = torch.randn_like(fake_latents)
+                fake_timesteps = torch.randint(0, 1000, (batch_size,), device=device_dit).float()
+                fake_y = torch.randint(0, 31, (batch_size,), device=device_dit)  # 31个用户类别
                 
-                # 前向传播（在DiT设备上）
-                with torch.cuda.amp.autocast():
-                    pred_noise = dit_model(x, t, y)
-                    loss = criterion(pred_noise, noise)
-                    loss = loss / gradient_accumulation_steps
+                # 前向传播
+                pred_noise = model(fake_latents, fake_timesteps, fake_y)
+                loss = criterion(pred_noise, fake_noise) / gradient_accumulation_steps
                 
                 # 反向传播
                 loss.backward()
@@ -620,11 +615,11 @@ def train_lora_model_parallel(model, vae_model, dataloader, config):
                     # 前向传播 - FP32训练，无需autocast
                     if mixed_precision:
                         with torch.amp.autocast('cuda', enabled=True):
-                            pred_noise = dit_model(noisy_latents, timesteps, y)
+                            pred_noise = model(noisy_latents, timesteps, y)
                             loss = criterion(pred_noise, noise)
                     else:
                         # FP32直接计算，更稳定
-                        pred_noise = dit_model(noisy_latents, timesteps, y)
+                        pred_noise = model(noisy_latents, timesteps, y)
                         loss = criterion(pred_noise, noise)
                     
                     # 检查NaN
