@@ -354,10 +354,10 @@ def train_ddp_worker(rank, world_size, config):
                     # 🔧 激进梯度裁剪和稳定性检查
                     grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=config['max_grad_norm'])
                     
-                    # 🛡️ 严格梯度检查
-                    if grad_norm > 5.0 or torch.isnan(grad_norm):
+                    # 🛡️ 梯度爆炸检查（放宽阈值）
+                    if grad_norm > 100.0 or torch.isnan(grad_norm):
                         if rank == 0:
-                            print(f"⚠️ 梯度异常: {grad_norm:.2f}, 跳过更新")
+                            print(f"⚠️ 梯度爆炸: {grad_norm:.2f}, 跳过更新")
                         scaler.update()
                         optimizer.zero_grad(set_to_none=True)  # 释放梯度内存
                         continue
@@ -572,7 +572,7 @@ def main():
         'num_workers': 0,       # 禁用多进程减少内存
         'warmup_steps': 100,    # 添加热身阶段
         'use_fp32': False,      # 设为True即可回退FP32训练
-        'max_grad_norm': 0.5,   # 更严格梯度裁剪
+        'max_grad_norm': 5.0,   # 放宽梯度裁剪阈值
         'empty_cache_freq': 10, # 每10步清理缓存
     }
     
