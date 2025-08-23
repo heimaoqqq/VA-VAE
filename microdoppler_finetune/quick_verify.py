@@ -22,26 +22,59 @@ def quick_check():
     print(f"📋 加载数据类型: {type(data)}")
     
     if isinstance(data, dict):
-        print("⚠️ 加载的是字典（state_dict），不是完整模型")
-        print("   这表明保存的只是权重，不是量化模型结构")
+        print("📦 加载的是结构化字典")
         
         # 检查字典键
-        print(f"   权重键数量: {len(data)}")
-        print(f"   示例键: {list(data.keys())[:5]}")
+        print(f"   包含键: {list(data.keys())}")
         
-        # 检查权重精度
-        print("\n📊 权重精度分析:")
-        for i, (name, param) in enumerate(list(data.items())[:5]):
-            if isinstance(param, torch.Tensor) and param.numel() > 100:
-                unique_vals = torch.unique(param.flatten()).numel()
-                total_vals = param.numel()
-                ratio = unique_vals / total_vals
-                print(f"   {name[:50]:50} | 唯一值比例: {ratio:.4f} | dtype: {param.dtype}")
-        
-        print("\n❌ 结论: 量化失败！")
-        print("   - 保存的是state_dict而非完整量化模型")
-        print("   - 权重仍为float32，未量化")
-        print("   - 文件小是因为只保存了权重，没有模型结构")
+        # 检查是否有量化模型
+        if 'quantized_model' in data:
+            print("✅ 找到 'quantized_model' 键")
+            quantized_model = data['quantized_model']
+            print(f"   量化模型类型: {type(quantized_model)}")
+            
+            if hasattr(quantized_model, 'named_modules'):
+                print("✅ 量化模型是完整模型对象")
+                
+                # 检查量化层
+                quantized_layers = 0
+                total_modules = 0
+                
+                for name, module in quantized_model.named_modules():
+                    total_modules += 1
+                    # 检查多种量化标识
+                    if (hasattr(module, '_packed_params') or 
+                        'quantized' in str(type(module)).lower() or
+                        hasattr(module, 'scale') and hasattr(module, 'zero_point')):
+                        quantized_layers += 1
+                        print(f"   ✅ 量化层: {name} | 类型: {type(module).__name__}")
+                
+                print(f"\n📊 量化统计:")
+                print(f"   总模块数: {total_modules}")
+                print(f"   量化层数: {quantized_layers}")
+                
+                if quantized_layers == 0:
+                    print("❌ 未找到量化层！检查权重类型...")
+                    # 检查权重精度
+                    param_count = 0
+                    for name, param in quantized_model.named_parameters():
+                        if param_count >= 3:
+                            break
+                        print(f"   {name[:40]:40} | dtype: {param.dtype} | shape: {param.shape}")
+                        param_count += 1
+                else:
+                    print(f"✅ 量化成功！找到 {quantized_layers} 个量化层")
+                    
+            elif isinstance(quantized_model, dict):
+                print("⚠️ 量化模型是state_dict，不是完整模型")
+                print(f"   权重数量: {len(quantized_model)}")
+                print("❌ 量化失败：保存的是权重而非量化模型结构")
+            else:
+                print(f"❓ 未知量化模型类型: {type(quantized_model)}")
+        else:
+            print("❌ 未找到 'quantized_model' 键")
+            print("   可能的键:", list(data.keys()))
+            print("❌ 量化失败：文件结构不正确")
         
     elif hasattr(data, 'named_modules'):
         print("✅ 加载的是完整模型")
