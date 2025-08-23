@@ -135,8 +135,14 @@ def load_trained_dit_xl(checkpoint_path, device):
         elif 'mlp.w12' in key:
             has_swiglu = True
     
-    # 推断参数 - 精确匹配checkpoint中的配置
-    input_size = int((pos_embed_shape[1])**0.5) if pos_embed_shape else 256  # ImageNet标准256
+    # 推断参数 - 精确匹配checkpoint中的实际配置
+    if pos_embed_shape:
+        seq_len = pos_embed_shape[1]  # 序列长度
+        input_size = int(seq_len**0.5)  # input_size = sqrt(seq_len)
+        print(f"   序列长度: {seq_len} -> input_size: {input_size}")
+    else:
+        input_size = 16  # 默认值
+        
     num_classes = y_embed_shape[0] if y_embed_shape else 1000  # 从checkpoint读取实际类别数
     out_channels = final_layer_shape[0] if final_layer_shape else 32
     patch_size = 1  # 官方XL预训练模型使用patch_size=1 (LightningDiT-XL/1)
