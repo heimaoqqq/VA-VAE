@@ -188,86 +188,62 @@ def load_dit_xl_with_lora(checkpoint_path, device):
     
     return model
 
+# 导入VA-VAE相关模块
+try:
+    sys.path.append('/kaggle/working/VA-VAE/LightningDiT/tokenizer')
+    from autoencoder import AutoencoderKL
+    VAVAE_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ VA-VAE模块导入失败: {e}")
+    VAVAE_AVAILABLE = False
+
 def load_vae_model(device):
-    """加载预训练VA-VAE模型"""
+    """加载预训练VA-VAE模型 - 使用真正的VA-VAE实现"""
     print(f"📂 加载VA-VAE模型:")
     
     # VA-VAE模型路径
     vae_checkpoint_path = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
         
     if not os.path.exists(vae_checkpoint_path):
-        print(f"   ⚠️ 未找到VA-VAE权重文件: {vae_checkpoint_path}")
-        print("   LoRA微调仅需DiT XL模型，VA-VAE用于可选的生成质量验证")
+        print(f"   ❌ 未找到VA-VAE权重文件: {vae_checkpoint_path}")
+        print("   这是必需的文件，无法进行真正的LoRA训练")
+        return None
+    
+    if not VAVAE_AVAILABLE:
+        print(f"   ❌ VA-VAE模块不可用，无法加载模型")
+        return None
+    
+    try:
+        print(f"   📋 使用真正的VA-VAE实现")
+        
+        # 使用真正的AutoencoderKL加载模型
+        vae_model = AutoencoderKL(
+            embed_dim=32,  # 从配置文件得到
+            ch_mult=(1, 1, 2, 2, 4),  # 从配置文件得到
+            use_variational=True,
+            ckpt_path=vae_checkpoint_path,
+            model_type='vavae'
+        )
+        
+        vae_model.eval().to(device)
+        print(f"   ✅ VA-VAE模型加载成功 (真正实现)")
+        print(f"   📊 模型参数: embed_dim=32, 下采样=16x")
+        return vae_model
+        
+    except Exception as e:
+        print(f"   ❌ VA-VAE模型加载失败: {e}")
+        print(f"   详细错误: {type(e).__name__}: {str(e)}")
         return None
             
-    # 加载检查点
-    checkpoint = torch.load(vae_checkpoint_path, map_location='cpu')
-    
-    # 从检查点中提取VA-VAE模型
-    if 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
-    elif 'model' in checkpoint:
-        state_dict = checkpoint['model']
-    else:
-        state_dict = checkpoint
-            
-    # 尝试多种方式导入VA-VAE模型类
-    vae_model = None
-        
-    # 尝试导入方式1: Lightning模块
-    try:
-        import lightning.pytorch as pl
-        # 直接加载Lightning检查点
-        vae_model = pl.LightningModule.load_from_checkpoint(vae_checkpoint_path)
-        vae_model.eval()
-        vae_model = vae_model.to(device)
-        print(f"   ✅ VA-VAE模型加载成功 (Lightning)")
-        return vae_model
-    except Exception as e:
-        print(f"   ⚠️ Lightning方式加载失败: {e}")
-        
-    # 尝试导入方式2: 从LightningDiT路径
-    try:
-        sys.path.append('/kaggle/working/VA-VAE')
-        from models.vae import VAE  
-        
-        vae_model = VAE(
-            in_channels=3,
-            out_channels=32,
-            latent_channels=32,
-            downsample_factor=16
-        )
-        vae_model.load_state_dict(state_dict, strict=False)
-        vae_model.eval().to(device)
-        print(f"   ✅ VA-VAE模型加载成功 (VAE)")
-        return vae_model
-    except Exception as e:
-        print(f"   ⚠️ VAE方式加载失败: {e}")
-        
-    # 尝试导入方式3: 检查点中的模型架构
-    try:
-        if 'hyper_parameters' in checkpoint:
-            print(f"   📋 检查点超参数: {checkpoint['hyper_parameters']}")
-        if 'model_name' in checkpoint:
-            print(f"   📋 模型名称: {checkpoint['model_name']}")
-            
-        # 尝试直接从检查点恢复
-        if hasattr(checkpoint, 'model'):
-            vae_model = checkpoint.model
-            vae_model.eval().to(device) 
-            print(f"   ✅ VA-VAE模型加载成功 (直接)")
-            return vae_model
-    except Exception as e:
-        print(f"   ⚠️ 直接加载失败: {e}")
-        
-    # 所有方式都失败
-    print("   ❌ 所有VA-VAE导入方式都失败")
-    print(f"   📂 检查点键: {list(checkpoint.keys())}")
-    return None
-            
 def encode_images_to_latents(vae_model, data_split_dir, original_data_dir, device_vae):
-    """将原始图像编码为latent向量"""
-    print(f"🎨 编码原始图像为latent向量...")
+    """将原始图像编码为latent向量 - 仅使用真正的VA-VAE"""
+    
+    if vae_model is None:
+        print(f"❌ VA-VAE模型未加载，无法编码图像")
+        print(f"   需要真正的VA-VAE模型才能进行LoRA训练")
+        return None
+        
+    print(f"🎨 使用真正的VA-VAE编码原始图像...")
     
     import json
     from PIL import Image
@@ -290,14 +266,15 @@ def encode_images_to_latents(vae_model, data_split_dir, original_data_dir, devic
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])  # [-1, 1]
     ])
     
-    # 编码训练集
+    # 编码训练集 - 使用真正的VA-VAE
     latents_dir = Path(data_split_dir) / "latents"
     latents_dir.mkdir(exist_ok=True)
     
     latents_list = []
     labels_list = []
     
-    print(f"   处理训练集图像...")
+    print(f"   使用真正VA-VAE处理训练集图像...")
+    print(f"   VA-VAE规格: 32通道, 16x16分辨率, 无SD缩放")
     train_data = dataset_split['train']
     
     for user_id, image_paths in train_data.items():
@@ -316,12 +293,18 @@ def encode_images_to_latents(vae_model, data_split_dir, original_data_dir, devic
                 # 使用VA-VAE编码
                 with torch.no_grad():
                     if vae_model is not None:
-                        latent = vae_model.encode(img_tensor)
-                        if hasattr(latent, 'sample'):
-                            latent = latent.sample()  # 对于VAE
+                        # 真正的VA-VAE编码
+                        posterior = vae_model.encode(img_tensor)
+                        latent = posterior.sample()  # VA-VAE返回分布，需要采样
+                        
+                        # 验证VA-VAE输出格式 (应该是32通道，16x16)
+                        expected_shape = (1, 32, 16, 16)
+                        if latent.shape != expected_shape:
+                            print(f"   ⚠️ VA-VAE输出格式不符: {latent.shape}, 期望: {expected_shape}")
+                            return None
                     else:
-                        # 模拟latent（如果VA-VAE不可用）
-                        latent = torch.randn(1, 32, 16, 16, dtype=torch.float16, device=device_vae)
+                        print("   ❌ VA-VAE模型未加载，无法进行真正的编码")
+                        return None
                     
                     latents_list.append(latent.cpu())
                     labels_list.append(user_label)
