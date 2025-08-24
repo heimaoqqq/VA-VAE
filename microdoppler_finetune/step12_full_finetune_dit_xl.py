@@ -174,9 +174,17 @@ def evaluate_model(model, vae_model, device, rank):
     num_samples = 20  # 验证样本数
     
     with torch.no_grad():
-        # 使用部分训练数据作为验证集
-        latent_path = "/kaggle/working/VA-VAE/microdoppler_finetune/microdoppler_latents.safetensors"
-        data = safetensors.load_file(latent_path)
+        # 使用正确的验证集数据路径
+        from pathlib import Path
+        official_val_dir = Path("/kaggle/working/latents_official/vavae_config_for_dit/microdoppler_val_256")
+        latent_path = official_val_dir / "latents_rank00_shard000.safetensors"
+        
+        if not latent_path.exists():
+            if rank == 0:
+                print(f"⚠️ 验证数据不存在，跳过验证: {latent_path}")
+            return 0.0
+            
+        data = safetensors.load_file(str(latent_path))
         latents = data['latents'][:num_samples].to(device)
         labels = data['labels'][:num_samples].to(device)
         
