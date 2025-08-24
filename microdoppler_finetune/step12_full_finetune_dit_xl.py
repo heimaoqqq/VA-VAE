@@ -222,9 +222,9 @@ def generate_validation_samples(model, vae_model, device, epoch):
         cfg_scale = 7.0  # 适合微多普勒的CFG强度
         timestep_shift = 0.1  # 保留细节的时间步偏移
         
-        # ODE求解 - 高质量dopri5风格推理
+        # ODE求解 - 训练中快速验证版本（避免NCCL超时）
         t_start, t_end = 1.0, 1e-4
-        num_steps = 250  # 高质量推理，充分采样微多普勒细节
+        num_steps = 50  # 训练中快速验证，避免DDP超时
         
         def ode_fn(t, x):
             """ODE函数：dx/dt = f(x,t)"""
@@ -270,10 +270,14 @@ def generate_validation_samples(model, vae_model, device, epoch):
         # 解码为图像
         generated_images = vae_model.decode(latents)
         
+        # 确保图像在正确范围内 [-1, 1] -> [0, 1]
+        generated_images = (generated_images + 1.0) / 2.0
+        generated_images = torch.clamp(generated_images, 0.0, 1.0)
+        
         # 保存样本
         save_path = f"/kaggle/working/validation_samples_epoch_{epoch}.png"
         import torchvision.utils as vutils
-        vutils.save_image(generated_images, save_path, nrow=2, normalize=True)
+        vutils.save_image(generated_images, save_path, nrow=2, normalize=False)
         print(f"   ✅ 保存验证样本: {save_path}")
     
     model.train()
@@ -556,7 +560,7 @@ def train_ddp_worker(rank, world_size, config):
                 print(f"🏆 新最佳模型! 验证损失: {validation_loss:.4f}")
                 print(f"💾 保存最佳模型: {os.path.basename(best_model_path)}")
             
-            # 🖼️ 每个epoch生成条件扩散样本
+            # 🖼️ 每个epoch生成条件扩散样本 (仅在rank 0，避免DDP同步)
             print(f"🎨 生成验证样本...")
             generate_validation_samples(model, vae_model, device, epoch+1)
         
