@@ -268,7 +268,7 @@ def generate_validation_samples(model, vae_model, device, epoch):
         latents = x
         
         # 解码为图像
-        generated_images = vae_model.decode_latents(latents)
+        generated_images = vae_model.decode(latents).sample
         
         # 保存样本
         save_path = f"/kaggle/working/validation_samples_epoch_{epoch}.png"
