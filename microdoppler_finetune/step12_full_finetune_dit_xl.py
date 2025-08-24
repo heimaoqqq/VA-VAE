@@ -185,8 +185,34 @@ def evaluate_model(model, vae_model, device, rank):
             return 0.0
             
         data = safetensors.load_file(str(latent_path))
-        latents = data['latents'][:num_samples].to(device)
-        labels = data['labels'][:num_samples].to(device)
+        latents = data['latents'][:num_samples]
+        labels = data['labels'][:num_samples]
+        
+        # 🔧 应用与训练数据相同的官方LightningDiT归一化
+        # 检查是否有latents_stats.pt文件
+        stats_file = official_val_dir / "latents_stats.pt"
+        train_stats_file = Path("/kaggle/working/latents_official/vavae_config_for_dit/microdoppler_train_256/latents_stats.pt")
+        
+        if stats_file.exists():
+            stats = torch.load(stats_file, map_location='cpu')
+            latent_mean = stats['mean']
+            latent_std = stats['std']
+        elif train_stats_file.exists():
+            # 使用训练集的统计信息
+            stats = torch.load(train_stats_file, map_location='cpu')
+            latent_mean = stats['mean']
+            latent_std = stats['std']
+        else:
+            # 计算当前验证数据的统计信息
+            latent_mean = latents.mean(dim=0, keepdim=True)
+            latent_std = latents.std(dim=0, keepdim=True)
+        
+        # 应用官方归一化: (latent - mean) / std * multiplier
+        latents = (latents - latent_mean) / latent_std * 1.0
+        
+        # 移动到设备
+        latents = latents.to(device)
+        labels = labels.to(device)
         
         for i in range(num_samples):
             # 模拟扩散过程
@@ -206,54 +232,67 @@ def evaluate_model(model, vae_model, device, rank):
     return val_loss / num_samples
 
 def generate_validation_samples(model, vae_model, device, epoch):
-    """生成条件扩散样本进行可视化验证 - 使用官方dopri5采样"""
+    """快速生成条件扩散样本进行可视化验证"""
     model.eval()
     
     with torch.no_grad():
+        print(f"   🔍 开始生成验证样本，设备: {device}")
+        
         # 生成4个不同类别的样本
         num_samples = 4
         sample_labels = torch.arange(num_samples, device=device)
+        print(f"   🏷️ 样本标签: {sample_labels.tolist()}")
         
-        # 从纯噪声开始
+        # 从纯噪声开始 - 确保在正确设备上
         latent_shape = (num_samples, 32, 16, 16)
-        z = torch.randn(latent_shape, device=device)
+        z = torch.randn(latent_shape, device=device, dtype=torch.float16)
+        print(f"   📐 噪声形状: {z.shape}, 设备: {z.device}, 类型: {z.dtype}")
         
         # 官方LightningDiT ODE采样设置
-        cfg_scale = 7.0  # 适合微多普勒的CFG强度
-        timestep_shift = 0.1  # 保留细节的时间步偏移
+        cfg_scale = 10.0  # 官方标准CFG强度
+        timestep_shift = 0.3  # 官方标准时间步偏移
         
-        # ODE求解 - 训练中快速验证版本（避免NCCL超时）
+        # ODE求解 - 官方dopri5风格
         t_start, t_end = 1.0, 1e-4
-        num_steps = 50  # 训练中快速验证，避免DDP超时
+        num_steps = 50  # 平衡质量和速度
         
         def ode_fn(t, x):
-            """ODE函数：dx/dt = f(x,t)"""
+            """ODE函数：dx/dt = f(x,t) - 官方LightningDiT实现"""
+            print(f"     ODE步骤: t={t:.4f}")
+            
+            # 确保所有张量在GPU上
             t_batch = torch.full((num_samples,), t, device=device, dtype=torch.float32)
             
             if cfg_scale > 1.0:
-                # CFG: 条件 + 无条件预测
+                # CFG: 条件 + 无条件预测 (官方实现)
                 uncond_labels = torch.full_like(sample_labels, -1)  # -1表示无条件
                 x_cond = torch.cat([x, x], dim=0)
-                t_cond = torch.cat([t_batch, t_batch], dim=0)
+                t_cond = torch.cat([t_batch, t_batch], dim=0) 
                 labels_cond = torch.cat([sample_labels, uncond_labels], dim=0)
                 
-                pred_both = model(x_cond, t_cond, labels_cond)
+                with torch.cuda.amp.autocast():
+                    pred_both = model(x_cond, t_cond, labels_cond)
                 pred_cond, pred_uncond = pred_both.chunk(2, dim=0)
                 
                 # CFG组合
                 pred = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
             else:
-                pred = model(x, t_batch, sample_labels)
+                with torch.cuda.amp.autocast():
+                    pred = model(x, t_batch, sample_labels)
             
             return -pred  # 负号：从噪声到干净图像
         
-        # 手动Euler积分（dopri5的简化版本，适合训练时快速验证）
+        print(f"   ⏱️ 开始官方ODE采样 ({num_steps}步)")
+        
+        # 手动Euler积分（dopri5简化版，官方风格）
         dt = (t_end - t_start) / num_steps
         t = t_start
         x = z.clone()
         
         for step in range(num_steps):
-            # 时间步偏移调整
+            print(f"     步骤 {step+1}/{num_steps}, t={t:.4f}")
+            
+            # 时间步偏移调整 (官方实现)
             t_shifted = t + timestep_shift
             t_shifted = max(t_shifted, t_end)
             
@@ -265,14 +304,33 @@ def generate_validation_samples(model, vae_model, device, epoch):
             if t <= t_end:
                 break
         
-        latents = x
+        latents = x.float()  # 转换为float32用于VAE解码
+        print(f"   🎯 最终latents形状: {latents.shape}, 设备: {latents.device}")
         
-        # 解码为图像
+        # VA-VAE解码
+        print(f"   🔄 开始VA-VAE解码...")
         generated_images = vae_model.decode(latents)
+        print(f"   📷 解码后图像: {generated_images.shape}, 范围: [{generated_images.min():.3f}, {generated_images.max():.3f}]")
         
-        # 确保图像在正确范围内 [-1, 1] -> [0, 1]
-        generated_images = (generated_images + 1.0) / 2.0
+        # 分析VA-VAE输出范围并正确归一化
+        # 大多数VAE输出范围是 [-1, 1]，但需要确认
+        if generated_images.min() >= -1.1 and generated_images.max() <= 1.1:
+            # 范围是 [-1, 1]，转换到 [0, 1]
+            generated_images = (generated_images + 1.0) / 2.0
+            print(f"   ✅ 检测到[-1,1]范围，转换到[0,1]")
+        elif generated_images.min() >= -0.1 and generated_images.max() <= 1.1:
+            # 范围已经是 [0, 1] 左右
+            print(f"   ✅ 检测到[0,1]范围，直接使用")
+        else:
+            # 其他范围，使用min-max归一化
+            min_val = generated_images.min()
+            max_val = generated_images.max()
+            generated_images = (generated_images - min_val) / (max_val - min_val)
+            print(f"   ⚠️ 异常范围[{min_val:.3f},{max_val:.3f}]，使用min-max归一化")
+        
+        # 确保最终范围正确
         generated_images = torch.clamp(generated_images, 0.0, 1.0)
+        print(f"   📊 最终图像范围: [{generated_images.min():.3f}, {generated_images.max():.3f}]")
         
         # 保存样本
         save_path = f"/kaggle/working/validation_samples_epoch_{epoch}.png"
@@ -560,7 +618,7 @@ def train_ddp_worker(rank, world_size, config):
                 print(f"🏆 新最佳模型! 验证损失: {validation_loss:.4f}")
                 print(f"💾 保存最佳模型: {os.path.basename(best_model_path)}")
             
-            # 🖼️ 每个epoch生成条件扩散样本 (仅在rank 0，避免DDP同步)
+            # 🖼️ 每个epoch生成条件扩散样本
             print(f"🎨 生成验证样本...")
             generate_validation_samples(model, vae_model, device, epoch+1)
         
@@ -652,35 +710,54 @@ def create_distributed_dataloader(config, rank, world_size):
         latents_data = safetensors.load_file(str(official_train_file))
         latents = latents_data['latents']  
         labels = latents_data['labels']
-        
+
+        # 🔧 应用官方LightningDiT归一化策略
+        # latent_norm=true: 标准化到mean=0, std=1
+        # latent_multiplier=1.0: 保持标准差为1.0
+
+        # 检查是否有latents_stats.pt文件（官方预处理的统计信息）
+        stats_file = official_train_dir / "latents_stats.pt"
+        if stats_file.exists():
+            if rank == 0:
+                print(f"   📊 加载官方latent统计信息: {stats_file}")
+            stats = torch.load(stats_file, map_location='cpu')
+            latent_mean = stats['mean']
+            latent_std = stats['std']
+        else:
+            # 计算当前数据的统计信息
+            if rank == 0:
+                print(f"   📊 计算latent统计信息...")
+            latent_mean = latents.mean(dim=0, keepdim=True)
+            latent_std = latents.std(dim=0, keepdim=True)
+
+        # 应用官方归一化: (latent - mean) / std * multiplier
         if rank == 0:
-            print(f"   📊 总样本数: {len(latents)}")
-            print(f"   📊 每GPU批次: {batch_size}")
-            print(f"   📊 Worker数: {num_workers}")
-        
-        # 创建数据集
-        dataset = LatentDataset(latents, labels)
-        
-        # 分布式采样器 - 关键!
-        sampler = DistributedSampler(
-            dataset, 
-            num_replicas=world_size, 
-            rank=rank,
-            shuffle=True
-        )
-        
-        # 分布式数据加载器
+            print(f"   🔧 应用官方latent_norm=true, latent_multiplier=1.0")
+            print(f"   📈 原始latent范围: [{latents.min():.4f}, {latents.max():.4f}]")
+
+        latents = (latents - latent_mean) / latent_std  # 标准化
+        latents = latents * 1.0  # latent_multiplier=1.0
+
+        if rank == 0:
+            print(f"   📈 归一化后范围: [{latents.min():.4f}, {latents.max():.4f}]")
+            print(f"   ✅ 成功加载并归一化训练数据")
+            print(f"   📊 Latents形状: {latents.shape}")
+            print(f"   📊 Labels形状: {labels.shape}")
+            print(f"   📊 类别范围: {labels.min().item()} - {labels.max().item()}")
+
+        # 创建数据集和数据加载器
+        dataset = MicroDopplerLatentDataset(latents, labels)
+        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True) if world_size > 1 else None
         dataloader = DataLoader(
             dataset, 
-            batch_size=batch_size,
-            sampler=sampler,  # 使用分布式采样器
-            num_workers=num_workers,
-            pin_memory=True,
-            drop_last=True
+            batch_size=batch_size, 
+            shuffle=(sampler is None), 
+            sampler=sampler,
+            num_workers=0, 
+            pin_memory=True
         )
-        
         return dataloader
-        
+
     except Exception as e:
         if rank == 0:
             print(f"   ⚠️ 数据加载失败: {e}")
