@@ -167,6 +167,109 @@ def cleanup_ddp():
     """清理DDP进程组"""
     dist.destroy_process_group()
 
+def evaluate_model(model, vae_model, device, rank):
+    """验证模型性能"""
+    model.eval()
+    val_loss = 0.0
+    num_samples = 20  # 验证样本数
+    
+    with torch.no_grad():
+        # 使用部分训练数据作为验证集
+        latent_path = "/kaggle/working/VA-VAE/microdoppler_finetune/microdoppler_latents.safetensors"
+        data = safetensors.load_file(latent_path)
+        latents = data['latents'][:num_samples].to(device)
+        labels = data['labels'][:num_samples].to(device)
+        
+        for i in range(num_samples):
+            # 模拟扩散过程
+            noise = torch.randn_like(latents[i:i+1])
+            timesteps = torch.randint(0, 1000, (1,), device=device).float()
+            
+            alpha_t = 1 - timesteps / 1000
+            alpha_t = alpha_t.view(-1, 1, 1, 1)
+            noisy_latents = torch.sqrt(alpha_t) * latents[i:i+1] + torch.sqrt(1 - alpha_t) * noise
+            
+            # 前向传播
+            pred_noise = model(noisy_latents, timesteps, labels[i:i+1])
+            loss = nn.MSELoss()(pred_noise, noise)
+            val_loss += loss.item()
+    
+    model.train()
+    return val_loss / num_samples
+
+def generate_validation_samples(model, vae_model, device, epoch):
+    """生成条件扩散样本进行可视化验证 - 使用官方dopri5采样"""
+    model.eval()
+    
+    with torch.no_grad():
+        # 生成4个不同类别的样本
+        num_samples = 4
+        sample_labels = torch.arange(num_samples, device=device)
+        
+        # 从纯噪声开始
+        latent_shape = (num_samples, 32, 16, 16)
+        z = torch.randn(latent_shape, device=device)
+        
+        # 官方LightningDiT ODE采样设置
+        cfg_scale = 7.0  # 适合微多普勒的CFG强度
+        timestep_shift = 0.1  # 保留细节的时间步偏移
+        
+        # ODE求解 - 高质量dopri5风格推理
+        t_start, t_end = 1.0, 1e-4
+        num_steps = 250  # 高质量推理，充分采样微多普勒细节
+        
+        def ode_fn(t, x):
+            """ODE函数：dx/dt = f(x,t)"""
+            t_batch = torch.full((num_samples,), t, device=device, dtype=torch.float32)
+            
+            if cfg_scale > 1.0:
+                # CFG: 条件 + 无条件预测
+                uncond_labels = torch.full_like(sample_labels, -1)  # -1表示无条件
+                x_cond = torch.cat([x, x], dim=0)
+                t_cond = torch.cat([t_batch, t_batch], dim=0)
+                labels_cond = torch.cat([sample_labels, uncond_labels], dim=0)
+                
+                pred_both = model(x_cond, t_cond, labels_cond)
+                pred_cond, pred_uncond = pred_both.chunk(2, dim=0)
+                
+                # CFG组合
+                pred = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+            else:
+                pred = model(x, t_batch, sample_labels)
+            
+            return -pred  # 负号：从噪声到干净图像
+        
+        # 手动Euler积分（dopri5的简化版本，适合训练时快速验证）
+        dt = (t_end - t_start) / num_steps
+        t = t_start
+        x = z.clone()
+        
+        for step in range(num_steps):
+            # 时间步偏移调整
+            t_shifted = t + timestep_shift
+            t_shifted = max(t_shifted, t_end)
+            
+            # Euler步骤
+            dx_dt = ode_fn(t_shifted, x)
+            x = x + dt * dx_dt
+            t = t + dt
+            
+            if t <= t_end:
+                break
+        
+        latents = x
+        
+        # 解码为图像
+        generated_images = vae_model.decode_latents(latents)
+        
+        # 保存样本
+        save_path = f"/kaggle/working/validation_samples_epoch_{epoch}.png"
+        import torchvision.utils as vutils
+        vutils.save_image(generated_images, save_path, nrow=2, normalize=True)
+        print(f"   ✅ 保存验证样本: {save_path}")
+    
+    model.train()
+
 def train_ddp_worker(rank, world_size, config):
     """DDP工作进程 - 每个GPU运行此函数"""
     print(f"🚀 启动DDP Worker - Rank {rank}/{world_size}")
@@ -293,6 +396,10 @@ def train_ddp_worker(rank, world_size, config):
     if rank == 0:
         print(f"📊 显存使用: {memory_used:.1f}GB (GPU{rank})")
     
+    # 最佳模型跟踪变量
+    best_val_loss = float('inf')
+    best_model_path = None
+    
     # 训练循环
     for epoch in range(num_epochs):
         model.train()
@@ -374,10 +481,13 @@ def train_ddp_worker(rank, world_size, config):
                     scaler.update()
                     optimizer.zero_grad(set_to_none=True)  # set_to_none=True释放更多内存
                     
-                    # 更新进度条 (只在rank 0)
+                    # 更新进度条和梯度监控 (只在rank 0)
                     if rank == 0:
+                        current_scale = scaler.get_scale()
                         progress_bar.set_postfix({
                             'loss': f'{loss.item() * gradient_accumulation_steps:.4f}',
+                            'grad_norm': f'{grad_norm:.2f}',
+                            'scale': f'{current_scale:.0f}',
                             'gpu_mem': f'{torch.cuda.memory_allocated(device) / (1024**3):.1f}GB'
                         })
                 
@@ -408,16 +518,39 @@ def train_ddp_worker(rank, world_size, config):
             print(f"   平均损失: {avg_loss:.4f}")
             print(f"   学习率: {scheduler.get_last_lr()[0]:.2e}")
         
-        # 保存检查点 (只在rank 0)
-        if rank == 0 and (epoch + 1) % save_interval == 0:
-            save_path = f"/kaggle/working/dit_xl_ddp_epoch_{epoch+1}.pt"
-            torch.save({
-                'model_state_dict': model.module.state_dict(),  # 注意: model.module
-                'optimizer_state_dict': optimizer.state_dict(),
-                'epoch': epoch,
-                'loss': avg_loss,
-            }, save_path)
-            print(f"💾 保存检查点: {save_path}")
+        # 🔍 每个epoch验证评估 
+        if rank == 0:
+            print(f"\n🔍 Epoch {epoch+1} 验证评估:")
+            validation_loss = evaluate_model(model, vae_model, device, rank)
+            print(f"   验证损失: {validation_loss:.4f}")
+            print(f"   训练损失: {avg_loss:.4f}")
+            print(f"   差异: {abs(validation_loss - avg_loss):.4f}")
+            
+            # 🏆 检查是否为最佳模型并保存
+            if validation_loss < best_val_loss:
+                best_val_loss = validation_loss
+                
+                # 🗑️ 删除旧的最佳模型
+                if best_model_path and os.path.exists(best_model_path):
+                    os.remove(best_model_path)
+                    print(f"🗑️ 删除旧最佳模型: {os.path.basename(best_model_path)}")
+                
+                # 💾 保存新的最佳模型
+                best_model_path = f"/kaggle/working/best_dit_xl_ddp_epoch_{epoch+1}.pt"
+                torch.save({
+                    'model_state_dict': model.module.state_dict(),  # 注意: model.module
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'epoch': epoch + 1,
+                    'train_loss': avg_loss,
+                    'val_loss': validation_loss,
+                    'best_val_loss': best_val_loss,
+                }, best_model_path)
+                print(f"🏆 新最佳模型! 验证损失: {validation_loss:.4f}")
+                print(f"💾 保存最佳模型: {os.path.basename(best_model_path)}")
+            
+            # 🖼️ 每个epoch生成条件扩散样本
+            print(f"🎨 生成验证样本...")
+            generate_validation_samples(model, vae_model, device, epoch+1)
         
         # 同步所有进程
         if world_size > 1:
@@ -565,7 +698,7 @@ def main():
     # 🔧 稳定性优先的DDP配置
     config = {
         'learning_rate': 5e-6,  # 稳定的学习率
-        'num_epochs': 20,
+        'num_epochs': 15,
         'batch_size': 1,        # 每GPU批次大小
         'save_interval': 5,     # 减少IO开销
         'gradient_accumulation_steps': 12, # 更大累积步数减少显存压力
