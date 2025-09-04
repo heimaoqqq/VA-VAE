@@ -104,20 +104,22 @@ class EnhancedConditionalDiffusion(nn.Module):
         prototype_dim=768,
         latent_mean=0.059,
         latent_std=1.54,
+        latent_multiplier=0.18215,  # 使用标准的Stable Diffusion缩放因子
     ):
         super().__init__()
         
         # VAE组件
         self.vae = vae
         
-        # 核心：缩放因子（将VAE latent标准化到接近N(0,1)）
-        # 类似Stable Diffusion的0.18215，我们使用1/std
-        self.scale_factor = 1.0 / latent_std  # ≈ 0.649
+        # 核心：使用标准的缩放因子（类似Stable Diffusion）
+        # 不直接使用1/std，而是使用标准的latent_multiplier
+        self.scale_factor = latent_multiplier
         print(f"使用缩放因子: {self.scale_factor:.4f}")
         
         # 记录原始分布参数
         self.register_buffer('latent_mean', torch.tensor(latent_mean))
         self.register_buffer('latent_std', torch.tensor(latent_std))
+        self.register_buffer('latent_multiplier', torch.tensor(latent_multiplier))
         
         # 原型学习和对比学习组件
         self.prototype_encoder = PrototypicalEncoder(
@@ -165,11 +167,13 @@ class EnhancedConditionalDiffusion(nn.Module):
     
     def encode_to_standard_space(self, latents):
         """编码到标准化空间（类似Stable Diffusion）"""
-        return latents * self.scale_factor
+        # 正确的标准化：先去均值，然后除以std，再乘以scale_factor
+        return ((latents - self.latent_mean) / self.latent_std) * self.scale_factor
     
     def decode_to_original_space(self, latents):
         """解码回原始VAE空间"""
-        return latents / self.scale_factor
+        # 反向操作：先除以scale_factor，然后乘以std，最后加均值
+        return (latents / self.scale_factor) * self.latent_std + self.latent_mean
     
     def update_user_prototypes(self, user_samples_dict):
         """更新用户原型缓存"""
@@ -188,9 +192,9 @@ class EnhancedConditionalDiffusion(nn.Module):
             self.latent_mean.copy_(torch.tensor(mean))
         if std is not None:
             self.latent_std.copy_(torch.tensor(std))
-            self.scale_factor = 1.0 / std
+        # 保持使用标准的latent_multiplier，不根据std改变
         print(f"✅ 已更新分布: mean={self.latent_mean:.4f}, std={self.latent_std:.4f}")
-        print(f"   缩放因子: {self.scale_factor:.4f}")
+        print(f"   缩放因子(latent_multiplier): {self.scale_factor:.4f}")
     
     def get_user_condition(self, user_ids):
         """获取用户条件编码"""
@@ -306,12 +310,12 @@ class EnhancedConditionalDiffusion(nn.Module):
         scheduler = self.ddim_scheduler if use_ddim else self.scheduler
         scheduler.set_timesteps(num_inference_steps, device=device)
         
-        # ✅ 步骤1：从标准高斯N(0,1)开始（在标准化空间）
+        # ✅ 步骤1：从正确的标准化分布开始
         shape = (batch_size, 32, 16, 16)
-        latents = torch.randn(shape, device=device)
+        latents = torch.randn(shape, device=device) * self.scale_factor
         
         print(f"📊 生成配置:")
-        print(f"   标准化空间N(0,1)初始化")
+        print(f"   标准化空间N(0, {self.scale_factor:.4f})初始化")
         print(f"   初始std: {latents.std():.4f}")
         
         # 准备条件
