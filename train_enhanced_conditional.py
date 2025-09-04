@@ -228,9 +228,10 @@ def train_enhanced_diffusion(args):
             user_conditions = model.get_user_condition(user_ids)
             
             # 前向传播
-            total_loss, diff_loss, contrastive_loss = model.training_step(
-                latents, user_conditions
-            )
+            loss_dict = model.training_step(latents, user_conditions)
+            total_loss = loss_dict['total_loss']
+            diff_loss = loss_dict['diffusion_loss']
+            contrastive_loss = loss_dict['contrastive_loss']
             
             # 反向传播
             optimizer.zero_grad()
@@ -275,7 +276,10 @@ def train_enhanced_diffusion(args):
                 
                 # 获取用户条件（和训练步骤一样）
                 user_conditions = model.get_user_condition(user_ids)
-                total_loss, diff_loss, contrastive_loss = model.training_step(latents, user_conditions)
+                loss_dict = model.training_step(latents, user_conditions)
+                total_loss = loss_dict['total_loss']
+                diff_loss = loss_dict['diffusion_loss']
+                contrastive_loss = loss_dict['contrastive_loss']
                 
                 # 更新验证损失
                 val_losses['total'] += total_loss.item()
