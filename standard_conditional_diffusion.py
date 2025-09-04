@@ -194,19 +194,16 @@ class StandardConditionalDiffusion(nn.Module):
             latent_shape = (num_samples, 32, 16, 16)  # VAE latent shape
             latents = torch.randn(latent_shape, device=device)
             
-            # 📊 监控生成初始latent std
-            init_std = latents.std().item()
-            print(f"📊 生成初始latent std: {init_std:.6f}")
-            
-            # 设置推理调度器
-            inference_scheduler = DDIMScheduler(
-                num_train_timesteps=1000,
-                beta_start=0.0001,
-                beta_end=0.02,
-                beta_schedule="linear",
-                prediction_type="epsilon"
-            )
+            # 设置推理调度器 - 使用与训练相同的调度器
+            inference_scheduler = self.scheduler  # 重用训练调度器
             inference_scheduler.set_timesteps(num_inference_steps)
+            
+            # 初始噪声需要按调度器缩放
+            latents = latents * inference_scheduler.init_noise_sigma
+            
+            # 📊 监控缩放后的初始latent std
+            init_std = latents.std().item()
+            print(f"📊 缩放后初始latent std: {init_std:.6f} (期望约≈{inference_scheduler.init_noise_sigma:.3f})")
             
             # CFG的无条件输入
             if guidance_scale > 1.0:
