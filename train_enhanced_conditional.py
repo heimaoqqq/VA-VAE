@@ -245,7 +245,7 @@ def train_enhanced_diffusion(args):
             
             # 更新统计
             train_losses['total'] += total_loss.item()
-            train_losses['diff'] += diff_loss.item()
+            train_losses['diffusion'] += diff_loss.item()
             train_losses['contrastive'] += contrastive_loss.item()
             
             # 更新进度条
