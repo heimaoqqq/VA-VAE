@@ -177,6 +177,10 @@ def train_enhanced_diffusion(args):
         latent_std=latent_stats['std']
     )
     
+    # 🔑 关键修复：将整个模型移动到CUDA设备
+    model = model.to(device)
+    print(f"✅ 模型已移动到设备: {device}")
+    
     # 关键修复：传递VAE实例以获取正确的scale_factor
     model.vae = vae
     print(f"✅ 已将VAE实例传递给扩散模型 (scale_factor={vae.scale_factor})")
