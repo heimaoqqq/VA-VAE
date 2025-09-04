@@ -197,15 +197,26 @@ class EnhancedConditionalDiffusion(nn.Module):
         batch_size = len(user_ids)
         device = next(self.parameters()).device
         
+        # 确保返回正确的3D张量形状 [batch_size, sequence_length=1, hidden_dim=768]
         conditions = torch.zeros(batch_size, 1, 768, device=device)
         
         for i, user_id in enumerate(user_ids):
-            if user_id in self.user_prototypes:
-                conditions[i] = self.user_prototypes[user_id]
+            user_id_int = user_id.item() if torch.is_tensor(user_id) else user_id
+            if user_id_int in self.user_prototypes:
+                # 确保原型是正确的形状 [1, 768]
+                prototype = self.user_prototypes[user_id_int]
+                if prototype.dim() == 1:
+                    prototype = prototype.unsqueeze(0)  # [768] -> [1, 768]
+                conditions[i] = prototype
             else:
-                # 随机初始化
+                # 随机初始化为 [1, 768]
                 conditions[i] = torch.randn(1, 768, device=device) * 0.1
         
+        # 确保返回的张量形状正确
+        if conditions.dim() != 3 or conditions.shape[-1] != 768:
+            print(f"⚠️ 警告：user_conditions形状异常: {conditions.shape}")
+            conditions = conditions.view(batch_size, 1, 768)
+            
         return conditions
     
     def training_step(self, clean_latents, user_conditions):
@@ -234,6 +245,15 @@ class EnhancedConditionalDiffusion(nn.Module):
         noisy_latents = noisy_latents.to(device)
         timesteps = timesteps.to(device)
         user_conditions = user_conditions.to(device)
+        
+        # 调试：打印张量形状
+        print(f"🔍 Debug shapes - noisy_latents: {noisy_latents.shape}, user_conditions: {user_conditions.shape}")
+        
+        # 确保user_conditions是3D张量 [batch_size, seq_len, hidden_dim]
+        if user_conditions.dim() == 2:
+            user_conditions = user_conditions.unsqueeze(1)  # [B, H] -> [B, 1, H]
+        elif user_conditions.dim() == 1:
+            user_conditions = user_conditions.unsqueeze(0).unsqueeze(0)  # [H] -> [1, 1, H]
         
         noise_pred = self.unet(
             noisy_latents,
