@@ -278,16 +278,14 @@ def train_enhanced_diffusion(args):
                 latents = latents.to(device)
                 user_ids = user_ids.to(device)
                 
-                losses = model.training_step(latents, user_ids)
+                # 获取用户条件（和训练步骤一样）
+                user_conditions = model.get_user_condition(user_ids)
+                total_loss, diff_loss, contrastive_loss = model.training_step(latents, user_conditions)
                 
-                for key in val_losses:
-                    loss_key = f'{key}_loss' if key != 'total' else 'total_loss'
-                    loss_value = losses[loss_key]
-                    # 处理可能已经是float的情况
-                    if hasattr(loss_value, 'item'):
-                        val_losses[key] += loss_value.item()
-                    else:
-                        val_losses[key] += float(loss_value)
+                # 更新验证损失
+                val_losses['total'] += total_loss.item()
+                val_losses['diffusion'] += diff_loss.item()
+                val_losses['contrastive'] += contrastive_loss.item()
         
         for key in val_losses:
             val_losses[key] /= len(val_loader)
