@@ -225,28 +225,30 @@ def train_enhanced_diffusion(args):
                 print(f"   Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
                 print(f"   Range: [{latents.min():.2f}, {latents.max():.2f}]")
             
+            # 获取用户条件
+            user_conditions = model.get_user_condition(user_ids)
+            
             # 前向传播
-            losses = model.training_step(
-                latents, user_ids, 
-                support_ratio=args.support_ratio
+            total_loss, diff_loss, contrastive_loss = model.training_step(
+                latents, user_conditions
             )
             
             # 反向传播
             optimizer.zero_grad()
-            losses['total_loss'].backward()
+            total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             
             # 更新统计
-            for key in train_losses:
-                loss_key = f'{key}_loss' if key != 'total' else 'total_loss'
-                train_losses[key] += losses[loss_key].item()
+            train_losses['total'] += total_loss.item()
+            train_losses['diff'] += diff_loss.item()
+            train_losses['contrastive'] += contrastive_loss.item()
             
             # 更新进度条
             train_bar.set_postfix({
-                'loss': losses['total_loss'].item(),
-                'diff': losses['diffusion_loss'].item(),
-                'cont': losses['contrastive_loss'].item()
+                'loss': total_loss.item(),
+                'diff': diff_loss.item(),
+                'cont': contrastive_loss.item()
             })
             
             # 使用均值作为用户原型 - 修复噪声初始化更新（在epoch结束时统一更新更高效）
