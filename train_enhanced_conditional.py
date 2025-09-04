@@ -433,15 +433,15 @@ def generate_samples(model, vae, epoch, sample_dir, device, num_users):
     """生成并保存样本"""
     print(f"\n🎨 生成样本 (Epoch {epoch+1})...")
     
-    # 选择几个用户生成
+    # 选择几个用户生成，每个用户生成4个样本
     sample_users = list(range(min(4, num_users)))
     
     # 生成latents
     with torch.no_grad():
         latents = model.generate(
             user_ids=sample_users,
-            num_samples=16,           # 4个用户 × 4样本 = 16总样本
-            num_inference_steps=100,  # 使用100步确保生成质量
+            num_samples=len(sample_users) * 4,  # 每个用户4个样本
+            num_inference_steps=50,   # 减少步数避免超时
             guidance_scale=4.0        # 使用标准CFG强度
         )
         
