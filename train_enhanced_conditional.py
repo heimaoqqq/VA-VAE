@@ -288,6 +288,54 @@ def train_enhanced_diffusion(args):
         # 学习率调度
         scheduler.step()
         
+        # 📊 计算训练数据latent分布统计
+        train_latent_stats = {'mean': 0.0, 'std': 0.0, 'min': float('inf'), 'max': float('-inf')}
+        sample_count = 0
+        
+        with torch.no_grad():
+            for latents, _ in train_loader:
+                latents = latents.to(device)
+                batch_mean = latents.mean().item()
+                batch_std = latents.std().item()
+                batch_min = latents.min().item()
+                batch_max = latents.max().item()
+                batch_size = latents.numel()
+                
+                # 累积统计
+                train_latent_stats['mean'] += batch_mean * batch_size
+                train_latent_stats['std'] += batch_std * batch_size  # 简化近似
+                train_latent_stats['min'] = min(train_latent_stats['min'], batch_min)
+                train_latent_stats['max'] = max(train_latent_stats['max'], batch_max)
+                sample_count += batch_size
+        
+        # 平均值
+        train_latent_stats['mean'] /= sample_count
+        train_latent_stats['std'] /= sample_count
+        
+        # 📊 计算验证数据latent分布统计
+        val_latent_stats = {'mean': 0.0, 'std': 0.0, 'min': float('inf'), 'max': float('-inf')}
+        val_sample_count = 0
+        
+        with torch.no_grad():
+            for latents, _ in val_loader:
+                latents = latents.to(device)
+                batch_mean = latents.mean().item()
+                batch_std = latents.std().item()
+                batch_min = latents.min().item()
+                batch_max = latents.max().item()
+                batch_size = latents.numel()
+                
+                # 累积统计
+                val_latent_stats['mean'] += batch_mean * batch_size
+                val_latent_stats['std'] += batch_std * batch_size
+                val_latent_stats['min'] = min(val_latent_stats['min'], batch_min)
+                val_latent_stats['max'] = max(val_latent_stats['max'], batch_max)
+                val_sample_count += batch_size
+        
+        # 平均值
+        val_latent_stats['mean'] /= val_sample_count
+        val_latent_stats['std'] /= val_sample_count
+        
         # 打印epoch总结
         print(f"\n📊 Epoch {epoch+1} Summary:")
         print(f"   Train Loss: {train_losses['total']:.4f} "
@@ -297,6 +345,21 @@ def train_enhanced_diffusion(args):
               f"(Diff: {val_losses['diffusion']:.4f}, "
               f"Cont: {val_losses['contrastive']:.4f})")
         print(f"   LR: {optimizer.param_groups[0]['lr']:.6f}")
+        
+        # 📊 Latent分布监控
+        print(f"📈 Train Latent Stats:")
+        print(f"   Mean: {train_latent_stats['mean']:.6f}, Std: {train_latent_stats['std']:.6f}")
+        print(f"   Range: [{train_latent_stats['min']:.2f}, {train_latent_stats['max']:.2f}]")
+        
+        print(f"📈 Val Latent Stats:")
+        print(f"   Mean: {val_latent_stats['mean']:.6f}, Std: {val_latent_stats['std']:.6f}")
+        print(f"   Range: [{val_latent_stats['min']:.2f}, {val_latent_stats['max']:.2f}]")
+        
+        # ⚠️ 异常检测
+        if train_latent_stats['std'] > 5.0 or val_latent_stats['std'] > 5.0:
+            print(f"⚠️  警告：Latent std过高！训练: {train_latent_stats['std']:.3f}, 验证: {val_latent_stats['std']:.3f}")
+        if train_latent_stats['std'] < 0.5 or val_latent_stats['std'] < 0.5:
+            print(f"⚠️  警告：Latent std过低！训练: {train_latent_stats['std']:.3f}, 验证: {val_latent_stats['std']:.3f}")
         
         # 保存最佳模型
         if val_losses['total'] < best_val_loss:
