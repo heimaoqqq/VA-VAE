@@ -286,3 +286,12 @@ def create_standard_diffusion_system(vae_checkpoint, num_users=31):
     )
     
     return diffusion_model, vae
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+    print("❌ 错误：standard_conditional_diffusion.py 不是训练脚本！")
+    print("✅ 请使用：python train_enhanced_conditional.py")
+    print("📖 说明：standard_conditional_diffusion.py 只是模型定义文件")
+    sys.exit(1)
