@@ -20,7 +20,7 @@ from microdoppler_data_loader import (
     prepare_latent_dataset,
     create_balanced_dataloader
 )
-from enhanced_conditional_diffusion import EnhancedConditionalDiffusion
+from standard_conditional_diffusion import StandardConditionalDiffusion
 from simplified_vavae import SimplifiedVAVAE
 
 def compute_latent_statistics(dataloader, device, max_batches=50):
@@ -167,31 +167,25 @@ def train_enhanced_diffusion(args):
     print(f"   Range: [{latent_min:.2f}, {latent_max:.2f}]")
     print(f"   3σ Range: [{train_mean-3*train_std:.2f}, {train_mean+3*train_std:.2f}]")
     
-    # 步骤4: 创建增强扩散模型
-    print("\n🚀 创建增强条件扩散模型...")
-    model = EnhancedConditionalDiffusion(
+    # 步骤4: 创建标准扩散模型
+    print("\n🚀 创建标准条件扩散模型...")
+    model = StandardConditionalDiffusion(
         vae=vae,
         num_users=args.num_users,
-        prototype_dim=args.prototype_dim,
-        latent_mean=latent_stats['mean'],
-        latent_std=latent_stats['std'],
-        latent_multiplier=0.18215  # 使用标准的Stable Diffusion缩放因子
+        prototype_dim=args.prototype_dim
     )
     
     # 🔑 关键修复：将整个模型移动到CUDA设备
     model = model.to(device)
     print(f"✅ 模型已移动到设备: {device}")
     
-    # 关键修复：传递VAE实例以获取正确的scale_factor
+    # 关键修复：传递VAE实例
     model.vae = vae
-    print(f"✅ 已将VAE实例传递给扩散模型 (scale_factor={vae.scale_factor})")
-    
-    # 🔧 使用动态计算的训练分布
-    model.set_training_stats(latent_stats['mean'], latent_stats['std'])
+    print(f"✅ 已将VAE实例传递给扩散模型")
     
     print(f"📊 VAE配置: scale_factor={vae.scale_factor}")
     print(f"🎯 扩散模型: num_users={args.num_users}, prototype_dim={args.prototype_dim}")
-    print(f"🔑 标准化方法: 缩放因子={model.scale_factor:.4f} (类似Stable Diffusion)")
+    print(f"🔑 采用标准Diffusers训练方式 - 无自定义标准化")
     
     # 步骤5: 设置优化器和调度器
     optimizer = torch.optim.AdamW(
