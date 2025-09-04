@@ -170,9 +170,11 @@ def train_enhanced_diffusion(args):
     # 步骤4: 创建增强扩散模型
     print("\n🚀 创建增强条件扩散模型...")
     model = EnhancedConditionalDiffusion(
+        vae=vae,
         num_users=args.num_users,
         prototype_dim=args.prototype_dim,
-        match_training_distribution=True
+        latent_mean=latent_stats['mean'],
+        latent_std=latent_stats['std']
     )
     
     # 关键修复：传递VAE实例以获取正确的scale_factor
