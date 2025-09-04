@@ -440,10 +440,9 @@ def generate_samples(model, vae, epoch, sample_dir, device, num_users):
     with torch.no_grad():
         latents = model.generate(
             user_ids=sample_users,
-            num_samples_per_user=4,
+            num_samples=16,           # 4个用户 × 4样本 = 16总样本
             num_inference_steps=100,  # 使用100步确保生成质量
-            guidance_scale=4.0,       # 使用标准CFG强度
-            use_ddim=True
+            guidance_scale=4.0        # 使用标准CFG强度
         )
         
         # 关键分布验证信息
