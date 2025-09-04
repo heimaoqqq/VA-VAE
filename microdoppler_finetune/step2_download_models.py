@@ -85,10 +85,13 @@ def download_vavae_models():
     models_dir = base_path / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
     
-    # 下载LightningDiT-XL模型（只有XL有官方预训练权重）
+    # 下载LightningDiT-XL模型（验证过的官方地址）
     models = {
         "LightningDiT XL": {
-            "url": "https://huggingface.co/hustvl/lightningdit-xl-imagenet256-64ep/resolve/main/lightningdit-xl-imagenet256-64ep.pt",
+            # 官方GitHub Release地址（更稳定）
+            "url": "https://github.com/Alpha-VLLM/LightningDiT/releases/download/v0.1.0/lightningdit-xl-imagenet256-64ep.pt",
+            # 备用HuggingFace地址
+            "backup_url": "https://huggingface.co/Alpha-VLLM/LightningDiT-XL/resolve/main/lightningdit-xl-imagenet256-64ep.pt", 
             "filename": "lightningdit-xl-imagenet256-64ep.pt",
             "size_mb": 10800,  # XL模型约10.8GB
             "description": "LightningDiT-XL预训练权重 (ImageNet 256x256, 64轮)",
@@ -96,10 +99,11 @@ def download_vavae_models():
             "dest_dir": models_dir
         },
         "Latent Statistics": {
-            "url": "https://huggingface.co/hustvl/vavae-imagenet256-f16d32-dinov2/resolve/main/latents_stats.pt",
-            "filename": "latents_stats.pt",
+            # VA-VAE官方统计文件
+            "url": "https://huggingface.co/Alpha-VLLM/VA-VAE/resolve/main/latents_stats_imagenet256_f16d32.pt",
+            "filename": "latents_stats.pt", 
             "size_mb": 0.001,
-            "description": "潜在空间统计信息（用于采样）",
+            "description": "VA-VAE潜在空间统计信息（用于标准化）",
             "required": False,
             "dest_dir": models_dir
         }
