@@ -1,0 +1,107 @@
+# LightningDiT-Base配置文件 - 用于微多普勒条件生成
+# 基于官方lightningdit_xl_vavae_f16d32.yaml修改
+# 针对Kaggle T4x2环境和小数据集优化
+
+# 数据配置
+data:
+  data_path: '/kaggle/working/latents_official/vavae_config_for_dit/microdoppler_train_256'  # 训练集潜在编码路径（step6输出）
+  valid_path: '/kaggle/working/latents_official/vavae_config_for_dit/microdoppler_val_256'    # 验证集潜在编码路径（step6输出）
+  
+  # 官方LightningDiT关键设置
+  image_size: 256        # 原始图像尺寸
+  num_classes: 31        # 31个用户类别
+  num_workers: 4         # 数据加载线程数
+  # 关键配置：使用官方推荐的标准化方式
+  latent_norm: true        # 标准化到mean=0, std=1（官方推荐）
+  latent_multiplier: 1.0   # 标准化后保持std=1.0
+  
+  # 数据增强配置 - 对微多普勒信号不适用
+  augment_training: false  # 禁用数据增强，保持时频特征精度
+
+# VAE配置（与微调的VA-VAE一致）
+vae:
+  model_name: 'vavae_f16d32'
+  downsample_ratio: 16   # 256x256 -> 16x16 latent
+  
+# 模型配置 - LightningDiT-Base
+model:
+  model_type: 'LightningDiT-B/2'  # 小数据集使用Base模型更安全
+  num_classes: 31                  # 31个用户类别
+  use_qknorm: false                # 官方推荐设置
+  use_swiglu: true                 # SwiGLU激活函数
+  use_rope: true                   # Rotary Position Embedding
+  use_rmsnorm: true                # RMSNorm替代LayerNorm
+  wo_shift: false                  # 使用shift
+  in_chans: 32                     # VA-VAE f16d32输出32通道
+  use_checkpoint: false            # Kaggle环境不使用梯度检查点
+
+# 训练配置
+train:
+  # 训练规模 - 调整防止过拟合
+  max_epochs: 150                   # 先测试较少epochs观察收敛
+  global_batch_size: 8             # 减小批次大小增强正则化效果
+  global_seed: 42                  # 随机种子
+  output_dir: '/kaggle/working/output'
+  exp_name: 'dit_base_microdoppler_official'
+  weight_init: null  # 从头训练32通道模型，避免4→32通道转换损失
+  resume: false
+  log_every: 100                    # 减少日志频率（318步/epoch）
+  ckpt_every_epoch: 5              # 更频繁保存（小数据集训练快）
+  
+  # 早停配置 - 更严格的过拟合控制
+  patience: 15                     # 降低patience，更早停止
+  min_delta: 0.0005                # 增加最小改善阈值，要求显著改善
+  overfitting_threshold: 1.2       # 过拟合比率阈值
+  
+  # 正则化技术（官方不使用，注释掉）
+  # dropout_rate: 0.1              # 官方DiT模型不使用dropout
+  use_checkpoint: false
+  
+# 优化器配置 - 加强正则化防止过拟合
+optimizer:
+  lr: 0.00005     # 进一步降低学习率（0.0001→0.00005）
+  beta1: 0.9      # 保持默认
+  beta2: 0.999    # 改回标准值0.999
+  max_grad_norm: 0.5  # 降低梯度裁剪阈值，更保守
+  weight_decay: 0.001   # 大幅增加权重衰减（0.0001→0.001）
+  eps: 1e-8      # Adam epsilon
+
+# 学习率调度器配置 - 添加余弦退火防止过拟合
+scheduler:
+  type: 'cosine'  # 余弦退火调度器
+  T_max: 150      # 与max_epochs一致
+  eta_min: 0.000001  # 最小学习率1e-6
+# 注释：针对过拟合问题，添加学习率调度提高泛化能力
+
+# Transport配置（扩散过程）- 与官方完全一致
+transport:
+  path_type: 'Linear'              # 线性扩散路径（与官方一致）
+  prediction: 'velocity'           # 预测速度（与官方一致）
+  loss_weight: null                # 官方使用null，不是uniform
+  sample_eps: null                 # 采样epsilon（与官方一致）
+  train_eps: null                  # 训练epsilon（与官方一致）
+  use_cosine_loss: true            # 启用cosine loss
+  use_lognorm: true                # 启用lognorm
+
+# 采样配置（用于推理）- 针对微多普勒优化
+sample:
+  mode: 'ODE'                      # ODE求解模式
+  sampling_method: 'euler'         # 官方推荐euler求解器
+  atol: 0.000001                   # 绝对误差容限
+  rtol: 0.001                      # 相对误差容限
+  reverse: false
+  likelihood: false
+  num_sampling_steps: 250          # 官方使用250步
+  cfg_scale: 10.0                  # 官方推荐高CFG（微调可适当降低）
+  
+  # 高级采样设置
+  per_proc_batch_size: 4
+  fid_num: 50000
+  cfg_interval_start: 0.11         # CFG区间开始
+  timestep_shift: 0.1            # 官方推荐0.3，重要参数！
+
+# 分布式训练配置（Kaggle T4x2）
+distributed:
+  backend: 'nccl'
+  world_size: 2                    # 2个GPU
+  find_unused_parameters: false
