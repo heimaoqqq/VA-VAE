@@ -174,7 +174,8 @@ def train_enhanced_diffusion(args):
         num_users=args.num_users,
         prototype_dim=args.prototype_dim,
         latent_mean=latent_stats['mean'],
-        latent_std=latent_stats['std']
+        latent_std=latent_stats['std'],
+        latent_multiplier=0.18215  # 使用标准的Stable Diffusion缩放因子
     )
     
     # 🔑 关键修复：将整个模型移动到CUDA设备
