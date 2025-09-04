@@ -17,14 +17,18 @@ from collections import defaultdict
 class MicroDopplerLatentDataset(Dataset):
     """微多普勒Latent数据集"""
     
-    def __init__(self, latent_dir, split='train'):
+    def __init__(self, latent_dir, split='train', latent_norm=False, latent_multiplier=1.0):
         """
         Args:
             latent_dir: latent数据目录，包含.pt文件
             split: 'train' 或 'val'
+            latent_norm: 是否归一化latent
+            latent_multiplier: latent缩放因子
         """
         self.latent_dir = Path(latent_dir)
         self.split = split
+        self.latent_norm = latent_norm
+        self.latent_multiplier = latent_multiplier
         
         # 加载数据索引
         index_file = self.latent_dir / f'{split}_index.json'
@@ -49,10 +53,15 @@ class MicroDopplerLatentDataset(Dataset):
         self.num_users = len(self.user_to_indices)
         self.users = list(self.user_to_indices.keys())
         
+        # UNet方法：保持原始latent分布，不进行数据级归一化
+        self.latent_mean = 0.0
+        self.latent_std = 1.0
+        
         print(f"📊 {split}集统计:")
         print(f"   总样本数: {len(self.samples)}")
         print(f"   用户数: {self.num_users}")
         print(f"   平均样本/用户: {len(self.samples) / self.num_users:.1f}")
+        print(f"   UNet方法: 保持原始latent分布")
     
     def __len__(self):
         return len(self.samples)
@@ -66,6 +75,9 @@ class MicroDopplerLatentDataset(Dataset):
         # 确保维度正确 [32, 16, 16]
         if latent.dim() == 4 and latent.size(0) == 1:
             latent = latent.squeeze(0)
+        
+        # UNet方法：直接使用原始latent，不进行数据级归一化
+        # 训练和生成都在同一原始分布空间工作
         
         return latent, item['user_idx']
 
@@ -140,7 +152,7 @@ def create_balanced_dataloader(latent_dir, batch_size=32, num_users_per_batch=4,
     Returns:
         DataLoader实例
     """
-    dataset = MicroDopplerLatentDataset(latent_dir, split)
+    dataset = MicroDopplerLatentDataset(latent_dir, split, latent_norm=False, latent_multiplier=1.0)
     
     if split == 'train':
         # 训练集使用平衡采样

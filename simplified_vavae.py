@@ -39,7 +39,7 @@ class SimplifiedVAVAE(nn.Module):
     
     def __init__(self, checkpoint_path=None):
         super().__init__()
-        self.scale_factor = 0.18215  # 标准缩放因子
+        self.scale_factor = 1.0  # 默认值，从checkpoint中读取真实值
         
         # 创建VA-VAE配置（禁用VF）
         config = OmegaConf.create({
@@ -94,13 +94,33 @@ class SimplifiedVAVAE(nn.Module):
         else:
             state_dict = checkpoint
         
-        # 移除VF相关权重
+        # 提取真实的缩放因子
+        if 'scale_factor' in checkpoint:
+            self.scale_factor = float(checkpoint['scale_factor'])
+            print(f"🔧 从checkpoint读取缩放因子: {self.scale_factor}")
+        elif 'state_dict' in checkpoint and any('scale_factor' in k for k in checkpoint['state_dict'].keys()):
+            # 寻找包含scale_factor的键
+            for k, v in checkpoint['state_dict'].items():
+                if 'scale_factor' in k and isinstance(v, torch.Tensor):
+                    self.scale_factor = float(v.item())
+                    print(f"🔧 从state_dict读取缩放因子: {self.scale_factor}")
+                    break
+        else:
+            # 动态计算缩放因子的备用方案
+            print(f"⚠️ 未在checkpoint中找到scale_factor，使用默认值1.0")
+            print(f"   建议：训练时添加scale_by_std=True来动态计算")
+        
+        # 移除VF相关权重和foundation_model权重
         filtered_state_dict = {}
+        excluded_prefixes = ['vf_proj', 'vf_model', 'foundation_model']
+        
         for k, v in state_dict.items():
-            if 'vf_proj' not in k and 'vf_model' not in k:
+            # 检查是否包含需要排除的前缀
+            should_exclude = any(prefix in k for prefix in excluded_prefixes)
+            if not should_exclude:
                 # 移除前缀（如果有）
-                k = k.replace('module.', '').replace('vae.', '')
-                filtered_state_dict[k] = v
+                clean_key = k.replace('module.', '').replace('vae.', '')
+                filtered_state_dict[clean_key] = v
         
         # 加载权重
         missing, unexpected = self.vae.load_state_dict(filtered_state_dict, strict=False)
@@ -111,6 +131,7 @@ class SimplifiedVAVAE(nn.Module):
             print(f"⚠️ 未预期的权重: {unexpected[:5]}...")
         
         print(f"✅ 成功加载VA-VAE权重: {checkpoint_path}")
+        print(f"📏 使用缩放因子: {self.scale_factor}")
     
     def freeze(self):
         """冻结VAE参数"""
