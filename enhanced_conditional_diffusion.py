@@ -246,9 +246,6 @@ class EnhancedConditionalDiffusion(nn.Module):
         timesteps = timesteps.to(device)
         user_conditions = user_conditions.to(device)
         
-        # 调试：打印张量形状
-        print(f"🔍 Debug shapes - noisy_latents: {noisy_latents.shape}, user_conditions: {user_conditions.shape}")
-        
         # 确保user_conditions是3D张量 [batch_size, seq_len, hidden_dim]
         if user_conditions.dim() == 2:
             user_conditions = user_conditions.unsqueeze(1)  # [B, H] -> [B, 1, H]
