@@ -230,6 +230,11 @@ class EnhancedConditionalDiffusion(nn.Module):
         noisy_latents = self.scheduler.add_noise(latents_standard, noise, timesteps)
         
         # ✅ 步骤3：预测噪声（在标准化空间）
+        # 确保所有张量都在同一设备上
+        noisy_latents = noisy_latents.to(device)
+        timesteps = timesteps.to(device)
+        user_conditions = user_conditions.to(device)
+        
         noise_pred = self.unet(
             noisy_latents,
             timesteps,
@@ -237,6 +242,7 @@ class EnhancedConditionalDiffusion(nn.Module):
         ).sample
         
         # 扩散损失
+        noise = noise.to(device)  # 确保噪声在正确设备上
         diff_loss = F.mse_loss(noise_pred, noise)
         
         # 对比损失（需要在原始空间计算原型）
@@ -247,7 +253,11 @@ class EnhancedConditionalDiffusion(nn.Module):
         # 反标准化以计算原型
         predicted_clean_orig = self.decode_to_original_space(predicted_clean)
         pred_features = self.prototype_encoder(predicted_clean_orig)
-        contrastive_loss = self.contrastive_learning(pred_features, user_conditions)
+        
+        # 为对比学习创建用户ID张量
+        batch_size = user_conditions.shape[0]
+        user_ids_tensor = torch.arange(batch_size, device=device)  # 简化的用户ID
+        contrastive_loss = self.contrastive_learning(pred_features, user_ids_tensor)
         
         # 总损失
         total_loss = diff_loss + 0.1 * contrastive_loss
