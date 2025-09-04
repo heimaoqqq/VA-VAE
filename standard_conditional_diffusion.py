@@ -176,7 +176,19 @@ class StandardConditionalDiffusion(nn.Module):
         
         with torch.no_grad():
             # 获取用户条件
-            user_conditions = self.get_user_condition(user_ids)
+            base_conditions = self.get_user_condition(user_ids)
+            
+            # 重复用户条件以匹配样本数量
+            samples_per_user = num_samples // len(user_ids)
+            user_conditions = base_conditions.repeat_interleave(samples_per_user, dim=0)
+            
+            # 如果样本数不整除用户数，处理剩余样本
+            remaining = num_samples - len(user_conditions)
+            if remaining > 0:
+                extra_conditions = base_conditions[:remaining]
+                user_conditions = torch.cat([user_conditions, extra_conditions], dim=0)
+            
+            print(f"📊 用户条件形状: {user_conditions.shape}")
             
             # 初始化噪声 - ✅ 标准方式从N(0,1)开始
             latent_shape = (num_samples, 32, 16, 16)  # VAE latent shape
