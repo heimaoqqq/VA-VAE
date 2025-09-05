@@ -17,7 +17,7 @@ import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 
 from simplified_vavae import SimplifiedVAVAE
-from microdoppler_data_loader import MicrodopplerDataset
+from microdoppler_dataset_diffusion import MicrodopplerDataset
 
 
 class DiffusersTrainer:
@@ -87,19 +87,18 @@ class DiffusersTrainer:
         self.latent_std = None
         
     def prepare_dataloader(self):
-        """准备数据加载器"""
-        transform = transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])  # 归一化到[-1, 1]
-        ])
+        """准备数据加载器 - 完全匹配VA-VAE的预处理格式"""
+        # 不使用torchvision transforms，直接匹配step4_train_vavae.py的处理方式
+        # VA-VAE使用: img_array / 127.5 - 1.0 归一化到[-1,1]
+        transform = None  # 使用自定义预处理
         
         dataset = MicrodopplerDataset(
             root_dir=self.args.image_dir,
             split_file=self.args.split_file,
             split='train',
             transform=transform,
-            return_user_id=False  # 无条件生成不需要用户ID
+            return_user_id=False,  # 无条件生成不需要用户ID
+            image_size=256  # 匹配VA-VAE的256x256分辨率
         )
         
         return DataLoader(
@@ -150,8 +149,13 @@ class DiffusersTrainer:
         """单个训练步骤"""
         images = batch[0].to(self.device)  # 只取图像，忽略用户ID
         
-        # VAE编码
+        # VAE编码 - 匹配VA-VAE的调用方式
         with torch.no_grad():
+            # 注意：VA-VAE期望BCHW格式，但我们的数据是BHWC
+            # 需要转换格式
+            if images.dim() == 4 and images.shape[-1] == 3:  # BHWC格式
+                images = images.permute(0, 3, 1, 2)  # 转为BCHW
+            
             latents = self.vae.encode(images)
             
             # 归一化（如果需要）
@@ -204,8 +208,13 @@ class DiffusersTrainer:
         if self.use_distribution_alignment:
             latents = self.denormalize_latents(latents)
         
-        # VAE解码
+        # VAE解码 - 匹配VA-VAE的调用方式
         images = self.vae.decode(latents)
+        
+        # 确保输出格式正确
+        if images.dim() == 4 and images.shape[1] == 3:  # BCHW格式
+            # 保持BCHW格式用于后续处理
+            pass
         
         return images
     
@@ -228,10 +237,10 @@ class DiffusersTrainer:
             img_tensor = (images[i] + 1) / 2
             img_tensor = torch.clamp(img_tensor, 0, 1)
             
-            # 转换为numpy显示格式
+            # 转换为numpy显示格式 - 匹配VA-VAE的可视化方式
             img_array = img_tensor.cpu().numpy()
-            if img_array.shape[0] == 3:  # RGB
-                img_array = np.transpose(img_array, (1, 2, 0))
+            if img_array.shape[0] == 3:  # RGB - BCHW格式
+                img_array = np.transpose(img_array, (1, 2, 0))  # CHW -> HWC
             elif img_array.shape[0] == 1:  # 灰度
                 img_array = img_array.squeeze(0)
                 
@@ -337,12 +346,12 @@ def main():
                        help='VAE检查点路径')
     parser.add_argument('--split_file', type=str, required=True,
                        help='数据集划分文件')
-    parser.add_argument('--batch_size', type=int, default=16,
-                       help='批次大小')
+    parser.add_argument('--batch_size', type=int, default=4,
+                       help='批次大小 - 匹配VA-VAE默认值')
     parser.add_argument('--num_epochs', type=int, default=100,
                        help='训练轮数')
     parser.add_argument('--learning_rate', type=float, default=1e-4,
-                       help='学习率')
+                       help='学习率 - 匹配VA-VAE Stage1')
     parser.add_argument('--weight_decay', type=float, default=1e-6,
                        help='权重衰减')
     parser.add_argument('--warmup_steps', type=int, default=1000,
