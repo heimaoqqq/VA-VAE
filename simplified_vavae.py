@@ -69,7 +69,7 @@ class SimplifiedVAVAE(nn.Module):
                         'disc_weight': 0.0,  # 禁用判别器
                     }
                 },
-                'use_vf': None,  # 禁用VF
+                'use_vf': None,  # ❌ VF对冻结VAE无效，恢复原设置
                 'reverse_proj': False,
             }
         })
@@ -112,7 +112,7 @@ class SimplifiedVAVAE(nn.Module):
         
         # 移除VF相关权重和foundation_model权重
         filtered_state_dict = {}
-        excluded_prefixes = ['vf_proj', 'vf_model', 'foundation_model']
+        excluded_prefixes = ['vf_proj', 'vf_model', 'foundation_model']  # 恢复VF权重排除
         
         for k, v in state_dict.items():
             # 检查是否包含需要排除的前缀
