@@ -75,7 +75,8 @@ class DiffusersTrainer:
         
         # 数据加载器
         print("📊 准备数据...")
-        self.train_loader = self.prepare_dataloader()
+        self.train_loader = self.prepare_dataloader('train')
+        self.val_loader = self.prepare_dataloader('val')
         
         # 学习率调度
         self.lr_scheduler = get_cosine_schedule_with_warmup(
@@ -89,18 +90,18 @@ class DiffusersTrainer:
         self.latent_mean = None
         self.latent_std = None
         
-    def prepare_dataloader(self):
+    def prepare_dataloader(self, split='train'):
         """准备数据加载器 - 支持预编码latent和图像"""
         # 检查是否有预编码latent文件
         latent_file = None
         if hasattr(self.args, 'latent_dir') and self.args.latent_dir:
-            latent_file = Path(self.args.latent_dir) / "train_latents.pt"
+            latent_file = Path(self.args.latent_dir) / f"{split}_latents.pt"
             
         # 创建fallback图像数据集
         image_dataset = MicrodopplerDataset(
             root_dir=self.args.image_dir,
             split_file=self.args.split_file,
-            split='train',
+            split=split,
             transform=None,
             return_user_id=False,
             image_size=256
@@ -113,18 +114,19 @@ class DiffusersTrainer:
             return_user_id=False
         )
         
-        # 检测数据集类型
-        self.use_preencoded_latents = hasattr(dataset, 'use_preencoded') and dataset.use_preencoded
-        if self.use_preencoded_latents:
-            print("🚀 使用预编码latent训练 - 显著加速！")
-        else:
-            print("📊 使用图像训练 - 实时编码")
+        # 检测数据集类型（只在训练集时设置）
+        if split == 'train':
+            self.use_preencoded_latents = hasattr(dataset, 'use_preencoded') and dataset.use_preencoded
+            if self.use_preencoded_latents:
+                print("🚀 使用预编码latent训练 - 显著加速！")
+            else:
+                print("📊 使用图像训练 - 实时编码")
         
         return DataLoader(
             dataset,
             batch_size=self.args.batch_size,
-            shuffle=True,
-            num_workers=4 if not self.use_preencoded_latents else 0,  # latent不需要多进程
+            shuffle=(split == 'train'),  # 只有训练集打乱
+            num_workers=4 if not getattr(self, 'use_preencoded_latents', False) else 0,
             pin_memory=True
         )
     
@@ -202,8 +204,19 @@ class DiffusersTrainer:
         
         return loss
     
-    @torch.no_grad()
-    def generate_samples(self, num_samples=4, num_inference_steps=50):
+    def validate(self):
+        """验证集评估"""
+        self.unet.eval()
+        val_losses = []
+        
+        with torch.no_grad():
+            for batch in self.val_loader:
+                loss = self.train_step(batch)
+                val_losses.append(loss)
+        
+        return np.mean(val_losses)
+    
+    def generate_samples(self, num_samples=8, num_inference_steps=100):
         """生成样本"""
         self.unet.eval()
         
@@ -241,12 +254,12 @@ class DiffusersTrainer:
         return images
     
     def save_samples(self, images, epoch, save_dir):
-        """保存生成的样本 - 参考VA-VAE训练脚本的可视化方式"""
+        """保存生成的样本 - 只生成一张8样本网格图"""
         import matplotlib.pyplot as plt
         
         os.makedirs(save_dir, exist_ok=True)
         
-        # 创建网格可视化 - 参考step4_train_vavae.py的风格
+        # 创建网格可视化 - 固定8个样本
         num_samples = min(8, len(images))
         fig, axes = plt.subplots(1, num_samples, figsize=(num_samples * 2, 2))
         fig.suptitle(f'Epoch {epoch} - 扩散生成样本')
@@ -258,7 +271,7 @@ class DiffusersTrainer:
             # VA-VAE decode已经返回[0,1]范围，无需再归一化
             img_tensor = torch.clamp(images[i], 0, 1)
             
-            # 转换为numpy显示格式 - 匹配VA-VAE的可视化方式
+            # 转换为numpy显示格式
             img_array = img_tensor.cpu().numpy()
             if img_array.shape[0] == 3:  # RGB - BCHW格式
                 img_array = np.transpose(img_array, (1, 2, 0))  # CHW -> HWC
@@ -269,25 +282,10 @@ class DiffusersTrainer:
             axes[i].set_title(f'样本 {i+1}')
             axes[i].axis('off')
         
-        # 保存可视化图像
+        # 只保存网格可视化图像
         plt.tight_layout()
         plt.savefig(f"{save_dir}/epoch_{epoch:03d}_samples.png", dpi=150, bbox_inches='tight')
         plt.close()
-        
-        # 同时保存单个图像文件
-        for i, img_tensor in enumerate(images):
-            # VA-VAE decode已经返回[0,1]范围，无需再归一化
-            img_tensor = torch.clamp(img_tensor, 0, 1)
-            
-            # 转换为PIL
-            img_array = img_tensor.cpu().numpy().transpose(1, 2, 0)
-            if img_array.shape[2] == 1:
-                img_array = img_array.squeeze(2)
-                img = Image.fromarray((img_array * 255).astype(np.uint8), 'L')
-            else:
-                img = Image.fromarray((img_array * 255).astype(np.uint8))
-            
-            img.save(f"{save_dir}/epoch_{epoch:03d}_sample_{i:02d}.png")
     
     def train(self):
         """主训练循环"""
@@ -363,11 +361,15 @@ class DiffusersTrainer:
                 torch.save(checkpoint, save_path)
                 print(f"💾 保存检查点: {save_path}")
             
-            # 每轮生成样本 - 参考step4_train_vavae.py的做法
+            # 验证集评估
+            val_loss = self.validate()
+            print(f"📊 验证损失: {val_loss:.4f}")
+            
+            # 每轮生成样本
             print("🎨 生成样本...")
             sample_images = self.generate_samples(num_samples=8)
             self.save_samples(sample_images, epoch+1, "samples")
-            print(f"✅ Epoch {epoch+1} 样本已保存到 samples/ 目录")
+            print(f"✅ Epoch {epoch+1} 完成 - 训练损失: {epoch_loss:.4f}, 验证损失: {val_loss:.4f}")
 
 
 def main():
