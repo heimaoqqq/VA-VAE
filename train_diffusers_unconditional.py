@@ -14,6 +14,7 @@ import numpy as np
 from tqdm import tqdm
 from PIL import Image
 import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
 
 from simplified_vavae import SimplifiedVAVAE
 from microdoppler_data_loader import MicrodopplerDataset
@@ -348,8 +349,6 @@ def main():
                        help='预热步数')
     parser.add_argument('--save_freq', type=int, default=10,
                        help='保存频率')
-    parser.add_argument('--sample_freq', type=int, default=5,
-                       help='样本生成频率')
     
     args = parser.parse_args()
     
