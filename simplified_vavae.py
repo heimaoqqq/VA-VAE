@@ -114,30 +114,51 @@ class SimplifiedVAVAE(nn.Module):
         # 根据VF配置决定是否包含VF权重
         filtered_state_dict = {}
         if self.use_vf:
-            # 启用VF时，保留VF相关权重
-            excluded_prefixes = ['foundation_model']  # 仅排除foundation_model
+            # 启用VF时，保留VF相关权重，仅排除foundation_model
+            excluded_prefixes = ['foundation_model']
         else:
             # 禁用VF时，排除所有VF相关权重
             excluded_prefixes = ['vf_proj', 'vf_model', 'foundation_model']
         
+        print(f"🔍 VF模式: {'启用' if self.use_vf else '禁用'}, 排除前缀: {excluded_prefixes}")
+        
         for k, v in state_dict.items():
-            # 检查是否包含需要排除的前缀
-            should_exclude = any(prefix in k for prefix in excluded_prefixes)
+            # 修复：使用精确前缀匹配，避免子字符串误匹配
+            should_exclude = False
+            for prefix in excluded_prefixes:
+                # 检查是否以前缀开头，或者前缀前面有分隔符
+                if k.startswith(prefix) or f'.{prefix}' in k or f'_{prefix}' in k:
+                    # 特殊处理：linear_proj不应该被vf_proj排除
+                    if prefix == 'vf_proj' and 'linear_proj' in k:
+                        continue  # 不排除linear_proj
+                    should_exclude = True
+                    break
+            
             if not should_exclude:
                 # 移除前缀（如果有）
                 clean_key = k.replace('module.', '').replace('vae.', '')
-                
-                # 特殊处理：修复linear_proj权重形状不匹配
-                if 'linear_proj.weight' in clean_key and len(v.shape) == 4:
-                    # 检查是否需要转置
-                    if hasattr(self.vae, 'linear_proj') and hasattr(self.vae.linear_proj, 'weight'):
-                        expected_shape = self.vae.linear_proj.weight.shape
-                        if v.shape != expected_shape and v.shape == expected_shape[::-1][:2] + expected_shape[2:]:
-                            # 转置前两个维度
-                            v = v.transpose(0, 1)
-                            print(f"🔧 修复linear_proj权重形状: {expected_shape}")
-                
                 filtered_state_dict[clean_key] = v
+        
+        print(f"📊 过滤后权重数量: {len(filtered_state_dict)}")
+        all_keys = list(filtered_state_dict.keys())
+        linear_keys = [k for k in all_keys if 'linear' in k.lower()]
+        if linear_keys:
+            print(f"🔍 包含linear的键: {linear_keys}")
+        else:
+            print("⚠️ 未找到任何包含linear的键")
+        
+        # 调试：显示所有包含linear_proj的键
+        linear_proj_keys = [k for k in filtered_state_dict.keys() if 'linear_proj' in k]
+        if linear_proj_keys:
+            print(f"🔍 发现linear_proj相关键: {linear_proj_keys}")
+            for key in linear_proj_keys:
+                if 'weight' in key:
+                    shape = filtered_state_dict[key].shape
+                    print(f"   {key}: {list(shape)}")
+                    # 修复形状不匹配
+                    if shape == torch.Size([1024, 32, 1, 1]):
+                        filtered_state_dict[key] = filtered_state_dict[key].transpose(0, 1)
+                        print(f"   🔧 已修复 {key}: [1024,32,1,1] -> [32,1024,1,1]")
         
         # 加载权重
         missing, unexpected = self.vae.load_state_dict(filtered_state_dict, strict=False)
