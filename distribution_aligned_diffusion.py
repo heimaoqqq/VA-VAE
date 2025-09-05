@@ -170,15 +170,16 @@ class DistributionAlignedDiffusion(nn.Module):
         }
     
     def get_user_condition(self, user_ids):
-        """获取用户条件"""
-        if torch.is_tensor(user_ids):
+        """获取用户条件向量"""
+        # 处理不同类型的输入
+        if isinstance(user_ids, torch.Tensor):
             # 如果是tensor，转换为list
             if user_ids.dim() == 0:
                 # 标量tensor
                 user_id_list = [user_ids.item()]
             else:
-                # 向量tensor
-                user_id_list = user_ids.cpu().tolist()
+                # 向量tensor - 确保是整数类型
+                user_id_list = user_ids.cpu().long().tolist()
         else:
             # 如果已经是list
             user_id_list = user_ids
@@ -188,6 +189,17 @@ class DistributionAlignedDiffusion(nn.Module):
             # 确保user_id是整数
             if isinstance(user_id, torch.Tensor):
                 user_id = user_id.item()
+            
+            # 确保user_id是有效的整数
+            user_id = int(user_id)
+            
+            # 调试信息
+            if str(user_id) not in self.user_prototypes:
+                print(f"❌ 警告: 用户ID {user_id} 不存在于原型字典中")
+                print(f"   可用用户ID: {list(self.user_prototypes.keys())[:10]}...")
+                # 使用第一个可用的用户ID作为fallback
+                user_id = int(list(self.user_prototypes.keys())[0])
+                
             prototype = self.user_prototypes[str(user_id)]
             conditions.append(prototype)
         
