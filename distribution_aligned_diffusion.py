@@ -171,10 +171,23 @@ class DistributionAlignedDiffusion(nn.Module):
     
     def get_user_condition(self, user_ids):
         """获取用户条件"""
-        batch_size = len(user_ids)
+        if torch.is_tensor(user_ids):
+            # 如果是tensor，转换为list
+            if user_ids.dim() == 0:
+                # 标量tensor
+                user_id_list = [user_ids.item()]
+            else:
+                # 向量tensor
+                user_id_list = user_ids.cpu().tolist()
+        else:
+            # 如果已经是list
+            user_id_list = user_ids
+        
         conditions = []
-        for user_id in user_ids:
-            user_id = user_id.item() if hasattr(user_id, 'item') else user_id
+        for user_id in user_id_list:
+            # 确保user_id是整数
+            if isinstance(user_id, torch.Tensor):
+                user_id = user_id.item()
             prototype = self.user_prototypes[str(user_id)]
             conditions.append(prototype)
         
