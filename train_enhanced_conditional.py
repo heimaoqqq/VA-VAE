@@ -223,6 +223,29 @@ def train_enhanced_diffusion(args):
                 print(f"   Shape: {latents.shape}")
                 print(f"   Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
                 print(f"   Range: [{latents.min():.2f}, {latents.max():.2f}]")
+                
+                # 🔍 诊断：检查VF修复后的latent分布变化
+                with torch.no_grad():
+                    print(f"🔍 VF修复后latent分布诊断:")
+                    
+                    # 检查VAE编码后的latent分布
+                    print(f"   编码后latent std: {latents.std():.6f} (期望 >1.2)")
+                    
+                    # 模拟训练步骤中的噪声添加
+                    test_timesteps = torch.randint(0, 1000, (4,), device=device)
+                    test_noise = torch.randn_like(latents[:4])
+                    test_noisy = model.scheduler.add_noise(latents[:4], test_noise, test_timesteps)
+                    
+                    print(f"   噪声添加后 std: {test_noisy.std():.6f}")
+                    print(f"   时间步范围: {test_timesteps.min().item()}-{test_timesteps.max().item()}")
+                    
+                    # VF修复效果判断
+                    if latents.std() > 1.2:
+                        print(f"   ✅ VF修复成功！latent分布已恢复健康")
+                    elif latents.std() > 0.8:
+                        print(f"   ⚠️ VF修复部分有效，分布轻微改善")
+                    else:
+                        print(f"   ❌ VF修复无效，可能需要检查权重加载")
             
             # 获取用户条件
             user_conditions = model.get_user_condition(user_ids)
@@ -436,13 +459,13 @@ def generate_samples(model, vae, epoch, sample_dir, device, num_users):
     # 选择几个用户生成，每个用户生成4个样本
     sample_users = list(range(min(4, num_users)))
     
-    # 生成latents
+    # 生成latents - 🔧 激进修复：先试无CFG生成
     with torch.no_grad():
         latents = model.generate(
             user_ids=sample_users,
             num_samples=len(sample_users) * 4,  # 每个用户4个样本
-            num_inference_steps=50,   # 减少步数避免超时
-            guidance_scale=4.0        # 使用标准CFG强度
+            num_inference_steps=100,  # 增加步数确保充分去噪
+            guidance_scale=1.0        # 无CFG，纯条件生成
         )
         
         # 关键分布验证信息
