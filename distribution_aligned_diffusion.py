@@ -55,7 +55,6 @@ class DistributionAlignedDiffusion(nn.Module):
                 "CrossAttnUpBlock2D",
                 "CrossAttnUpBlock2D",
                 "CrossAttnUpBlock2D",
-                "CrossAttnUpBlock2D",
             ),
             cross_attention_dim=prototype_dim,
             attention_head_dim=8,
