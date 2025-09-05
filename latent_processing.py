@@ -33,7 +33,7 @@ class PreEncodedLatentDataset(Dataset):
         
         # 加载预编码数据
         print(f"📊 加载预编码latent: {latent_file}")
-        self.data = torch.load(latent_file, map_location='cpu')
+        self.data = torch.load(latent_file, map_location='cpu', weights_only=False)
         
         print(f"✅ 加载完成: {len(self.data)}个latent样本")
         if len(self.data) > 0:
