@@ -30,6 +30,7 @@ class DiffusersTrainer:
         # 初始化VAE
         print("🔧 加载VA-VAE...")
         self.vae = SimplifiedVAVAE(args.vae_checkpoint)
+        self.vae.to(self.device)  # 移动到CUDA设备
         self.vae.eval()
         
         # 初始化UNet - 使用diffusers的标准UNet
