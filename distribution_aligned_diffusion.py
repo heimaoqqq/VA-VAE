@@ -185,16 +185,30 @@ class DistributionAlignedDiffusion(nn.Module):
             user_id_list = user_ids
         
         conditions = []
-        for user_id in user_id_list:
+        for i, user_id in enumerate(user_id_list):
+            # 调试信息
+            print(f"🔍 Debug user_id[{i}]: type={type(user_id)}, value={user_id}")
+            
             # 确保user_id是整数
             if isinstance(user_id, torch.Tensor):
                 user_id = user_id.item()
+                print(f"   转换tensor后: {user_id}")
             elif isinstance(user_id, list):
-                # 如果是list，取第一个元素
-                user_id = user_id[0] if user_id else 0
+                print(f"   检测到list: {user_id}")
+                # 如果是list，递归处理
+                while isinstance(user_id, list) and user_id:
+                    user_id = user_id[0]
+                    print(f"   递归展开: {user_id}")
+                if not user_id:
+                    user_id = 1  # 默认用户ID
             
             # 确保user_id是有效的整数
-            user_id = int(user_id)
+            try:
+                user_id = int(user_id)
+                print(f"   最终user_id: {user_id}")
+            except (ValueError, TypeError) as e:
+                print(f"   ❌ 转换错误: {e}, 使用默认值1")
+                user_id = 1
             
             # 调试信息
             if str(user_id) not in self.user_prototypes:
