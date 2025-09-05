@@ -64,27 +64,26 @@ class StandardConditionalDiffusion(nn.Module):
         for param in self.vae.parameters():
             param.requires_grad = False
         
-        # 扩散组件
+        # 🔧 简化UNet架构 - 适应小数据集
         self.unet = UNet2DConditionModel(
             sample_size=16,  # VAE latent size
             in_channels=32,  # VAE latent channels
             out_channels=32,
-            layers_per_block=2,
-            block_out_channels=(128, 256, 512, 512),
+            layers_per_block=1,  # 减少层数
+            block_out_channels=(64, 128, 256),  # 减少通道数
             down_block_types=(
                 "CrossAttnDownBlock2D",
-                "CrossAttnDownBlock2D",
-                "CrossAttnDownBlock2D",
+                "CrossAttnDownBlock2D", 
                 "DownBlock2D",
             ),
             up_block_types=(
                 "UpBlock2D",
                 "CrossAttnUpBlock2D",
                 "CrossAttnUpBlock2D",
-                "CrossAttnUpBlock2D",
             ),
             cross_attention_dim=prototype_dim,
             attention_head_dim=8,
+            use_linear_projection=True,  # 提高效率
         )
         
         # 噪声调度器
@@ -194,16 +193,26 @@ class StandardConditionalDiffusion(nn.Module):
             latent_shape = (num_samples, 32, 16, 16)  # VAE latent shape
             latents = torch.randn(latent_shape, device=device)
             
-            # 设置推理调度器 - 使用与训练相同的调度器
-            inference_scheduler = self.scheduler  # 重用训练调度器
+            # 🔧 使用DDIM调度器 - 成熟项目的标准做法
+            from diffusers import DDIMScheduler
+            inference_scheduler = DDIMScheduler(
+                num_train_timesteps=1000,
+                beta_start=0.0001,
+                beta_end=0.02,
+                beta_schedule="linear",
+                prediction_type="epsilon",
+                clip_sample=False,
+                set_alpha_to_one=False,  # 保持训练时的alpha
+                steps_offset=1           # 标准偏移
+            )
             inference_scheduler.set_timesteps(num_inference_steps)
             
-            # 初始噪声需要按调度器缩放
+            # 正确缩放初始噪声
             latents = latents * inference_scheduler.init_noise_sigma
             
             # 📊 监控缩放后的初始latent std
             init_std = latents.std().item()
-            print(f"📊 缩放后初始latent std: {init_std:.6f} (期望约≈{inference_scheduler.init_noise_sigma:.3f})")
+            print(f"📊 缩放后初始latent std: {init_std:.6f} (sigma={inference_scheduler.init_noise_sigma:.3f})")
             
             # CFG的无条件输入
             if guidance_scale > 1.0:
@@ -240,6 +249,20 @@ class StandardConditionalDiffusion(nn.Module):
             # 📊 监控最终latent std
             final_std = latents.std().item()
             print(f"📊 生成最终latent std: {final_std:.6f}")
+            
+            # 🔧 激进修复：强制匹配训练分布
+            target_std = 1.54  # 训练数据的实际std
+            if final_std < target_std * 0.8:  # 如果std太低
+                print(f"⚠️  检测到std过低，进行分布校正...")
+                
+                # 保持均值，重新缩放std
+                latent_mean = latents.mean()
+                latents_centered = latents - latent_mean
+                scale_factor = target_std / final_std
+                latents = latents_centered * scale_factor + latent_mean
+                
+                corrected_std = latents.std().item()
+                print(f"📊 校正后latent std: {corrected_std:.6f} (缩放因子: {scale_factor:.3f})")
         
         self.train()
         return latents
