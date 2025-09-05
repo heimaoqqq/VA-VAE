@@ -13,40 +13,142 @@ from PIL import Image
 from simplified_vavae import SimplifiedVAVAE
 from distribution_aligned_diffusion import DistributionAlignedDiffusion
 import argparse
+import os
+import glob
+from torchvision import transforms
 
 
-def create_sample_images(batch_size=8, image_size=256, channels=3):
-    """创建示例图像用于测试"""
-    # 创建一些有意义的测试图像
-    images = []
-    
-    for i in range(batch_size):
-        # 创建不同的几何图案
-        img = np.zeros((channels, image_size, image_size), dtype=np.float32)
+def load_real_dataset(data_dir="/kaggle/input/dataset", batch_size=8, num_samples=32):
+    """加载真实的microdoppler数据集"""
+    try:
+        print(f"   尝试加载数据集: {data_dir}")
         
-        if i % 4 == 0:
-            # 渐变图案
-            for c in range(channels):
-                img[c] = np.linspace(0, 1, image_size).reshape(1, -1)
-        elif i % 4 == 1:
-            # 棋盘图案
-            for y in range(0, image_size, 32):
-                for x in range(0, image_size, 32):
-                    if (y//32 + x//32) % 2 == 0:
-                        img[:, y:y+32, x:x+32] = 0.8
-        elif i % 4 == 2:
-            # 圆形图案
-            center = image_size // 2
-            y, x = np.ogrid[:image_size, :image_size]
-            mask = (x - center)**2 + (y - center)**2 < (image_size//4)**2
-            img[:, mask] = 0.7
-        else:
-            # 噪声图案
-            img = np.random.rand(channels, image_size, image_size).astype(np.float32) * 0.5 + 0.25
+        # 检查数据集路径
+        if not os.path.exists(data_dir):
+            raise FileNotFoundError(f"数据集路径不存在: {data_dir}")
+        
+        # 扫描用户文件夹 (ID_1, ID_2, ..., ID_31)
+        user_folders = []
+        for i in range(1, 32):  # ID_1 到 ID_31
+            user_folder = os.path.join(data_dir, f"ID_{i}")
+            if os.path.exists(user_folder):
+                user_folders.append((user_folder, i-1))  # 用户ID从0开始
+        
+        if not user_folders:
+            raise FileNotFoundError("未找到任何用户文件夹 (ID_1 到 ID_31)")
+        
+        print(f"   发现 {len(user_folders)} 个用户文件夹")
+        
+        # 收集所有图像路径和用户ID
+        all_image_paths = []
+        all_user_ids = []
+        
+        for user_folder, user_id in user_folders:
+            # 查找该用户的所有jpg图像
+            jpg_files = glob.glob(os.path.join(user_folder, "*.jpg"))
+            if jpg_files:
+                all_image_paths.extend(jpg_files)
+                all_user_ids.extend([user_id] * len(jpg_files))
+        
+        total_images = len(all_image_paths)
+        print(f"   总图像数量: {total_images}")
+        
+        if total_images == 0:
+            raise FileNotFoundError("未找到任何jpg图像")
+        
+        # 随机选择指定数量的样本
+        indices = np.random.choice(total_images, min(num_samples, total_images), replace=False)
+        selected_paths = [all_image_paths[i] for i in indices]
+        selected_user_ids = [all_user_ids[i] for i in indices]
+        
+        # 定义图像变换
+        transform = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.ToTensor(),
+            # 不需要归一化，保持[0,1]范围
+        ])
+        
+        # 加载图像
+        images = []
+        user_ids = []
+        
+        for img_path, user_id in zip(selected_paths, selected_user_ids):
+            try:
+                from PIL import Image
+                img = Image.open(img_path).convert('RGB')
+                img_tensor = transform(img)
+                images.append(img_tensor)
+                user_ids.append(user_id)
+            except Exception as e:
+                print(f"   跳过损坏图像 {img_path}: {e}")
+                continue
+        
+        if not images:
+            raise ValueError("没有成功加载任何图像")
+        
+        images = torch.stack(images)
+        user_ids = torch.tensor(user_ids)
+        
+        print(f"   成功加载样本数: {len(images)}")
+        print(f"   图像形状: {images.shape}")
+        print(f"   图像范围: [{images.min().item():.3f}, {images.max().item():.3f}]")
+        print(f"   用户ID范围: [{user_ids.min().item()}, {user_ids.max().item()}]")
+        
+        return images, user_ids
+        
+    except Exception as e:
+        print(f"   ⚠️ 无法加载真实数据集: {e}")
+        print(f"   回退到模拟数据...")
+        return create_fallback_images(batch_size, num_samples)
+
+
+def create_fallback_images(batch_size=8, num_samples=32):
+    """创建回退的模拟数据（当真实数据不可用时）"""
+    print("   创建microdoppler风格的模拟数据...")
+    
+    images = []
+    user_ids = []
+    
+    for i in range(num_samples):
+        # 创建类似microdoppler的图案：时频谱特征
+        img = np.zeros((3, 256, 256), dtype=np.float32)
+        
+        # 模拟多普勒频移曲线
+        time_steps = np.linspace(0, 2*np.pi, 256)
+        for t_idx, t in enumerate(time_steps):
+            # 不同的多普勒模式
+            if i % 4 == 0:
+                # 正弦波多普勒
+                freq_shift = 64 + 32 * np.sin(3*t + i*0.5)
+            elif i % 4 == 1:
+                # 线性调频
+                freq_shift = 32 + 64 * t / (2*np.pi)
+            elif i % 4 == 2:
+                # 复合多普勒
+                freq_shift = 64 + 16 * np.sin(2*t) + 16 * np.cos(4*t + i*0.3)
+            else:
+                # 阶跃多普勒
+                freq_shift = 48 + 32 * (1 if np.sin(t) > 0 else -1)
+            
+            freq_shift = int(np.clip(freq_shift, 0, 255))
+            
+            # 在时频图上添加能量
+            intensity = 0.3 + 0.4 * np.exp(-((t - np.pi)**2) / 2)
+            img[0, freq_shift-2:freq_shift+3, t_idx] = intensity  # R通道
+            img[1, freq_shift-1:freq_shift+2, t_idx] = intensity * 0.8  # G通道  
+            img[2, freq_shift:freq_shift+1, t_idx] = intensity * 0.6  # B通道
+        
+        # 添加噪声
+        noise = np.random.normal(0, 0.05, img.shape).astype(np.float32)
+        img = np.clip(img + noise, 0, 1)
         
         images.append(img)
+        user_ids.append(i % 31)  # 31个用户
     
-    return torch.tensor(np.stack(images))
+    images = torch.tensor(np.stack(images))
+    user_ids = torch.tensor(user_ids)
+    
+    return images, user_ids
 
 
 def save_comparison_grid(original, reconstructed, filepath, titles=None):
@@ -123,7 +225,7 @@ def analyze_latent_distribution(latents, title="Latent Distribution"):
     return {"mean": mean, "std": std, "min": min_val, "max": max_val}
 
 
-def test_vae_reconstruction(vae_checkpoint, output_dir="./vae_validation", device=None):
+def test_vae_reconstruction(vae_checkpoint, data_dir="/kaggle/input/dataset", output_dir="./vae_validation", device=None):
     """测试VAE重建功能"""
     
     if device is None:
@@ -141,9 +243,9 @@ def test_vae_reconstruction(vae_checkpoint, output_dir="./vae_validation", devic
     vae = vae.to(device)
     vae.eval()
     
-    # 创建测试图像
-    print("🎯 创建测试图像...")
-    test_images = create_sample_images(batch_size=8, image_size=256, channels=3)
+    # 加载真实数据
+    print("🎯 加载microdoppler测试数据...")
+    test_images, test_user_ids = load_real_dataset(data_dir=data_dir, batch_size=8, num_samples=16)
     test_images = test_images.to(device)
     
     print(f"   测试图像形状: {test_images.shape}")
@@ -187,7 +289,7 @@ def test_vae_reconstruction(vae_checkpoint, output_dir="./vae_validation", devic
     return latent_stats, mse_error, mae_error
 
 
-def test_distribution_alignment(vae_checkpoint, output_dir="./vae_validation", device=None):
+def test_distribution_alignment(vae_checkpoint, data_dir="/kaggle/input/dataset", output_dir="./vae_validation", device=None):
     """测试分布对齐功能"""
     
     if device is None:
@@ -211,8 +313,8 @@ def test_distribution_alignment(vae_checkpoint, output_dir="./vae_validation", d
         track_statistics=True
     ).to(device)
     
-    # 创建测试图像并编码
-    test_images = create_sample_images(batch_size=16, image_size=256, channels=3)
+    # 加载真实数据进行测试
+    test_images, test_user_ids = load_real_dataset(data_dir=data_dir, batch_size=16, num_samples=32)
     test_images = test_images.to(device)
     
     with torch.no_grad():
@@ -264,6 +366,9 @@ def main():
     parser.add_argument('--vae_checkpoint', type=str, 
                       default='/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt',
                       help='VA-VAE检查点路径')
+    parser.add_argument('--data_dir', type=str, 
+                      default='/kaggle/input/dataset',
+                      help='MicroDoppler数据集路径')
     parser.add_argument('--output_dir', type=str, default='./vae_validation',
                       help='输出目录')
     parser.add_argument('--device', type=str, default=None,
@@ -278,6 +383,7 @@ def main():
         # 测试VAE重建
         latent_stats, mse_error, mae_error = test_vae_reconstruction(
             vae_checkpoint=args.vae_checkpoint,
+            data_dir=args.data_dir,
             output_dir=args.output_dir,
             device=args.device
         )
@@ -285,6 +391,7 @@ def main():
         # 测试分布对齐
         alignment_enabled = test_distribution_alignment(
             vae_checkpoint=args.vae_checkpoint,
+            data_dir=args.data_dir,
             output_dir=args.output_dir,
             device=args.device
         )
