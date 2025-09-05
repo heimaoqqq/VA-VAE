@@ -134,11 +134,8 @@ def test_training_step(model, dataloader, device):
         latents = latents.to(device)
         user_ids = user_ids.to(device)
         
-        # 获取用户条件
-        user_conditions = model.get_user_condition(user_ids)
-        
-        # 训练步骤
-        loss_dict = model.training_step(latents, user_conditions)
+        # 训练步骤 (直接传递user_ids，让training_step内部处理)
+        loss_dict = model.training_step(latents, user_ids)
         total_loss = loss_dict['total_loss']
         
         # 反向传播
