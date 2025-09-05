@@ -111,9 +111,14 @@ class SimplifiedVAVAE(nn.Module):
             print(f"⚠️ 未在checkpoint中找到scale_factor，使用默认值1.0")
             print(f"   建议：训练时添加scale_by_std=True来动态计算")
         
-        # 移除VF相关权重和foundation_model权重
+        # 根据VF配置决定是否包含VF权重
         filtered_state_dict = {}
-        excluded_prefixes = ['vf_proj', 'vf_model', 'foundation_model']  # 恢复VF权重排除
+        if self.use_vf:
+            # 启用VF时，保留VF相关权重
+            excluded_prefixes = ['foundation_model']  # 仅排除foundation_model
+        else:
+            # 禁用VF时，排除所有VF相关权重
+            excluded_prefixes = ['vf_proj', 'vf_model', 'foundation_model']
         
         for k, v in state_dict.items():
             # 检查是否包含需要排除的前缀
@@ -121,6 +126,17 @@ class SimplifiedVAVAE(nn.Module):
             if not should_exclude:
                 # 移除前缀（如果有）
                 clean_key = k.replace('module.', '').replace('vae.', '')
+                
+                # 特殊处理：修复linear_proj权重形状不匹配
+                if 'linear_proj.weight' in clean_key and len(v.shape) == 4:
+                    # 检查是否需要转置
+                    if hasattr(self.vae, 'linear_proj') and hasattr(self.vae.linear_proj, 'weight'):
+                        expected_shape = self.vae.linear_proj.weight.shape
+                        if v.shape != expected_shape and v.shape == expected_shape[::-1][:2] + expected_shape[2:]:
+                            # 转置前两个维度
+                            v = v.transpose(0, 1)
+                            print(f"🔧 修复linear_proj权重形状: {expected_shape}")
+                
                 filtered_state_dict[clean_key] = v
         
         # 加载权重
