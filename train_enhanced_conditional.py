@@ -194,9 +194,11 @@ def train_enhanced_diffusion(args):
         weight_decay=args.weight_decay
     )
     
+    # 🔧 修复学习率调度 - 避免LR降为0
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, 
-        T_max=args.num_epochs
+        T_max=args.num_epochs,
+        eta_min=1e-6  # 保持最小学习率，避免完全停止学习
     )
     
     # 步骤6: 训练循环
@@ -464,7 +466,7 @@ def generate_samples(model, vae, epoch, sample_dir, device, num_users):
         latents = model.generate(
             user_ids=sample_users,
             num_samples=len(sample_users) * 4,  # 每个用户4个样本
-            num_inference_steps=20,   # 减少步数防止误差累积
+            num_inference_steps=50,   # 增加步数确保充分去噪
             guidance_scale=1.0        # 无CFG，纯条件生成
         )
         
