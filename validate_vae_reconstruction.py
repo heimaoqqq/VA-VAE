@@ -204,17 +204,11 @@ def test_distribution_alignment(vae_checkpoint, output_dir="./vae_validation", d
     
     # 创建分布对齐模型（仅用于测试归一化功能）
     alignment_model = DistributionAlignedDiffusion(
-        unet_config={
-            'sample_size': (16, 16),
-            'in_channels': 32,
-            'out_channels': 32,
-            'down_block_types': ['CrossAttnDownBlock2D'] * 3,
-            'up_block_types': ['CrossAttnUpBlock2D'] * 3,
-            'block_out_channels': [320, 640, 1280],
-            'cross_attention_dim': 768,
-            'layers_per_block': 2,
-            'attention_head_dim': 8
-        }
+        vae=vae,
+        num_users=31,
+        prototype_dim=768,
+        enable_alignment=True,
+        track_statistics=True
     ).to(device)
     
     # 创建测试图像并编码
