@@ -234,9 +234,8 @@ class DiffusersTrainer:
             axes = [axes]
         
         for i in range(num_samples):
-            # 反归一化到[0,1]
-            img_tensor = (images[i] + 1) / 2
-            img_tensor = torch.clamp(img_tensor, 0, 1)
+            # VA-VAE decode已经返回[0,1]范围，无需再归一化
+            img_tensor = torch.clamp(images[i], 0, 1)
             
             # 转换为numpy显示格式 - 匹配VA-VAE的可视化方式
             img_array = img_tensor.cpu().numpy()
@@ -256,8 +255,7 @@ class DiffusersTrainer:
         
         # 同时保存单个图像文件
         for i, img_tensor in enumerate(images):
-            # 反归一化到[0,1]
-            img_tensor = (img_tensor + 1) / 2
+            # VA-VAE decode已经返回[0,1]范围，无需再归一化
             img_tensor = torch.clamp(img_tensor, 0, 1)
             
             # 转换为PIL
