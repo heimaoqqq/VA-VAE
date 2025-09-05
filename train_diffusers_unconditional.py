@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 
 from simplified_vavae import SimplifiedVAVAE
 from microdoppler_dataset_diffusion import MicrodopplerDataset
+from latent_processing import MixedLatentDataset, PreEncodedLatentDataset
 
 
 class DiffusersTrainer:
@@ -88,25 +89,41 @@ class DiffusersTrainer:
         self.latent_std = None
         
     def prepare_dataloader(self):
-        """准备数据加载器 - 完全匹配VA-VAE的预处理格式"""
-        # 不使用torchvision transforms，直接匹配step4_train_vavae.py的处理方式
-        # VA-VAE使用: img_array / 127.5 - 1.0 归一化到[-1,1]
-        transform = None  # 使用自定义预处理
-        
-        dataset = MicrodopplerDataset(
+        """准备数据加载器 - 支持预编码latent和图像"""
+        # 检查是否有预编码latent文件
+        latent_file = None
+        if hasattr(self.args, 'latent_dir') and self.args.latent_dir:
+            latent_file = Path(self.args.latent_dir) / "train_latents.pt"
+            
+        # 创建fallback图像数据集
+        image_dataset = MicrodopplerDataset(
             root_dir=self.args.image_dir,
             split_file=self.args.split_file,
             split='train',
-            transform=transform,
-            return_user_id=False,  # 无条件生成不需要用户ID
-            image_size=256  # 匹配VA-VAE的256x256分辨率
+            transform=None,
+            return_user_id=False,
+            image_size=256
         )
+        
+        # 使用混合数据集（优先latent，fallback图像）
+        dataset = MixedLatentDataset(
+            latent_file=latent_file,
+            image_dataset=image_dataset,
+            return_user_id=False
+        )
+        
+        # 检测数据集类型
+        self.use_preencoded_latents = hasattr(dataset, 'use_preencoded') and dataset.use_preencoded
+        if self.use_preencoded_latents:
+            print("🚀 使用预编码latent训练 - 显著加速！")
+        else:
+            print("📊 使用图像训练 - 实时编码")
         
         return DataLoader(
             dataset,
             batch_size=self.args.batch_size,
             shuffle=True,
-            num_workers=4,
+            num_workers=4 if not self.use_preencoded_latents else 0,  # latent不需要多进程
             pin_memory=True
         )
     
@@ -147,21 +164,24 @@ class DiffusersTrainer:
         return latents * self.latent_std + self.latent_mean
     
     def train_step(self, batch):
-        """单个训练步骤"""
-        images = batch[0].to(self.device)  # 只取图像，忽略用户ID
+        """单个训练步骤 - 支持预编码latent和图像"""
+        data = batch[0].to(self.device)  # 可能是图像或latent
         
-        # VAE编码 - 匹配VA-VAE的调用方式
-        with torch.no_grad():
-            # 注意：VA-VAE期望BCHW格式，但我们的数据是BHWC
-            # 需要转换格式
-            if images.dim() == 4 and images.shape[-1] == 3:  # BHWC格式
-                images = images.permute(0, 3, 1, 2)  # 转为BCHW
-            
-            latents = self.vae.encode(images)
-            
-            # 归一化（如果需要）
-            if self.use_distribution_alignment:
-                latents = self.normalize_latents(latents)
+        if self.use_preencoded_latents:
+            # 直接使用预编码latent
+            latents = data  # 已经是latent格式 [B, 32, 16, 16]
+        else:
+            # VAE编码图像
+            with torch.no_grad():
+                # 格式转换：BHWC -> BCHW
+                if data.dim() == 4 and data.shape[-1] == 3:  # BHWC格式
+                    data = data.permute(0, 3, 1, 2)  # 转为BCHW
+                
+                latents = self.vae.encode(data)
+        
+        # 归一化（如果需要）
+        if self.use_distribution_alignment:
+            latents = self.normalize_latents(latents)
         
         # 采样噪声和时间步
         noise = torch.randn_like(latents)
@@ -275,13 +295,19 @@ class DiffusersTrainer:
         # 首次检测分布对齐
         first_batch = next(iter(self.train_loader))
         with torch.no_grad():
-            sample_images = first_batch[0][:4].to(self.device)
+            sample_data = first_batch[0][:4].to(self.device)
             
-            # 格式转换：BHWC -> BCHW（与train_step保持一致）
-            if sample_images.dim() == 4 and sample_images.shape[-1] == 3:  # BHWC格式
-                sample_images = sample_images.permute(0, 3, 1, 2)  # 转为BCHW
+            if self.use_preencoded_latents:
+                # 直接使用预编码latent
+                sample_latents = sample_data
+            else:
+                # VAE编码图像
+                # 格式转换：BHWC -> BCHW
+                if sample_data.dim() == 4 and sample_data.shape[-1] == 3:  # BHWC格式
+                    sample_data = sample_data.permute(0, 3, 1, 2)  # 转为BCHW
+                
+                sample_latents = self.vae.encode(sample_data)
             
-            sample_latents = self.vae.encode(sample_images)
             self.detect_distribution_alignment(sample_latents)
         
         # 训练循环
@@ -363,6 +389,8 @@ def main():
                        help='预热步数')
     parser.add_argument('--save_freq', type=int, default=10,
                        help='保存频率')
+    parser.add_argument('--latent_dir', type=str, default=None,
+                       help='预编码latent目录（可选，使用后显著加速训练）')
     
     args = parser.parse_args()
     
