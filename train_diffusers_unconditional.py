@@ -276,7 +276,13 @@ class DiffusersTrainer:
         # 首次检测分布对齐
         first_batch = next(iter(self.train_loader))
         with torch.no_grad():
-            sample_latents = self.vae.encode(first_batch[0][:4].to(self.device))
+            sample_images = first_batch[0][:4].to(self.device)
+            
+            # 格式转换：BHWC -> BCHW（与train_step保持一致）
+            if sample_images.dim() == 4 and sample_images.shape[-1] == 3:  # BHWC格式
+                sample_images = sample_images.permute(0, 3, 1, 2)  # 转为BCHW
+            
+            sample_latents = self.vae.encode(sample_images)
             self.detect_distribution_alignment(sample_latents)
         
         # 训练循环
