@@ -369,7 +369,7 @@ class DiffusersTrainer:
             print("🎨 生成样本...")
             sample_images = self.generate_samples(num_samples=8)
             self.save_samples(sample_images, epoch+1, "samples")
-            print(f"✅ Epoch {epoch+1} 完成 - 训练损失: {epoch_loss:.4f}, 验证损失: {val_loss:.4f}")
+            print(f"✅ Epoch {epoch+1} 完成 - 训练损失: {avg_loss:.4f}, 验证损失: {val_loss:.4f}")
 
 
 def main():
