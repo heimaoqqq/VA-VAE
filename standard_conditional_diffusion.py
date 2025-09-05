@@ -64,26 +64,25 @@ class StandardConditionalDiffusion(nn.Module):
         for param in self.vae.parameters():
             param.requires_grad = False
         
-        # 🔧 简化UNet架构 - 适应小数据集
+        # 🔧 恢复稳定UNet架构 - 修复生成爆炸
         self.unet = UNet2DConditionModel(
             sample_size=16,  # VAE latent size
             in_channels=32,  # VAE latent channels
             out_channels=32,
-            layers_per_block=1,  # 减少层数
-            block_out_channels=(64, 128, 256),  # 减少通道数
+            layers_per_block=2,  # 恢复足够深度
+            block_out_channels=(128, 256, 512),  # 增加容量防止不稳定
             down_block_types=(
                 "CrossAttnDownBlock2D",
-                "CrossAttnDownBlock2D", 
-                "DownBlock2D",
+                "CrossAttnDownBlock2D",
+                "CrossAttnDownBlock2D",
             ),
             up_block_types=(
-                "UpBlock2D",
+                "CrossAttnUpBlock2D",
                 "CrossAttnUpBlock2D",
                 "CrossAttnUpBlock2D",
             ),
             cross_attention_dim=prototype_dim,
             attention_head_dim=8,
-            use_linear_projection=True,  # 提高效率
         )
         
         # 噪声调度器
@@ -125,6 +124,21 @@ class StandardConditionalDiffusion(nn.Module):
             conditions[i] = self.user_prototypes[user_key]
         
         return conditions
+    
+    def update_user_prototypes(self, user_latents):
+        """更新用户原型 - 基于latent特征"""
+        # 简化实现：计算平均值更新原型
+        for user_id, latents in user_latents.items():
+            user_key = str(user_id)
+            if user_key in self.user_prototypes:
+                # 使用移动平均更新
+                current_prototype = self.user_prototypes[user_key]
+                new_feature = latents.mean(dim=0, keepdim=True)  # [1, feature_dim]
+                
+                # 简单的移动平均更新
+                self.user_prototypes[user_key].data = (
+                    0.9 * current_prototype.data + 0.1 * new_feature
+                )
     
     def training_step(self, clean_latents, user_conditions):
         """标准训练步骤 - 基于Diffusers"""
