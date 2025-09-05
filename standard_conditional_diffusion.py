@@ -187,8 +187,8 @@ class StandardConditionalDiffusion(nn.Module):
             encoder_hidden_states=user_conditions,
         ).sample
         
-        # 扩散损失（MSE）
-        diffusion_loss = F.mse_loss(noise_pred, noise)
+        # 🔧 使用Huber损失替代MSE - 减少过度平滑
+        diffusion_loss = F.huber_loss(noise_pred, noise, delta=1.0)
         
         # 对比学习损失
         contrastive_loss = self.contrastive(noise_pred, noise, None) * 0.1
