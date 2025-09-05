@@ -464,7 +464,7 @@ def generate_samples(model, vae, epoch, sample_dir, device, num_users):
         latents = model.generate(
             user_ids=sample_users,
             num_samples=len(sample_users) * 4,  # 每个用户4个样本
-            num_inference_steps=100,  # 增加步数确保充分去噪
+            num_inference_steps=20,   # 减少步数防止误差累积
             guidance_scale=1.0        # 无CFG，纯条件生成
         )
         
