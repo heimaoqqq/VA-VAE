@@ -189,6 +189,9 @@ class DistributionAlignedDiffusion(nn.Module):
             # 确保user_id是整数
             if isinstance(user_id, torch.Tensor):
                 user_id = user_id.item()
+            elif isinstance(user_id, list):
+                # 如果是list，取第一个元素
+                user_id = user_id[0] if user_id else 0
             
             # 确保user_id是有效的整数
             user_id = int(user_id)
