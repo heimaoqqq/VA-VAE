@@ -321,12 +321,11 @@ class DiffusersTrainer:
                 torch.save(checkpoint, save_path)
                 print(f"💾 保存检查点: {save_path}")
             
-            # 生成样本
-            if (epoch + 1) % self.args.sample_freq == 0:
-                print("🎨 生成样本...")
-                sample_images = self.generate_samples(num_samples=8)
-                self.save_samples(sample_images, epoch+1, "samples")
-                print(f"✅ 样本已保存到 samples/ 目录")
+            # 每轮生成样本 - 参考step4_train_vavae.py的做法
+            print("🎨 生成样本...")
+            sample_images = self.generate_samples(num_samples=8)
+            self.save_samples(sample_images, epoch+1, "samples")
+            print(f"✅ Epoch {epoch+1} 样本已保存到 samples/ 目录")
 
 
 def main():
