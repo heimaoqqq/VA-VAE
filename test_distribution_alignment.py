@@ -174,11 +174,11 @@ def test_generation(model, vae, device, num_samples=4):
         
         # 如果启用了分布对齐，检查是否已反归一化
         if model.enable_alignment:
-            expected_std = model.latent_std if model.latent_std > 0 else 1.5
-            if abs(latents.std() - expected_std) < 0.3:
+            expected_std = model.latent_std.item() if model.latent_std > 0 else 1.5
+            if abs(latents.std().item() - expected_std) < 0.3:
                 print(f"   ✅ Latent已正确反归一化到VAE分布 (std≈{expected_std:.2f})")
             else:
-                print(f"   ⚠️ Latent分布可能有问题: std={latents.std():.4f}, 期望≈{expected_std:.2f}")
+                print(f"   ⚠️ Latent分布可能有问题: std={latents.std().item():.4f}, 期望≈{expected_std:.2f}")
         
         # 解码到图像
         print(f"   解码latents到图像...")
