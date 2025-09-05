@@ -35,32 +35,49 @@ class MicrodopplerDataset(Dataset):
             raise ValueError(f"Split '{split}' not found in {split_file}")
             
         self.samples = []
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
+        
         for sample in split_data[split]:
-            # 调试：检查sample的实际格式
-            print(f"🔍 Debug sample type: {type(sample)}, content: {sample}")
-            
             # 处理不同的JSON格式
             if isinstance(sample, dict):
                 # 标准格式：{'path': '...', 'user_id': '...'}
                 sample_path = self.data_root / sample['path']
                 user_id = sample.get('user_id', 'unknown')
+                
+                if sample_path.is_file():
+                    self.samples.append({
+                        'path': sample_path,
+                        'user_id': user_id
+                    })
+                    
             elif isinstance(sample, str):
-                # 字符串格式：直接是路径
+                # 字符串格式：可能是目录名（如ID_1）或文件路径
                 sample_path = self.data_root / sample
-                # 从路径推断用户ID（假设格式为 ID_X/xxx.jpg）
-                path_parts = Path(sample).parts
-                user_id = path_parts[0] if path_parts else 'unknown'
+                
+                if sample_path.is_dir():
+                    # 是目录，扫描其中的图像文件
+                    user_id = sample  # 使用目录名作为用户ID
+                    
+                    for img_file in sample_path.iterdir():
+                        if img_file.is_file() and img_file.suffix.lower() in image_extensions:
+                            self.samples.append({
+                                'path': img_file,
+                                'user_id': user_id
+                            })
+                            
+                elif sample_path.is_file():
+                    # 是文件，直接使用
+                    path_parts = Path(sample).parts
+                    user_id = path_parts[0] if path_parts else 'unknown'
+                    self.samples.append({
+                        'path': sample_path,
+                        'user_id': user_id
+                    })
+                else:
+                    print(f"⚠️ 路径不存在: {sample_path}")
             else:
                 print(f"❌ 未知sample格式: {type(sample)} - {sample}")
                 continue
-                
-            if sample_path.exists():
-                self.samples.append({
-                    'path': sample_path,
-                    'user_id': user_id
-                })
-            else:
-                print(f"⚠️ 文件不存在: {sample_path}")
         
         print(f"✅ 加载{split}集: {len(self.samples)}个样本")
     
