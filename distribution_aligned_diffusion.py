@@ -16,46 +16,50 @@ class DistributionAlignedDiffusion(nn.Module):
     
     def __init__(
         self,
-        latent_dim: int = 768,
-        num_users: int = 10,
-        unet_in_channels: int = 768,
-        device: str = 'cuda'
+        vae,
+        num_users: int = 31,
+        prototype_dim: int = 768,
+        enable_alignment: bool = True,
+        track_statistics: bool = True
     ):
         super().__init__()
         
-        self.device = device
-        self.latent_dim = latent_dim
+        # VAE (冻结)
+        self.vae = vae
+        for param in self.vae.parameters():
+            param.requires_grad = False
+        
         self.num_users = num_users
+        self.prototype_dim = prototype_dim
+        self.enable_alignment = enable_alignment
+        self.track_statistics = track_statistics
         
         # 分布统计（会在训练时动态更新）
         self.register_buffer('latent_mean', torch.zeros(1))
         self.register_buffer('latent_std', torch.ones(1))
-        self.register_buffer('num_samples_seen', torch.tensor(0))
+        self.register_buffer('n_samples', torch.tensor(0))
         
-        # UNet模型
+        # UNet模型 - 匹配VA-VAE的latent维度
         self.unet = UNet2DConditionModel(
-            sample_size=32,
-            in_channels=unet_in_channels,
-            out_channels=unet_in_channels,
+            sample_size=16,  # VAE latent size
+            in_channels=32,  # VAE latent channels
+            out_channels=32,
             layers_per_block=2,
-            block_out_channels=(128, 256, 512, 512),
+            block_out_channels=(128, 256, 512),
             down_block_types=(
                 "CrossAttnDownBlock2D",
                 "CrossAttnDownBlock2D",
                 "CrossAttnDownBlock2D",
-                "DownBlock2D",
             ),
             up_block_types=(
-                "UpBlock2D",
+                "CrossAttnUpBlock2D",
                 "CrossAttnUpBlock2D",
                 "CrossAttnUpBlock2D",
                 "CrossAttnUpBlock2D",
             ),
-            cross_attention_dim=num_users,
+            cross_attention_dim=prototype_dim,
             attention_head_dim=8,
-            norm_num_groups=32,
-            use_linear_projection=False,
-        ).to(device)
+        )
         
         # 噪声调度器
         self.noise_scheduler = DDPMScheduler(
@@ -67,11 +71,15 @@ class DistributionAlignedDiffusion(nn.Module):
             prediction_type="epsilon",
         )
         
-        # 用户嵌入
-        self.user_embedding = nn.Embedding(num_users, num_users).to(device)
-        nn.init.eye_(self.user_embedding.weight)
+        # 用户原型系统
+        self.user_prototypes = nn.ParameterDict()
+        for i in range(num_users):
+            self.user_prototypes[str(i)] = nn.Parameter(torch.randn(prototype_dim))
         
-    def update_distribution_stats(self, latents: torch.Tensor, momentum: float = 0.99):
+        # 对比学习
+        self.contrastive_loss = nn.MSELoss()
+        
+    def update_statistics(self, latents: torch.Tensor, momentum: float = 0.99):
         """
         使用动量更新latent分布统计
         Args:
@@ -82,7 +90,7 @@ class DistributionAlignedDiffusion(nn.Module):
             batch_mean = latents.mean()
             batch_std = latents.std()
             
-            if self.num_samples_seen == 0:
+            if self.n_samples == 0:
                 # 首次更新
                 self.latent_mean.copy_(batch_mean)
                 self.latent_std.copy_(batch_std)
@@ -91,7 +99,7 @@ class DistributionAlignedDiffusion(nn.Module):
                 self.latent_mean.mul_(momentum).add_(batch_mean, alpha=1-momentum)
                 self.latent_std.mul_(momentum).add_(batch_std, alpha=1-momentum)
             
-            self.num_samples_seen += 1
+            self.n_samples += 1
             
     def normalize_latents(self, latents: torch.Tensor) -> torch.Tensor:
         """归一化latents到N(0,1)"""
@@ -117,132 +125,116 @@ class DistributionAlignedDiffusion(nn.Module):
         batch_size = latents.shape[0]
         
         # 更新分布统计
-        if update_stats:
-            self.update_distribution_stats(latents)
+        if update_stats and self.track_statistics:
+            self.update_statistics(latents)
         
-        # 归一化到N(0,1)
-        normalized_latents = self.normalize_latents(latents)
+        # 归一化到N(0,1) (如果启用对齐)
+        if self.enable_alignment:
+            normalized_latents = self.normalize_latents(latents)
+        else:
+            normalized_latents = latents
         
         # 添加噪声
         noise = torch.randn_like(normalized_latents)
         timesteps = torch.randint(
             0, self.noise_scheduler.num_train_timesteps,
-            (batch_size,), device=self.device
+            (batch_size,), device=normalized_latents.device
         ).long()
         
         noisy_latents = self.noise_scheduler.add_noise(
             normalized_latents, noise, timesteps
         )
         
-        # 获取用户嵌入
-        user_embeds = self.user_embedding(user_ids).unsqueeze(1)
+        # 获取用户条件
+        user_conditions = self.get_user_condition(user_ids)
         
         # 预测噪声
         noise_pred = self.unet(
             noisy_latents,
             timesteps,
-            encoder_hidden_states=user_embeds,
+            encoder_hidden_states=user_conditions,
             return_dict=False
         )[0]
         
         # Huber损失（比MSE更鲁棒）
-        loss = F.huber_loss(noise_pred, noise, delta=1.0)
+        diffusion_loss = F.huber_loss(noise_pred, noise, delta=1.0)
         
-        # 计算预测质量指标
-        with torch.no_grad():
-            pred_std = noise_pred.std()
-            target_std = noise.std()
-            std_ratio = pred_std / (target_std + 1e-8)
+        # 简单的对比损失
+        contrastive_loss = self.contrastive_loss(noise_pred.mean(dim=[1,2,3]), noise.mean(dim=[1,2,3]))
+        
+        total_loss = diffusion_loss + 0.1 * contrastive_loss
         
         return {
-            'loss': loss,
-            'pred_std': pred_std.item(),
-            'target_std': target_std.item(),
-            'std_ratio': std_ratio.item(),
-            'latent_mean': self.latent_mean.item(),
-            'latent_std': self.latent_std.item()
+            'total_loss': total_loss,
+            'diffusion_loss': diffusion_loss,
+            'contrastive_loss': contrastive_loss
         }
     
-    @torch.no_grad()
-    def generate(
-        self,
-        user_ids: torch.Tensor,
-        num_inference_steps: int = 50,
-        guidance_scale: float = 1.0,
-        generator: Optional[torch.Generator] = None
-    ) -> torch.Tensor:
-        """
-        生成with分布对齐
-        Returns:
-            反归一化后的latents（匹配训练分布）
-        """
-        batch_size = user_ids.shape[0]
-        shape = (batch_size, self.latent_dim, 1, 1)
-        device = user_ids.device
+    def get_user_condition(self, user_ids):
+        """获取用户条件"""
+        batch_size = len(user_ids)
+        conditions = []
+        for user_id in user_ids:
+            user_id = user_id.item() if hasattr(user_id, 'item') else user_id
+            prototype = self.user_prototypes[str(user_id)]
+            conditions.append(prototype)
         
-        # 从N(0,1)开始
-        latents = torch.randn(shape, device=device, generator=generator)
+        # Stack and add sequence dimension
+        conditions = torch.stack(conditions).unsqueeze(1)  # [batch, 1, prototype_dim]
+        return conditions
+    
+    def update_user_prototypes(self, user_latents_dict):
+        """更新用户原型"""
+        with torch.no_grad():
+            for user_id, latents in user_latents_dict.items():
+                # 计算该用户latents的均值作为原型
+                prototype = latents.mean(dim=[0, 2, 3])  # 对batch和空间维度求均值
+                self.user_prototypes[str(user_id)].data.copy_(prototype)
+    
+    def generate(self, user_ids, num_samples=1, num_inference_steps=50, guidance_scale=7.5):
+        """生成latents"""
+        self.eval()
+        device = next(self.parameters()).device
         
-        # 设置推理步数
-        self.noise_scheduler.set_timesteps(num_inference_steps)
-        
-        # 获取用户嵌入
-        user_embeds = self.user_embedding(user_ids).unsqueeze(1)
-        
-        # 反向扩散过程
-        for t in self.noise_scheduler.timesteps:
-            # 预测噪声
-            noise_pred = self.unet(
-                latents,
-                t.unsqueeze(0).to(device),
-                encoder_hidden_states=user_embeds,
-                return_dict=False
-            )[0]
+        with torch.no_grad():
+            # 准备用户条件
+            if isinstance(user_ids, list):
+                total_samples = len(user_ids) * num_samples // len(user_ids)
+                user_ids_expanded = []
+                for user_id in user_ids:
+                    user_ids_expanded.extend([user_id] * (num_samples // len(user_ids)))
+                user_ids_tensor = torch.tensor(user_ids_expanded, device=device)
+            else:
+                user_ids_tensor = torch.tensor([user_ids] * num_samples, device=device)
             
-            # 计算去噪后的latents
-            latents = self.noise_scheduler.step(
-                noise_pred, t, latents, generator=generator
-            ).prev_sample
-        
-        # 关键：反归一化到原始VAE分布
-        original_scale_latents = self.denormalize_latents(latents)
-        
-        return original_scale_latents
-    
-    def get_scaling_factor(self) -> float:
-        """获取当前的缩放因子（类似SD的0.18215）"""
-        return 1.0 / (self.latent_std.item() + 1e-8)
-
-
-# 使用示例
-if __name__ == "__main__":
-    # 初始化模型
-    model = DistributionAlignedDiffusion(
-        latent_dim=768,
-        num_users=10,
-        device='cuda'
-    )
-    
-    print("分布对齐的扩散模型已创建")
-    print(f"初始缩放因子: {model.get_scaling_factor():.5f}")
-    
-    # 模拟训练
-    for epoch in range(5):
-        # 模拟VAE编码的latents（std≈1.54）
-        raw_latents = torch.randn(4, 768, 1, 1).cuda() * 1.54
-        user_ids = torch.randint(0, 10, (4,)).cuda()
-        
-        # 训练步骤
-        result = model.training_step(raw_latents, user_ids)
-        
-        print(f"\nEpoch {epoch}:")
-        print(f"  Loss: {result['loss']:.4f}")
-        print(f"  Latent统计: mean={result['latent_mean']:.4f}, std={result['latent_std']:.4f}")
-        print(f"  预测std比例: {result['std_ratio']:.4f}")
-        print(f"  当前缩放因子: {model.get_scaling_factor():.5f}")
-    
-    # 生成
-    print("\n生成测试:")
-    generated = model.generate(user_ids)
-    print(f"生成latents统计: mean={generated.mean():.4f}, std={generated.std():.4f}")
-    print("✅ 生成的latents已自动匹配训练分布！")
+            # 获取用户条件
+            user_conditions = self.get_user_condition(user_ids_tensor)
+            
+            # 初始化随机噪声
+            shape = (len(user_ids_tensor), 32, 16, 16)
+            latents = torch.randn(shape, device=device)
+            
+            # 设置调度器
+            self.noise_scheduler.set_timesteps(num_inference_steps)
+            
+            # 去噪过程
+            for t in self.noise_scheduler.timesteps:
+                # 预测噪声
+                timesteps = t.expand(latents.shape[0]).to(device)
+                noise_pred = self.unet(
+                    latents,
+                    timesteps,
+                    encoder_hidden_states=user_conditions,
+                    return_dict=False
+                )[0]
+                
+                # 去噪步骤
+                latents = self.noise_scheduler.step(
+                    noise_pred, t, latents, return_dict=False
+                )[0]
+            
+            # 如果启用了分布对齐，反归一化
+            if self.enable_alignment and self.latent_std > 0:
+                latents = self.denormalize_latents(latents)
+            
+            return latents
