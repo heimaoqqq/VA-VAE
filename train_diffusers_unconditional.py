@@ -216,7 +216,7 @@ class DiffusersTrainer:
         
         return np.mean(val_losses)
     
-    def generate_samples(self, num_samples=4, num_inference_steps=250):
+    def generate_samples(self, num_samples=2, num_inference_steps=100):
         """生成样本"""
         self.unet.eval()
         
@@ -258,8 +258,8 @@ class DiffusersTrainer:
         
         os.makedirs(save_dir, exist_ok=True)
         
-        # 创建网格可视化 - 减少到4个样本节省内存
-        num_samples = min(4, len(images))
+        # 创建网格可视化 - 减少到2个样本节省内存
+        num_samples = min(2, len(images))
         fig, axes = plt.subplots(1, num_samples, figsize=(num_samples * 2, 2))
         fig.suptitle(f'Epoch {epoch} - 扩散生成样本')
         
@@ -364,9 +364,9 @@ class DiffusersTrainer:
             val_loss = self.validate()
             print(f"📊 验证损失: {val_loss:.4f}")
             
-            # 每轮生成样本 - 减少batch size避免OOM
+            # 每轮生成样本 - 进一步减少内存使用
             print("🎨 生成样本...")
-            sample_images = self.generate_samples(num_samples=4)
+            sample_images = self.generate_samples(num_samples=2)
             self.save_samples(sample_images, epoch+1, "samples")
             print(f"✅ Epoch {epoch+1} 完成 - 训练损失: {avg_loss:.4f}, 验证损失: {val_loss:.4f}")
 
