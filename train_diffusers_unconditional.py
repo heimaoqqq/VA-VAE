@@ -35,14 +35,14 @@ class DiffusersTrainer:
         self.vae.to(self.device)  # 移动到CUDA设备
         self.vae.eval()
         
-        # 初始化UNet - 使用diffusers的标准UNet
+        # 初始化UNet - 增强架构提升特征学习能力
         print("🔧 初始化UNet2D模型...")
         self.unet = UNet2DModel(
             sample_size=16,  # latent空间大小 16x16
             in_channels=32,  # VA-VAE latent通道数
             out_channels=32,
-            layers_per_block=2,
-            block_out_channels=(128, 256, 512, 512),
+            layers_per_block=3,  # 增加层数
+            block_out_channels=(128, 256, 512, 768),  # 增强容量
             down_block_types=(
                 "DownBlock2D",
                 "DownBlock2D", 
@@ -66,11 +66,13 @@ class DiffusersTrainer:
             prediction_type="epsilon"  # 预测噪声
         )
         
-        # 优化器
+        # 优化器 - 降低学习率提升细节学习
         self.optimizer = torch.optim.AdamW(
             self.unet.parameters(),
-            lr=args.learning_rate,
-            weight_decay=args.weight_decay
+            lr=args.learning_rate * 0.5,  # 降低学习率
+            weight_decay=args.weight_decay,
+            betas=(0.9, 0.999),
+            eps=1e-8
         )
         
         # 数据加载器
@@ -141,18 +143,19 @@ class DiffusersTrainer:
             print(f"   Std: {std:.6f}")
             print(f"   Range: [{latents.min().item():.2f}, {latents.max().item():.2f}]")
             
-            # 如果std偏离1.0较多，启用分布对齐
-            if abs(std - 1.0) > 0.3:
-                print(f"✅ 启用分布对齐 (std={std:.3f} 偏离1.0)")
-                self.use_distribution_alignment = True
-                self.latent_mean = mean
-                self.latent_std = std
-                
-                # 验证对齐效果
-                aligned = (latents - mean) / std
-                print(f"   对齐后: Mean={aligned.mean().item():.6f}, Std={aligned.std().item():.6f}")
+            # 🎯 保持语义空间完整性 - 记录真实分布但不强制归一化
+            print(f"🔒 保持VAE预训练语义空间，记录真实latent分布")
+            self.use_distribution_alignment = False  # 不归一化训练
+            self.true_latent_mean = mean  # 记录用于生成
+            self.true_latent_std = std
+            
+            if abs(std - 1.0) > 0.1 or abs(mean) > 0.1:
+                print(f"📝 记录真实分布: mean={mean:.3f}, std={std:.3f}")
+                print(f"   策略: 生成时从真实分布采样而非N(0,1)")
+                self.needs_custom_sampling = True
             else:
-                print(f"📊 分布正常，无需对齐 (std={std:.3f})")
+                print(f"✅ 分布接近N(0,1)，标准采样即可")
+                self.needs_custom_sampling = False
                 
     def normalize_latents(self, latents):
         """归一化latents"""
@@ -220,11 +223,17 @@ class DiffusersTrainer:
         """生成样本"""
         self.unet.eval()
         
-        # 初始噪声
-        latents = torch.randn(
-            num_samples, 32, 16, 16,  # 32通道，16x16
-            device=self.device
-        )
+        # 初始噪声 - 从真实latent分布采样而非标准正态
+        if self.needs_custom_sampling:
+            print(f"🎯 从真实latent分布采样: N({self.true_latent_mean:.3f}, {self.true_latent_std:.3f})")
+            latents = torch.randn(
+                num_samples, 32, 16, 16, device=self.device
+            ) * self.true_latent_std + self.true_latent_mean
+        else:
+            print(f"📊 使用标准正态分布采样: N(0, 1)")
+            latents = torch.randn(
+                num_samples, 32, 16, 16, device=self.device
+            )
         
         # DDIM推理
         ddim_scheduler = DDIMScheduler.from_config(self.noise_scheduler.config)
