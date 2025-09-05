@@ -127,15 +127,34 @@ class StandardConditionalDiffusion(nn.Module):
     
     def update_user_prototypes(self, user_latents):
         """更新用户原型 - 基于latent特征"""
-        # 简化实现：计算平均值更新原型
+        # 简化实现：使用latent的全局池化作为特征
         for user_id, latents in user_latents.items():
             user_key = str(user_id)
             if user_key in self.user_prototypes:
+                # latents shape: [N, 32, 16, 16] -> 提取全局特征 [N, feature_dim]
+                # 全局平均池化 + 投影到原型空间
+                pooled_features = latents.mean(dim=[2, 3])  # [N, 32]
+                
+                # 简单线性投影到原型维度 (如果需要)
+                if pooled_features.size(-1) != self.prototype_dim:
+                    # 重复或截断到匹配原型维度
+                    if pooled_features.size(-1) < self.prototype_dim:
+                        # 重复填充
+                        repeat_times = self.prototype_dim // pooled_features.size(-1)
+                        remainder = self.prototype_dim % pooled_features.size(-1)
+                        expanded = pooled_features.repeat(1, repeat_times)
+                        if remainder > 0:
+                            expanded = torch.cat([expanded, pooled_features[:, :remainder]], dim=1)
+                        pooled_features = expanded
+                    else:
+                        # 截断
+                        pooled_features = pooled_features[:, :self.prototype_dim]
+                
+                # 平均所有样本的特征
+                new_feature = pooled_features.mean(dim=0, keepdim=True)  # [1, prototype_dim]
+                
                 # 使用移动平均更新
                 current_prototype = self.user_prototypes[user_key]
-                new_feature = latents.mean(dim=0, keepdim=True)  # [1, feature_dim]
-                
-                # 简单的移动平均更新
                 self.user_prototypes[user_key].data = (
                     0.9 * current_prototype.data + 0.1 * new_feature
                 )
@@ -207,17 +226,14 @@ class StandardConditionalDiffusion(nn.Module):
             latent_shape = (num_samples, 32, 16, 16)  # VAE latent shape
             latents = torch.randn(latent_shape, device=device)
             
-            # 🔧 使用DDIM调度器 - 成熟项目的标准做法
-            from diffusers import DDIMScheduler
-            inference_scheduler = DDIMScheduler(
+            # 🔧 使用与训练相同的DDPM调度器 - 确保参数一致性
+            from diffusers import DDPMScheduler
+            inference_scheduler = DDPMScheduler(
                 num_train_timesteps=1000,
                 beta_start=0.0001,
                 beta_end=0.02,
                 beta_schedule="linear",
-                prediction_type="epsilon",
-                clip_sample=False,
-                set_alpha_to_one=False,  # 保持训练时的alpha
-                steps_offset=1           # 标准偏移
+                prediction_type="epsilon"
             )
             inference_scheduler.set_timesteps(num_inference_steps)
             
@@ -254,6 +270,9 @@ class StandardConditionalDiffusion(nn.Module):
                 
                 # 调度器步骤
                 latents = inference_scheduler.step(noise_pred, t, latents).prev_sample
+                
+                # 🔧 防止数值爆炸 - 裁剪异常latent值
+                latents = torch.clamp(latents, min=-10.0, max=10.0)
                 
                 # 📊 每10步监控latent std
                 if i % 10 == 0:
