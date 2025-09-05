@@ -35,13 +35,14 @@ from ldm.util import instantiate_from_config
 
 
 class SimplifiedVAVAE(nn.Module):
-    """简化VA-VAE：禁用VF功能，仅用作VAE"""
+    """简化VA-VAE：支持VF功能以匹配预训练模型"""
     
-    def __init__(self, checkpoint_path=None):
+    def __init__(self, checkpoint_path=None, use_vf='dinov2'):
         super().__init__()
         self.scale_factor = 1.0  # 默认值，从checkpoint中读取真实值
+        self.use_vf = use_vf
         
-        # 创建VA-VAE配置（禁用VF）
+        # 创建VA-VAE配置（启用VF以匹配预训练模型）
         config = OmegaConf.create({
             'target': 'ldm.models.autoencoder.AutoencoderKL',
             'params': {
@@ -62,14 +63,14 @@ class SimplifiedVAVAE(nn.Module):
                 'lossconfig': {
                     'target': 'ldm.modules.losses.LPIPSWithDiscriminator',
                     'params': {
-                        'disc_start': 50001,  # 禁用判别器
+                        'disc_start': 50001,  # 推理时不使用判别器
                         'kl_weight': 1e-6,
                         'pixelloss_weight': 1.0,
                         'perceptual_weight': 1.0,
-                        'disc_weight': 0.0,  # 禁用判别器
+                        'disc_weight': 0.0,  # 推理时禁用判别器
                     }
                 },
-                'use_vf': None,  # ❌ VF对冻结VAE无效，恢复原设置
+                'use_vf': use_vf,  # ✅ 启用VF以匹配预训练模型配置
                 'reverse_proj': False,
             }
         })
