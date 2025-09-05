@@ -35,49 +35,54 @@ class MicrodopplerDataset(Dataset):
             raise ValueError(f"Split '{split}' not found in {split_file}")
             
         self.samples = []
-        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
         
-        for sample in split_data[split]:
-            # 处理不同的JSON格式
-            if isinstance(sample, dict):
-                # 标准格式：{'path': '...', 'user_id': '...'}
-                sample_path = self.data_root / sample['path']
-                user_id = sample.get('user_id', 'unknown')
-                
-                if sample_path.is_file():
-                    self.samples.append({
-                        'path': sample_path,
-                        'user_id': user_id
-                    })
+        # 检查split_data的格式
+        if isinstance(split_data[split], dict):
+            # 按用户划分的格式：{'ID_1': ['path1', 'path2'], 'ID_2': [...]}
+            for user_id, image_paths in split_data[split].items():
+                for image_path in image_paths:
+                    # image_path可能是相对路径或绝对路径
+                    if Path(image_path).is_absolute():
+                        sample_path = Path(image_path)
+                    else:
+                        sample_path = self.data_root / image_path
                     
-            elif isinstance(sample, str):
-                # 字符串格式：可能是目录名（如ID_1）或文件路径
-                sample_path = self.data_root / sample
-                
-                if sample_path.is_dir():
-                    # 是目录，扫描其中的图像文件
-                    user_id = sample  # 使用目录名作为用户ID
+                    if sample_path.exists() and sample_path.is_file():
+                        self.samples.append({
+                            'path': sample_path,
+                            'user_id': user_id
+                        })
+                    else:
+                        print(f"⚠️ 图像文件不存在: {sample_path}")
+                        
+        elif isinstance(split_data[split], list):
+            # 列表格式：['ID_1', 'ID_2', ...]（旧格式兼容）
+            image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']
+            
+            for sample in split_data[split]:
+                if isinstance(sample, str):
+                    sample_path = self.data_root / sample
                     
-                    for img_file in sample_path.iterdir():
-                        if img_file.is_file() and img_file.suffix.lower() in image_extensions:
-                            self.samples.append({
-                                'path': img_file,
-                                'user_id': user_id
-                            })
-                            
-                elif sample_path.is_file():
-                    # 是文件，直接使用
-                    path_parts = Path(sample).parts
-                    user_id = path_parts[0] if path_parts else 'unknown'
-                    self.samples.append({
-                        'path': sample_path,
-                        'user_id': user_id
-                    })
-                else:
-                    print(f"⚠️ 路径不存在: {sample_path}")
-            else:
-                print(f"❌ 未知sample格式: {type(sample)} - {sample}")
-                continue
+                    if sample_path.is_dir():
+                        # 是目录，扫描其中的图像文件
+                        user_id = sample
+                        
+                        for img_file in sample_path.iterdir():
+                            if img_file.is_file() and img_file.suffix.lower() in image_extensions:
+                                self.samples.append({
+                                    'path': img_file,
+                                    'user_id': user_id
+                                })
+                    elif sample_path.is_file():
+                        # 是文件，直接使用
+                        path_parts = Path(sample).parts
+                        user_id = path_parts[0] if path_parts else 'unknown'
+                        self.samples.append({
+                            'path': sample_path,
+                            'user_id': user_id
+                        })
+        else:
+            raise ValueError(f"不支持的split数据格式: {type(split_data[split])}")
         
         print(f"✅ 加载{split}集: {len(self.samples)}个样本")
     
