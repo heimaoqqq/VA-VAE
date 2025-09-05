@@ -212,7 +212,7 @@ class DiffusersTrainer:
         with torch.no_grad():
             for batch in self.val_loader:
                 loss = self.train_step(batch)
-                val_losses.append(loss)
+                val_losses.append(loss.item())  # 转换为Python标量
         
         return np.mean(val_losses)
     
