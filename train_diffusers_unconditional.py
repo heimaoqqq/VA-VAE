@@ -143,19 +143,17 @@ class DiffusersTrainer:
             print(f"   Std: {std:.6f}")
             print(f"   Range: [{latents.min().item():.2f}, {latents.max().item():.2f}]")
             
-            # 🎯 保持语义空间完整性 - 记录真实分布但不强制归一化
-            print(f"🔒 保持VAE预训练语义空间，记录真实latent分布")
-            self.use_distribution_alignment = False  # 不归一化训练
-            self.true_latent_mean = mean  # 记录用于生成
-            self.true_latent_std = std
+            # 🎯 使用缩放因子而非分布归一化 - 保持语义空间
+            self.latent_scale_factor = 1.0 / std  # 类似SD的0.18215
+            print(f"🔧 计算latent缩放因子: 1/{std:.3f} = {self.latent_scale_factor:.6f}")
+            print(f"   策略: 训练时简单缩放，保持相对关系和语义空间")
+            print(f"   原理: 类似Stable Diffusion的0.18215缩放")
             
-            if abs(std - 1.0) > 0.1 or abs(mean) > 0.1:
-                print(f"📝 记录真实分布: mean={mean:.3f}, std={std:.3f}")
-                print(f"   策略: 生成时从真实分布采样而非N(0,1)")
-                self.needs_custom_sampling = True
-            else:
-                print(f"✅ 分布接近N(0,1)，标准采样即可")
-                self.needs_custom_sampling = False
+            # 验证缩放效果
+            scaled = latents * self.latent_scale_factor
+            print(f"   缩放后std: {scaled.std().item():.6f} (目标: ~1.0)")
+            
+            self.use_distribution_alignment = False  # 禁用完整归一化
                 
     def normalize_latents(self, latents):
         """归一化latents"""
@@ -185,9 +183,8 @@ class DiffusersTrainer:
                 
                 latents = self.vae.encode(data)
         
-        # 归一化（如果需要）
-        if self.use_distribution_alignment:
-            latents = self.normalize_latents(latents)
+        # 简单缩放保持语义空间
+        latents = latents * self.latent_scale_factor
         
         # 采样噪声和时间步
         noise = torch.randn_like(latents)
@@ -219,21 +216,15 @@ class DiffusersTrainer:
         
         return np.mean(val_losses)
     
-    def generate_samples(self, num_samples=4, num_inference_steps=100):
+    def generate_samples(self, num_samples=4, num_inference_steps=250):
         """生成样本"""
         self.unet.eval()
         
-        # 初始噪声 - 从真实latent分布采样而非标准正态
-        if self.needs_custom_sampling:
-            print(f"🎯 从真实latent分布采样: N({self.true_latent_mean:.3f}, {self.true_latent_std:.3f})")
-            latents = torch.randn(
-                num_samples, 32, 16, 16, device=self.device
-            ) * self.true_latent_std + self.true_latent_mean
-        else:
-            print(f"📊 使用标准正态分布采样: N(0, 1)")
-            latents = torch.randn(
-                num_samples, 32, 16, 16, device=self.device
-            )
+        # 初始噪声 - 始终从标准正态开始，训练时归一化确保一致性
+        print(f"📊 从标准正态分布开始去噪: N(0, 1)")
+        latents = torch.randn(
+            num_samples, 32, 16, 16, device=self.device
+        )
         
         # DDIM推理
         ddim_scheduler = DDIMScheduler.from_config(self.noise_scheduler.config)
@@ -248,9 +239,8 @@ class DiffusersTrainer:
             # 去噪
             latents = ddim_scheduler.step(noise_pred, timestep, latents).prev_sample
         
-        # 反归一化
-        if self.use_distribution_alignment:
-            latents = self.denormalize_latents(latents)
+        # 反缩放到原始latent空间
+        latents = latents / self.latent_scale_factor
         
         # VAE解码 - 匹配VA-VAE的调用方式
         images = self.vae.decode(latents)
