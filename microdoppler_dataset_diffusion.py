@@ -36,12 +36,31 @@ class MicrodopplerDataset(Dataset):
             
         self.samples = []
         for sample in split_data[split]:
-            sample_path = self.data_root / sample['path']
+            # 调试：检查sample的实际格式
+            print(f"🔍 Debug sample type: {type(sample)}, content: {sample}")
+            
+            # 处理不同的JSON格式
+            if isinstance(sample, dict):
+                # 标准格式：{'path': '...', 'user_id': '...'}
+                sample_path = self.data_root / sample['path']
+                user_id = sample.get('user_id', 'unknown')
+            elif isinstance(sample, str):
+                # 字符串格式：直接是路径
+                sample_path = self.data_root / sample
+                # 从路径推断用户ID（假设格式为 ID_X/xxx.jpg）
+                path_parts = Path(sample).parts
+                user_id = path_parts[0] if path_parts else 'unknown'
+            else:
+                print(f"❌ 未知sample格式: {type(sample)} - {sample}")
+                continue
+                
             if sample_path.exists():
                 self.samples.append({
                     'path': sample_path,
-                    'user_id': sample['user_id']
+                    'user_id': user_id
                 })
+            else:
+                print(f"⚠️ 文件不存在: {sample_path}")
         
         print(f"✅ 加载{split}集: {len(self.samples)}个样本")
     
