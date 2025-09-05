@@ -220,7 +220,7 @@ def test_distribution_alignment(vae_checkpoint, output_dir="./vae_validation", d
         original_latents = vae.encode(test_images)
         
         # 更新分布统计
-        alignment_model._update_latent_stats(original_latents)
+        alignment_model.update_statistics(original_latents)
         
         print(f"🎯 检测到的latent分布:")
         print(f"   均值: {alignment_model.latent_mean.item():.4f}")
