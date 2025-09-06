@@ -219,8 +219,8 @@ def main(args):
     # 初始化VA-VAE
     vae = VA_VAE(temp_config_path)
     
-    vae.to(device)
-    vae.eval()
+    # VA_VAE的model已经在load()中设置为.cuda().eval()，无需再次设置
+    print("✅ VA-VAE模型加载完成")
     
     # 加载数据
     image_paths = load_image_paths(args.data_path, args.split_file, args.split)
