@@ -5,10 +5,8 @@ Based on official LightningDiT train.py with minimal modifications
 """
 
 import torch
-import torch.distributed as dist
 import torch.backends.cuda
 import torch.backends.cudnn
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
@@ -129,10 +127,13 @@ def do_train(train_config, accelerator):
         use_checkpoint=train_config['model']['use_checkpoint'] if 'use_checkpoint' in train_config['model'] else False,
     )
 
-    ema = deepcopy(model).to(device)  # Create an EMA of the model
-    requires_grad(ema, False)
-    
-    model = DDP(model.to(device), device_ids=[rank])
+    # Create optimizer before preparing with Accelerate
+    opt = torch.optim.AdamW(
+        model.parameters(), 
+        lr=train_config['optimizer']['lr'], 
+        weight_decay=0, 
+        betas=(0.9, train_config['optimizer']['beta2'])
+    )
     
     # Create transport (与官方完全一致)
     transport = create_transport(
@@ -143,19 +144,6 @@ def do_train(train_config, accelerator):
         train_config['transport']['sample_eps'],
         use_cosine_loss=train_config['transport']['use_cosine_loss'] if 'use_cosine_loss' in train_config['transport'] else False,
         use_lognorm=train_config['transport']['use_lognorm'] if 'use_lognorm' in train_config['transport'] else False,
-    )
-    
-    if accelerator.is_main_process:
-        logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
-        logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
-        logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
-        logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
-    
-    opt = torch.optim.AdamW(
-        model.parameters(), 
-        lr=train_config['optimizer']['lr'], 
-        weight_decay=0, 
-        betas=(0.9, train_config['optimizer']['beta2'])
     )
     
     # Setup data (与官方完全一致的数据加载方式)
@@ -177,7 +165,18 @@ def do_train(train_config, accelerator):
         drop_last=True
     )
     
+    # Prepare model, optimizer, and data loader with Accelerate (替代DDP)
+    model, opt, loader = accelerator.prepare(model, opt, loader)
+    
+    # Create EMA after preparing with Accelerate
+    ema = deepcopy(accelerator.unwrap_model(model)).to(accelerator.device)
+    requires_grad(ema, False)
+    
     if accelerator.is_main_process:
+        logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in accelerator.unwrap_model(model).parameters()) / 1e6:.2f}M")
+        logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
+        logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
+        logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
         logger.info(f"Dataset contains {len(dataset):,} images {train_config['data']['data_path']}")
         logger.info(f"Batch size {batch_size_per_gpu} per gpu, with {global_batch_size} global batch size")
     
