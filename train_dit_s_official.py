@@ -389,20 +389,29 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         else:
             samples_denorm = samples
         
-        # 保存多种可视化以便调试
-        # 1. 前3个通道（反归一化后）
-        latent_vis = samples_denorm[:, :3, :, :].clone()  # Clone to avoid sparse tensor issues
-        # 确保张量是连续的和密集的
-        latent_vis = latent_vis.contiguous()
-        latent_vis = (latent_vis - latent_vis.min()) / (latent_vis.max() - latent_vis.min() + 1e-5)
-        save_path = f"{output_dir}/samples_latent_step_{step:07d}.png"
-        save_image(latent_vis, save_path, nrow=4)
-        
-        # 2. 前3个通道（归一化的，直接模型输出）
-        latent_vis_norm = samples[:, :3, :, :].clone().contiguous()
-        latent_vis_norm = (latent_vis_norm - latent_vis_norm.min()) / (latent_vis_norm.max() - latent_vis_norm.min() + 1e-5)
-        save_path_norm = f"{output_dir}/samples_norm_step_{step:07d}.png"
-        save_image(latent_vis_norm, save_path_norm, nrow=4)
+        # 使用VAE解码latent为真实图像
+        if vae is not None:
+            try:
+                # 确保VAE在正确设备上
+                if hasattr(vae, 'to'):
+                    vae = vae.to(device)
+                
+                # 使用VA-VAE解码latent为图像
+                decoded_images = vae.decode_to_images(samples_denorm)
+                
+                # 按照官方方式保存单个图像文件
+                from PIL import Image
+                for i, image in enumerate(decoded_images):
+                    save_path = f"{output_dir}/sample_{step:07d}_{i:02d}.png"
+                    Image.fromarray(image).save(save_path)
+                
+                print(f"[SAMPLING] Saved {len(decoded_images)} decoded images to {output_dir}")
+                
+            except Exception as e:
+                print(f"[ERROR] VAE decoding failed: {e}")
+                print(f"[ERROR] Cannot save images without VAE decoding")
+        else:
+            print(f"[ERROR] VAE is None, cannot decode latents to images")
         
         # 重要观察：如果Generated samples和Initial noise几乎相同，说明模型还没学到东西
         if abs(samples.mean().item()) < 0.1 and abs(samples.std().item() - 1.0) < 0.1:
