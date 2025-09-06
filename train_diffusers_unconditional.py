@@ -133,24 +133,27 @@ class DiffusersTrainer:
         )
     
     def detect_distribution_alignment(self, latents):
-        """检测并配置分布对齐"""
+        """检测并配置分布对齐 - 使用channel-wise归一化"""
         with torch.no_grad():
-            mean = latents.mean().item()
-            std = latents.std().item()
+            # Channel-wise统计（LightningDiT官方方法）
+            # latents shape: [B, C=32, H=16, W=16]
+            # 计算每个通道的mean和std
+            self.latent_mean = latents.mean(dim=[0, 2, 3], keepdim=True)  # [1, 32, 1, 1]
+            self.latent_std = latents.std(dim=[0, 2, 3], keepdim=True)    # [1, 32, 1, 1]
+            
+            # 全局统计用于显示
+            global_mean = latents.mean().item()
+            global_std = latents.std().item()
             
             print(f"\n📊 Latent分布分析:")
-            print(f"   Mean: {mean:.6f}")
-            print(f"   Std: {std:.6f}")
+            print(f"   全局 Mean: {global_mean:.6f}")
+            print(f"   全局 Std: {global_std:.6f}")
             print(f"   Range: [{latents.min().item():.2f}, {latents.max().item():.2f}]")
-            
-            # ✅ 记录分布参数用于正确的归一化
-            self.latent_mean = mean
-            self.latent_std = std
-            print(f"🔧 记录latent分布: mean={mean:.3f}, std={std:.3f}")
-            print(f"   策略: 训练时归一化到N(0,1)，生成后反归一化")
+            print(f"🔧 使用Channel-wise归一化（LightningDiT官方方法）")
+            print(f"   策略: 每个通道独立归一化，保持通道间相对关系")
             
             # 验证归一化效果
-            normalized = (latents - mean) / std
+            normalized = (latents - self.latent_mean) / self.latent_std
             print(f"   归一化后: mean={normalized.mean().item():.6f}, std={normalized.std().item():.6f}")
                 
     def normalize_latents(self, latents):
@@ -181,8 +184,9 @@ class DiffusersTrainer:
                 
                 latents = self.vae.encode(data)
         
-        # 完整归一化到N(0,1)以匹配生成时的分布
-        latents = (latents - self.latent_mean) / self.latent_std
+        # Channel-wise归一化（保持语义空间）
+        # 使用.to(self.device)确保在正确设备上
+        latents = (latents - self.latent_mean.to(self.device)) / self.latent_std.to(self.device)
         
         # 采样噪声和时间步
         noise = torch.randn_like(latents)
@@ -237,8 +241,8 @@ class DiffusersTrainer:
             # 去噪
             latents = ddim_scheduler.step(noise_pred, timestep, latents).prev_sample
         
-        # 反归一化到原始latent空间
-        latents = latents * self.latent_std + self.latent_mean
+        # Channel-wise反归一化到原始latent空间
+        latents = latents * self.latent_std.to(self.device) + self.latent_mean.to(self.device)
         
         # VAE解码 - 匹配VA-VAE的调用方式
         images = self.vae.decode(latents)
