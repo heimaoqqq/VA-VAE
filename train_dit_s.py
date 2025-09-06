@@ -213,10 +213,15 @@ def do_train(train_config, accelerator):
     
     if accelerator.is_main_process:
         logger.info(f"Starting training from scratch")
+        logger.info(f"Entering training loop...")
 
     # 训练循环 (与官方完全一致)
     while True:
+        if accelerator.is_main_process:
+            logger.info(f"Starting epoch, loading first batch...")
         for x, y in loader:
+            if accelerator.is_main_process and train_steps == 0:
+                logger.info(f"First batch loaded, shape: {x.shape}, starting forward pass...")
             if accelerator.mixed_precision == 'no':
                 x = x.to(device, dtype=torch.float32)
                 y = y
@@ -369,6 +374,19 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default='configs/dit_s_microdoppler.yaml')
     args = parser.parse_args()
 
-    accelerator = Accelerator()
+    # 明确启用多GPU训练
+    print(f"🔍 检测到 {torch.cuda.device_count()} 个GPU")
+    for i in range(torch.cuda.device_count()):
+        print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+    
+    accelerator = Accelerator(
+        mixed_precision='no',  # T4可以使用fp16，但先确保稳定性
+        gradient_accumulation_steps=1,
+        log_with="tensorboard" if torch.cuda.device_count() == 1 else None
+    )
+    
+    print(f"🚀 Accelerator使用 {accelerator.num_processes} 个进程")
+    print(f"📱 当前进程在设备: {accelerator.device}")
+    
     train_config = load_config(args.config)
     do_train(train_config, accelerator)
