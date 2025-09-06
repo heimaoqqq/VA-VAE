@@ -72,7 +72,9 @@ def convert_to_safetensors(input_path, output_dir, split='train'):
                     # 提取用户ID（如果有）
                     user_ids.append(item.get('user_id', 0))
                 
-                user_ids = user_ids if len(user_ids) > 0 else None
+                # 转换为tensor
+                if len(user_ids) > 0:
+                    user_ids = torch.tensor(user_ids)
             else:
                 latents = data  # 直接使用列表
                 user_ids = None
