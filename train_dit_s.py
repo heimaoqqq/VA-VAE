@@ -20,28 +20,64 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import yaml
 
-# 解决datasets模块名冲突：重命名本地datasets目录
-lightningdit_datasets_path = os.path.join('LightningDiT', 'datasets')
-if os.path.exists(lightningdit_datasets_path):
-    renamed_path = os.path.join('LightningDiT', 'lightning_datasets')
-    if not os.path.exists(renamed_path):
-        import shutil
-        shutil.move(lightningdit_datasets_path, renamed_path)
-        print(f"🔄 重命名 {lightningdit_datasets_path} -> {renamed_path}")
+# 恢复之前重命名的目录（如果有）
+renamed_path = os.path.join('LightningDiT', 'lightning_datasets')
+original_path = os.path.join('LightningDiT', 'datasets')
+if os.path.exists(renamed_path) and not os.path.exists(original_path):
+    import shutil
+    shutil.move(renamed_path, original_path)
+    print(f"🔄 恢复目录 {renamed_path} -> {original_path}")
 
-# 现在可以安全导入Accelerate（不会与本地datasets冲突）
+# 先导入HuggingFace datasets，占用datasets命名空间
+try:
+    import datasets as hf_datasets  # HuggingFace datasets
+except ImportError:
+    print("⚠️ HuggingFace datasets not installed, installing...")
+    import subprocess
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "datasets"])
+    import datasets as hf_datasets
+
+# 导入Accelerate (现在它会找到正确的datasets库)
 from accelerate import Accelerator
 
 # Add LightningDiT to path
 sys.path.append('LightningDiT')
 
-from LightningDiT.transport import create_transport, Sampler
-from LightningDiT.models.lightningdit import LightningDiT_models
-from LightningDiT.models.vae import vae_models
-from LightningDiT.utils import create_logger
+# 导入LightningDiT模块
+from models.lightningdit import LightningDiT_models
+from transport import create_transport, Sampler
+
+# 使用直接文件导入来避免命名冲突
+import importlib.util
+spec = importlib.util.spec_from_file_location("lightningdit_datasets", 
+                                              os.path.join('LightningDiT', 'datasets', 'img_latent_dataset.py'))
+lightningdit_datasets = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lightningdit_datasets)
+ImgLatentDataset = lightningdit_datasets.ImgLatentDataset
+
+# 导入我们自己的模块
 from microdoppler_latent_dataset import MicroDopplerLatentDataset
+from simplified_vavae import SimplifiedVAVAE
 
 print("✅ 所有模块导入成功")
+
+def create_logger(logging_dir, accelerator):
+    """
+    Create a logger that writes to a log file and stdout.
+    Modified for Accelerator instead of DDP
+    """
+    if accelerator.is_main_process:  # real logger
+        logging.basicConfig(
+            level=logging.INFO,
+            format='[\033[34m%(asctime)s\033[0m] %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+            handlers=[logging.StreamHandler(), logging.FileHandler(f"{logging_dir}/log.txt")]
+        )
+        logger = logging.getLogger(__name__)
+    else:  # dummy logger (does nothing)
+        logger = logging.getLogger(__name__)
+        logger.addHandler(logging.NullHandler())
+    return logger
 
 def do_train(train_config, accelerator):
     """
