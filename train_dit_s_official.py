@@ -233,7 +233,8 @@ def do_train(train_config, accelerator):
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
                 dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
                 avg_loss = avg_loss.item() / dist.get_world_size()
-                if accelerator.is_main_process:
+                # 使用dist.get_rank()判断主进程，与logger保持一致
+                if dist.get_rank() == 0:
                     logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
                     writer.add_scalar('Loss/train', avg_loss, train_steps)
                 # Reset monitoring variables:
