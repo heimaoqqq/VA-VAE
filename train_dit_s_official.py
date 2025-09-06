@@ -374,14 +374,17 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         print(f"[SAMPLING DEBUG] Generated samples stats: mean={samples.mean():.3f}, std={samples.std():.3f}")
         
         # 关键：反归一化！训练时做了channel-wise归一化，生成后需要反归一化
-        # 加载统计信息
+        # 官方公式：samples = (samples * latent_std) / latent_multiplier + latent_mean
+        # 因为训练时：feature = (feature - mean) / std * latent_multiplier
+        # 所以推理时：samples = samples / latent_multiplier * std + mean
         latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
         if os.path.exists(latent_stats_path):
             stats = torch.load(latent_stats_path)
             mean = stats['mean'].to(device)  # [32, 1, 1]
             std = stats['std'].to(device)     # [32, 1, 1]
-            # 反归一化：x = z * std + mean
-            samples_denorm = samples * std.unsqueeze(0) + mean.unsqueeze(0)
+            latent_multiplier = 1.0  # VA-VAE使用1.0，不是0.18215
+            # 反归一化：按照官方公式
+            samples_denorm = (samples * std.unsqueeze(0)) / latent_multiplier + mean.unsqueeze(0)
             print(f"[SAMPLING DEBUG] After denorm: mean={samples_denorm.mean():.3f}, std={samples_denorm.std():.3f}")
         else:
             samples_denorm = samples
