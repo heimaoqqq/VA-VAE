@@ -82,8 +82,6 @@ def do_train(train_config, accelerator):
     vae = None
     try:
         # 添加LightningDiT路径到系统路径
-        import sys
-        import os
         lightningdit_path = os.path.join(os.getcwd(), 'LightningDiT')
         if lightningdit_path not in sys.path:
             sys.path.insert(0, lightningdit_path)
@@ -426,7 +424,6 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         if vae is not None:
             try:
                 # 创建保存目录
-                import os
                 os.makedirs(output_dir, exist_ok=True)
                 print(f"[SAMPLING DEBUG] Output directory: {output_dir}")
                 
