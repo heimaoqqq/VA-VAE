@@ -216,10 +216,6 @@ def do_train(train_config, accelerator):
     
     while True:
         for x, y in loader:
-            # 每10步输出一次进度（调试用）
-            if train_steps % 10 == 0 and accelerator.is_main_process:
-                print(f"[PROGRESS] Step {train_steps}...", flush=True)
-                sys.stdout.flush()  # 强制刷新输出缓冲区
             
             if accelerator.mixed_precision == 'no':
                 x = x.to(device, dtype=torch.float32)
@@ -357,17 +353,15 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         y = torch.zeros(num_samples, dtype=torch.long, device=device)  # 无条件生成
         
         # 使用ODE采样器
-        sampler = Sampler(transport)
-        sample_fn = sampler.sample_ode(
-            z=z,
-            model=ema_model,
-            model_kwargs=dict(y=y),
+        sample_fn = transport.sample_ode(
             sampling_method='dopri5',
             num_steps=150,
             atol=1e-6,
             rtol=1e-3,
         )
-        samples = sample_fn[-1]  # 获取最终样本
+        # 调用采样函数
+        samples = sample_fn(z, ema_model, **dict(y=y))
+        samples = samples[-1]  # 获取最终样本
         
         # 可视化latent的前3个通道作为RGB
         latent_vis = samples[:, :3, :, :]  # 取前3个通道
