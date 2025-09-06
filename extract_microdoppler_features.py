@@ -106,10 +106,58 @@ def main(args):
     
     # 调试：显示LightningDiT目录内容
     print(f"📂 LightningDiT路径: {lightningdit_check_path}")
-    if os.path.exists(os.path.join(lightningdit_check_path, 'datasets')):
+    datasets_dir = os.path.join(lightningdit_check_path, 'datasets')
+    tokenizer_dir = os.path.join(lightningdit_check_path, 'tokenizer')
+    
+    if os.path.exists(datasets_dir):
         print("✅ datasets目录存在")
-    if os.path.exists(os.path.join(lightningdit_check_path, 'tokenizer')):
+        datasets_files = os.listdir(datasets_dir)
+        print(f"   datasets文件: {datasets_files}")
+        if 'img_latent_dataset.py' in datasets_files:
+            print("✅ img_latent_dataset.py存在")
+        else:
+            print("❌ img_latent_dataset.py不存在")
+        if '__init__.py' in datasets_files:
+            print("✅ datasets/__init__.py存在")
+        else:
+            print("❌ datasets/__init__.py不存在 - 这是导入失败的原因!")
+    else:
+        print("❌ datasets目录不存在")
+    
+    if os.path.exists(tokenizer_dir):
         print("✅ tokenizer目录存在")
+        tokenizer_files = os.listdir(tokenizer_dir)
+        print(f"   tokenizer文件: {tokenizer_files}")
+        if 'vavae.py' in tokenizer_files:
+            print("✅ vavae.py存在")
+        else:
+            print("❌ vavae.py不存在")
+        if '__init__.py' in tokenizer_files:
+            print("✅ tokenizer/__init__.py存在")
+        else:
+            print("❌ tokenizer/__init__.py不存在 - 这是导入失败的原因!")
+    else:
+        print("❌ tokenizer目录不存在")
+    
+    # 检查根目录的__init__.py
+    root_init = os.path.join(lightningdit_check_path, '__init__.py')
+    if os.path.exists(root_init):
+        print("✅ LightningDiT/__init__.py存在")
+    else:
+        print("❌ LightningDiT/__init__.py不存在")
+    
+    # 自动创建缺失的__init__.py文件
+    init_files_to_create = [
+        os.path.join(lightningdit_check_path, '__init__.py'),
+        os.path.join(datasets_dir, '__init__.py'),
+        os.path.join(tokenizer_dir, '__init__.py')
+    ]
+    
+    for init_file in init_files_to_create:
+        if not os.path.exists(init_file):
+            print(f"🔧 创建缺失的__init__.py: {init_file}")
+            with open(init_file, 'w') as f:
+                f.write("# Auto-generated __init__.py for package imports\n")
     
     # 导入官方模块
     try:
