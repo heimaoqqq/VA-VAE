@@ -4,73 +4,44 @@ Based on official LightningDiT train.py with minimal modifications
 保持与官方流程完全一致，仅修改必要部分
 """
 
+import argparse
+import json
+import logging
+import math
+import os
+import sys
+from pathlib import Path
+from glob import glob
+
 import torch
-import torch.backends.cuda
-import torch.backends.cudnn
+import torch.nn.functional as F
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-
-import math
 import yaml
-import json
-import numpy as np
-import logging
-import os
-import argparse
-from time import time
-from glob import glob
-from copy import deepcopy
-from collections import OrderedDict
-from PIL import Image
-from tqdm import tqdm
-import sys
 
-# 添加LightningDiT路径
-sys.path.append('./LightningDiT')
+# 解决datasets模块名冲突：重命名本地datasets目录
+lightningdit_datasets_path = os.path.join('LightningDiT', 'datasets')
+if os.path.exists(lightningdit_datasets_path):
+    renamed_path = os.path.join('LightningDiT', 'lightning_datasets')
+    if not os.path.exists(renamed_path):
+        import shutil
+        shutil.move(lightningdit_datasets_path, renamed_path)
+        print(f"🔄 重命名 {lightningdit_datasets_path} -> {renamed_path}")
 
-# 直接文件导入LightningDiT模块
-import importlib.util
-import os
+# 现在可以安全导入Accelerate（不会与本地datasets冲突）
+from accelerate import Accelerator
 
-# 检查LightningDiT路径
-lightningdit_path = '/kaggle/working/VA-VAE/LightningDiT'
-if not os.path.exists(lightningdit_path):
-    lightningdit_path = './LightningDiT'
+# Add LightningDiT to path
+sys.path.append('LightningDiT')
 
-# 创建必需的__init__.py文件
-init_files = [
-    os.path.join(lightningdit_path, '__init__.py'),
-    os.path.join(lightningdit_path, 'datasets', '__init__.py'),
-    os.path.join(lightningdit_path, 'models', '__init__.py'),
-    os.path.join(lightningdit_path, 'transport', '__init__.py')
-]
+from LightningDiT.transport import create_transport, Sampler
+from LightningDiT.models.lightningdit import LightningDiT_models
+from LightningDiT.models.vae import vae_models
+from LightningDiT.utils import create_logger
+from microdoppler_latent_dataset import MicroDopplerLatentDataset
 
-for init_file in init_files:
-    if not os.path.exists(init_file):
-        os.makedirs(os.path.dirname(init_file), exist_ok=True)
-        with open(init_file, 'w') as f:
-            f.write("# Auto-generated __init__.py\n")
-
-try:
-    # 导入数据集模块
-    dataset_path = os.path.join(lightningdit_path, 'datasets', 'img_latent_dataset.py')
-    spec_dataset = importlib.util.spec_from_file_location("img_latent_dataset", dataset_path)
-    dataset_module = importlib.util.module_from_spec(spec_dataset)
-    spec_dataset.loader.exec_module(dataset_module)
-    ImgLatentDataset = dataset_module.ImgLatentDataset
-    
-    # 尝试标准导入其他模块
-    from models.lightningdit import LightningDiT_models
-    from transport import create_transport, Sampler
-    from accelerate import Accelerator
-    print("✅ 所有模块导入成功")
-    
-except Exception as e:
-    print(f"❌ 模块导入失败: {e}")
-    raise
-
-# 我们自己的模块  
-from simplified_vavae import SimplifiedVAVAE
+print("✅ 所有模块导入成功")
 
 def do_train(train_config, accelerator):
     """
