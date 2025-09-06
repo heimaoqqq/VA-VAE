@@ -63,8 +63,8 @@ def convert_to_safetensors(input_path, output_dir, split='train'):
         
         batch_latents = latents[start_idx:end_idx]
         
-        # 创建水平翻转版本（数据增强）
-        batch_latents_flip = torch.flip(batch_latents, dims=[3])  # 水平翻转
+        # 无数据增强 - 使用相同的latents
+        batch_latents_flip = batch_latents  # 不做翻转
         
         # 无条件生成，labels全为0
         batch_labels = torch.zeros(len(batch_latents), dtype=torch.long)
