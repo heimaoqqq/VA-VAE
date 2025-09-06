@@ -33,11 +33,28 @@ def convert_to_safetensors(input_path, output_dir, split='train'):
         return
     
     data = torch.load(latent_file, map_location='cpu', weights_only=False)
-    latents = data['latents']  # [N, C, H, W]
-    user_ids = data.get('user_ids', None)  # 用户ID标签
+    
+    # 调试：检查数据格式
+    print(f"📊 数据类型: {type(data)}")
+    if isinstance(data, dict):
+        print(f"   字典键: {list(data.keys())}")
+        latents = data['latents']
+        user_ids = data.get('user_ids', None)
+    elif isinstance(data, (list, tuple)):
+        print(f"   列表长度: {len(data)}")
+        latents = data  # 直接使用列表
+        user_ids = None
+    else:
+        print(f"   单个tensor形状: {data.shape}")
+        latents = [data] if data.dim() == 3 else data
+        user_ids = None
+    
+    # 转换为tensor列表
+    if not isinstance(latents, torch.Tensor):
+        latents = torch.stack(latents) if isinstance(latents[0], torch.Tensor) else torch.tensor(latents)
     
     print(f"✅ 加载了 {len(latents)} 个latents")
-    print(f"   Shape: {latents[0].shape}")
+    print(f"   Shape: {latents.shape}")
     
     if user_ids is not None:
         print(f"   用户标签: {len(user_ids)} 个，范围 {user_ids.min()}-{user_ids.max()}")
