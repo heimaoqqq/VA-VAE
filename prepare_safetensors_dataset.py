@@ -42,8 +42,43 @@ def convert_to_safetensors(input_path, output_dir, split='train'):
         user_ids = data.get('user_ids', None)
     elif isinstance(data, (list, tuple)):
         print(f"   列表长度: {len(data)}")
-        latents = data  # 直接使用列表
-        user_ids = None
+        # 检查列表中第一个元素的类型
+        if len(data) > 0:
+            first_item = data[0]
+            print(f"   列表元素类型: {type(first_item)}")
+            if isinstance(first_item, dict):
+                print(f"   字典键: {list(first_item.keys())}")
+                # 提取每个字典中的latent tensor，尝试多种可能的键名
+                latents = []
+                user_ids = []
+                for item in data:
+                    # 尝试多种可能的键名
+                    if 'latent' in item:
+                        latents.append(item['latent'])
+                    elif 'tensor' in item:
+                        latents.append(item['tensor'])
+                    elif 'latents' in item:
+                        latents.append(item['latents'])
+                    else:
+                        # 如果找不到预期的键，打印所有键并使用第一个张量
+                        tensor_keys = [k for k, v in item.items() if isinstance(v, torch.Tensor)]
+                        if tensor_keys:
+                            print(f"   使用键 '{tensor_keys[0]}' 作为latent张量")
+                            latents.append(item[tensor_keys[0]])
+                        else:
+                            print(f"   警告：在字典中找不到张量，跳过此项")
+                            continue
+                    
+                    # 提取用户ID（如果有）
+                    user_ids.append(item.get('user_id', 0))
+                
+                user_ids = user_ids if len(user_ids) > 0 else None
+            else:
+                latents = data  # 直接使用列表
+                user_ids = None
+        else:
+            latents = []
+            user_ids = None
     else:
         print(f"   单个tensor形状: {data.shape}")
         latents = [data] if data.dim() == 3 else data
