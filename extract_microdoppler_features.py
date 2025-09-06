@@ -17,7 +17,10 @@ from PIL import Image
 import sys
 
 # 添加LightningDiT路径
-sys.path.append('./LightningDiT')
+lightningdit_path = '/kaggle/working/VA-VAE/LightningDiT'
+if not os.path.exists(lightningdit_path):
+    lightningdit_path = './LightningDiT'  # 备用路径
+sys.path.append(lightningdit_path)
 
 class MicrodopplerDataset(torch.utils.data.Dataset):
     """微多普勒数据集，模仿官方ImageFolder结构"""
@@ -92,17 +95,31 @@ def main(args):
     print("🔧 加载VA-VAE模型...")
     
     # 检查LightningDiT目录是否存在
-    if not os.path.exists('./LightningDiT'):
-        print("❌ LightningDiT目录不存在，请先运行 git pull")
+    lightningdit_check_path = '/kaggle/working/VA-VAE/LightningDiT'
+    if not os.path.exists(lightningdit_check_path):
+        lightningdit_check_path = './LightningDiT'
+    
+    if not os.path.exists(lightningdit_check_path):
+        print(f"❌ LightningDiT目录不存在: {lightningdit_check_path}")
+        print("   请先运行: git clone https://github.com/Alpha-VLLM/LightningDiT.git")
         return
+    
+    # 调试：显示LightningDiT目录内容
+    print(f"📂 LightningDiT路径: {lightningdit_check_path}")
+    if os.path.exists(os.path.join(lightningdit_check_path, 'datasets')):
+        print("✅ datasets目录存在")
+    if os.path.exists(os.path.join(lightningdit_check_path, 'tokenizer')):
+        print("✅ tokenizer目录存在")
     
     # 导入官方模块
     try:
         from tokenizer.vavae import VA_VAE
         from datasets.img_latent_dataset import ImgLatentDataset
+        print("✅ 成功导入官方模块")
     except ImportError as e:
         print(f"❌ 导入官方模块失败: {e}")
-        print("   请确保已正确克隆LightningDiT仓库")
+        print(f"   当前Python路径: {sys.path[-3:]}")
+        print("   请确保已正确克隆LightningDiT仓库到正确位置")
         return
     
     # 创建与官方一致的VA-VAE配置
