@@ -250,7 +250,7 @@ def do_train(train_config, accelerator):
 
             # Log loss values:
             if 'cos_loss' in loss_dict:
-                running_loss += mse_loss.item()
+                running_loss += loss_dict['cos_loss'].item()
             else:
                 running_loss += loss.item()
             log_steps += 1
@@ -379,10 +379,21 @@ if __name__ == "__main__":
     for i in range(torch.cuda.device_count()):
         print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
     
+    # 强制多GPU配置
+    if torch.cuda.device_count() > 1:
+        # 使用环境变量强制多GPU
+        import os
+        if 'CUDA_VISIBLE_DEVICES' not in os.environ:
+            os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
+        if 'WORLD_SIZE' not in os.environ:
+            os.environ['WORLD_SIZE'] = str(torch.cuda.device_count())
+        if 'RANK' not in os.environ:
+            os.environ['RANK'] = '0'
+    
     accelerator = Accelerator(
-        mixed_precision='no',  # T4可以使用fp16，但先确保稳定性
+        mixed_precision='no',
         gradient_accumulation_steps=1,
-        log_with="tensorboard" if torch.cuda.device_count() == 1 else None
+        log_with="tensorboard"
     )
     
     print(f"🚀 Accelerator使用 {accelerator.num_processes} 个进程")
