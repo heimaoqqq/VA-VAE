@@ -3,8 +3,8 @@
 
 # Data configuration
 data:
-  data_path: './latents_safetensors/train'  # 训练集latent路径(safetensors格式)
-  valid_path: './latents_safetensors/val'    # 验证集latent路径(safetensors格式)
+  data_path: './latents'  # 训练集latent路径(直接读取我们的格式)
+  valid_path: './latents'  # 验证集latent路径(同一目录，自动识别train/val)
   
   # 关键设置
   image_size: 256        # 原始图像尺寸
