@@ -39,7 +39,7 @@ train:
   output_dir: '/kaggle/working/VA-VAE/outputs'
   exp_name: 'dit_s_microdoppler'
   ckpt: null                      # 从头训练，无预训练权重
-  log_every: 100                  # 日志频率
+  log_every: 1000                 # 日志频率
   ckpt_every: 5000               # 保存频率
   resume: false                   # 不恢复训练
 
