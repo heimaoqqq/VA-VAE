@@ -391,16 +391,22 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         
         # 保存多种可视化以便调试
         # 1. 前3个通道（反归一化后）
-        latent_vis = samples_denorm[:, :3, :, :]
+        latent_vis = samples_denorm[:, :3, :, :].clone()  # Clone to avoid sparse tensor issues
+        # 确保张量是连续的和密集的
+        latent_vis = latent_vis.contiguous()
         latent_vis = (latent_vis - latent_vis.min()) / (latent_vis.max() - latent_vis.min() + 1e-5)
         save_path = f"{output_dir}/samples_latent_step_{step:07d}.png"
         save_image(latent_vis, save_path, nrow=4)
         
         # 2. 前3个通道（归一化的，直接模型输出）
-        latent_vis_norm = samples[:, :3, :, :]
+        latent_vis_norm = samples[:, :3, :, :].clone().contiguous()
         latent_vis_norm = (latent_vis_norm - latent_vis_norm.min()) / (latent_vis_norm.max() - latent_vis_norm.min() + 1e-5)
         save_path_norm = f"{output_dir}/samples_norm_step_{step:07d}.png"
         save_image(latent_vis_norm, save_path_norm, nrow=4)
+        
+        # 重要观察：如果Generated samples和Initial noise几乎相同，说明模型还没学到东西
+        if abs(samples.mean().item()) < 0.1 and abs(samples.std().item() - 1.0) < 0.1:
+            print(f"[WARNING] Model output is almost identical to input noise - model needs more training!")
         
         print(f"[SAMPLING] Saved visualizations to {output_dir}")
     
