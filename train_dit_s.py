@@ -33,9 +33,10 @@ sys.path.append('./LightningDiT')
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from accelerate import Accelerator
-# 我们自己的模块
+from datasets.img_latent_dataset import ImgLatentDataset
+
+# 我们自己的模块  
 from simplified_vavae import SimplifiedVAVAE
-from microdoppler_latent_dataset import MicrodopplerLatentDataset
 
 def do_train(train_config, accelerator):
     """
@@ -121,8 +122,8 @@ def do_train(train_config, accelerator):
         betas=(0.9, train_config['optimizer']['beta2'])
     )
     
-    # Setup data (使用我们的微多普勒latent数据集)
-    dataset = MicrodopplerLatentDataset(
+    # Setup data (与官方完全一致的数据加载方式)
+    dataset = ImgLatentDataset(
         data_dir=train_config['data']['data_path'],
         latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
         latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 1.0,
@@ -146,7 +147,7 @@ def do_train(train_config, accelerator):
     
     # Validation loader (如果有)
     if 'valid_path' in train_config['data']:
-        valid_dataset = MicrodopplerLatentDataset(
+        valid_dataset = ImgLatentDataset(
             data_dir=train_config['data']['valid_path'],
             latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
             latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 1.0,
