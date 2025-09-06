@@ -101,8 +101,16 @@ def do_train(train_config, accelerator):
         # add configs to tensorboard
         config_str = json.dumps(train_config, indent=4)
         writer.add_text('training configs', config_str, global_step=0)
+    else:
+        # 非主进程不创建writer，避免冲突
+        writer = None
+        logger = create_logger(None, accelerator)  # 创建dummy logger
     
-    checkpoint_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/checkpoints"
+    # 确保所有进程都知道checkpoint_dir
+    if accelerator.is_main_process:
+        checkpoint_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/checkpoints"
+    else:
+        checkpoint_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/checkpoints"
 
     # get rank
     rank = accelerator.local_process_index
@@ -393,7 +401,7 @@ if __name__ == "__main__":
     accelerator = Accelerator(
         mixed_precision='no',
         gradient_accumulation_steps=1,
-        log_with="tensorboard"
+        # 多GPU训练时不在这里配置tensorboard，在训练函数中单独处理
     )
     
     print(f"🚀 Accelerator使用 {accelerator.num_processes} 个进程")
