@@ -352,12 +352,14 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         z = torch.randn(num_samples, 32, 16, 16, device=device)  # 32通道，16x16大小
         y = torch.zeros(num_samples, dtype=torch.long, device=device)  # 无条件生成
         
-        # 使用ODE采样器
-        sample_fn = transport.sample_ode(
-            sampling_method='dopri5',
-            num_steps=150,
-            atol=1e-6,
-            rtol=1e-3,
+        # 使用官方采样配置
+        sampler = Sampler(transport)
+        sample_fn = sampler.sample_ode(
+            sampling_method='euler',        # 官方使用euler
+            num_steps=250,                  # 官方使用250步
+            atol=1e-6,                     # 官方配置
+            rtol=1e-3,                     # 官方配置
+            timestep_shift=0.1,            # 官方timestep_shift
         )
         # 调用采样函数
         samples = sample_fn(z, ema_model, **dict(y=y))
