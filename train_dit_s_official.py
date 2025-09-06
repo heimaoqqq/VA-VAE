@@ -30,7 +30,8 @@ from copy import deepcopy
 from collections import OrderedDict
 from PIL import Image
 from tqdm import tqdm
-
+import sys
+sys.path.append('LightningDiT')
 from diffusers.models import AutoencoderKL
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
