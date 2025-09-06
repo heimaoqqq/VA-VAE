@@ -9,7 +9,7 @@ from pathlib import Path
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-class MicrodopplerLatentDataset(Dataset):
+class MicroDopplerLatentDataset(Dataset):
     """
     微多普勒Latent数据集
     直接读取我们的latent数据格式：[{'latent': tensor, 'user_id': int, 'original_idx': int}, ...]
