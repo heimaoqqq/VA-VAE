@@ -143,17 +143,15 @@ class DiffusersTrainer:
             print(f"   Std: {std:.6f}")
             print(f"   Range: [{latents.min().item():.2f}, {latents.max().item():.2f}]")
             
-            # 🎯 使用缩放因子而非分布归一化 - 保持语义空间
-            self.latent_scale_factor = 1.0 / std  # 类似SD的0.18215
-            print(f"🔧 计算latent缩放因子: 1/{std:.3f} = {self.latent_scale_factor:.6f}")
-            print(f"   策略: 训练时简单缩放，保持相对关系和语义空间")
-            print(f"   原理: 类似Stable Diffusion的0.18215缩放")
+            # ✅ 记录分布参数用于正确的归一化
+            self.latent_mean = mean
+            self.latent_std = std
+            print(f"🔧 记录latent分布: mean={mean:.3f}, std={std:.3f}")
+            print(f"   策略: 训练时归一化到N(0,1)，生成后反归一化")
             
-            # 验证缩放效果
-            scaled = latents * self.latent_scale_factor
-            print(f"   缩放后std: {scaled.std().item():.6f} (目标: ~1.0)")
-            
-            self.use_distribution_alignment = False  # 禁用完整归一化
+            # 验证归一化效果
+            normalized = (latents - mean) / std
+            print(f"   归一化后: mean={normalized.mean().item():.6f}, std={normalized.std().item():.6f}")
                 
     def normalize_latents(self, latents):
         """归一化latents"""
@@ -183,8 +181,8 @@ class DiffusersTrainer:
                 
                 latents = self.vae.encode(data)
         
-        # 简单缩放保持语义空间
-        latents = latents * self.latent_scale_factor
+        # 完整归一化到N(0,1)以匹配生成时的分布
+        latents = (latents - self.latent_mean) / self.latent_std
         
         # 采样噪声和时间步
         noise = torch.randn_like(latents)
@@ -239,8 +237,8 @@ class DiffusersTrainer:
             # 去噪
             latents = ddim_scheduler.step(noise_pred, timestep, latents).prev_sample
         
-        # 反缩放到原始latent空间
-        latents = latents / self.latent_scale_factor
+        # 反归一化到原始latent空间
+        latents = latents * self.latent_std + self.latent_mean
         
         # VAE解码 - 匹配VA-VAE的调用方式
         images = self.vae.decode(latents)
