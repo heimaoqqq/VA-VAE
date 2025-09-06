@@ -32,7 +32,7 @@ def check_package(package_name):
         return False
 
 def main():
-    print("🚀 初始化Kaggle环境：增强条件扩散系统")
+    print("🚀 初始化Kaggle环境：LightningDiT-S扩散模型训练")
     print("=" * 50)
     
     # 检查Python版本
@@ -61,24 +61,27 @@ def main():
         ("torch>=2.0.0", "PyTorch深度学习框架"),
         ("torchvision", "PyTorch视觉工具"),
         
-        # 扩散模型
+        # 分布式训练
+        ("accelerate", "Hugging Face Accelerate分布式训练"),
+        
+        # 扩散模型 (DiT-S需要)
         ("diffusers==0.32.1", "Hugging Face Diffusers库"),
         
         # 机器学习工具
         ("scikit-learn", "机器学习算法"),
-        ("pytorch-lightning", "PyTorch Lightning训练框架"),
         
         # 图像处理和评估
         ("lpips", "感知损失计算"),
         ("pillow", "图像处理"),
         
         # 数据处理
-        ("omegaconf", "配置管理"),
+        ("pyyaml", "YAML配置文件解析"),
         ("tqdm", "进度条"),
         
         # 可视化
         ("matplotlib", "绘图库"),
         ("seaborn", "统计绘图"),
+        ("tensorboard", "TensorBoard日志"),
         
         # 其他工具
         ("einops", "张量操作"),
@@ -131,12 +134,14 @@ def main():
         return False
     else:
         print("🎉 所有依赖安装完成！")
-        print("\n✅ 环境准备就绪，可以开始训练增强条件扩散模型")
+        print("\n✅ 环境准备就绪，可以开始训练LightningDiT-S模型")
         
         # 显示下一步
         print("\n📝 下一步:")
         print("1. 运行数据集划分: python prepare_dataset_split.py")
-        print("2. 开始训练: python train_enhanced_conditional.py")
+        print("2. 预编码latents: python latent_processing.py")
+        print("3. 转换数据格式: python prepare_safetensors_dataset.py")
+        print("4. 开始训练: python train_dit_s.py --config configs/dit_s_microdoppler.yaml")
         
         return True
 
