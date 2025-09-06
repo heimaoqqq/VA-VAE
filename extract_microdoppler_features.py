@@ -90,9 +90,20 @@ def main(args):
     
     # 创建VA-VAE模型（使用官方VA-VAE接口）
     print("🔧 加载VA-VAE模型...")
+    
+    # 检查LightningDiT目录是否存在
+    if not os.path.exists('./LightningDiT'):
+        print("❌ LightningDiT目录不存在，请先运行 git pull")
+        return
+    
     # 导入官方模块
-    from tokenizer.vavae import VA_VAE
-    from datasets.img_latent_dataset import ImgLatentDataset
+    try:
+        from tokenizer.vavae import VA_VAE
+        from datasets.img_latent_dataset import ImgLatentDataset
+    except ImportError as e:
+        print(f"❌ 导入官方模块失败: {e}")
+        print("   请确保已正确克隆LightningDiT仓库")
+        return
     
     # 创建与官方一致的VA-VAE配置
     vae_config = {
