@@ -78,6 +78,10 @@ def do_train(train_config, accelerator):
     # get rank
     rank = accelerator.local_process_index
 
+    # Load VAE for decoding
+    vae = AutoencoderKL.from_pretrained(train_config['vae']['vae_path'], subfolder="vae").to(device)
+    vae.eval()
+    
     # Create model:
     if 'downsample_ratio' in train_config['vae']:
         downsample_ratio = train_config['vae']['downsample_ratio']
@@ -266,6 +270,12 @@ def do_train(train_config, accelerator):
                 log_steps = 0
                 start_time = time()
 
+            # Generate samples periodically (every 1000 steps)
+            if train_steps % 1000 == 0 and train_steps > 0:
+                if accelerator.is_main_process:
+                    print(f"[SAMPLING] Generating samples at step {train_steps}...")
+                    generate_samples(ema, vae, transport, device, train_steps, experiment_dir)
+            
             # Save checkpoint:
             if train_steps % train_config['train']['ckpt_every'] == 0 and train_steps > 0:
                 if accelerator.is_main_process:
@@ -277,8 +287,11 @@ def do_train(train_config, accelerator):
                     }
                     checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
                     torch.save(checkpoint, checkpoint_path)
-                    if accelerator.is_main_process:
-                        logger.info(f"Saved checkpoint to {checkpoint_path}")
+                    logger.info(f"Saved checkpoint to {checkpoint_path}")
+                    
+                    # 生成样本图像进行可视化
+                    print(f"[SAMPLING] Generating samples at step {train_steps}...")
+                    generate_samples(ema, vae, transport, device, train_steps, experiment_dir)
                 dist.barrier()
 
                 # Evaluate on validation set
@@ -331,6 +344,46 @@ def load_weights_with_shape_check(model, checkpoint, rank=0):
     return model
 
 @torch.no_grad()
+def generate_samples(ema_model, vae, transport, device, step, output_dir, num_samples=16):
+    """
+    生成样本并保存为图像
+    """
+    from torchvision.utils import save_image
+    import torch
+    
+    ema_model.eval()
+    with torch.no_grad():
+        # 生成随机噪声
+        z = torch.randn(num_samples, 16, 32, 32, device=device)  # 16通道，32x32大小
+        y = torch.zeros(num_samples, dtype=torch.long, device=device)  # 无条件生成
+        
+        # 使用ODE采样器
+        sampler = Sampler(transport)
+        sample_fn = sampler.sample_ode(
+            z=z,
+            model=ema_model,
+            model_kwargs=dict(y=y),
+            sampling_method='dopri5',
+            num_steps=150,
+            atol=1e-6,
+            rtol=1e-3,
+        )
+        samples = sample_fn[-1]  # 获取最终样本
+        
+        # 解码为图像
+        samples = samples / 0.18215  # 反归一化
+        images = vae.decode(samples).sample
+        images = (images + 1) / 2  # 从[-1,1]转换到[0,1]
+        images = torch.clamp(images, 0, 1)
+        
+        # 保存图像
+        save_path = f"{output_dir}/samples_step_{step:07d}.png"
+        save_image(images, save_path, nrow=4)
+        print(f"[SAMPLING] Saved samples to {save_path}")
+    
+    ema_model.train()
+    return images
+
 def update_ema(ema_model, model, decay=0.9999):
     """
     Step the EMA model towards the current model.
