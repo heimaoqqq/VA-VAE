@@ -18,6 +18,15 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
+# 修复datasets模块命名冲突：确保HuggingFace datasets能被正确导入
+import importlib
+try:
+    # 提前导入HuggingFace datasets以避免与本地LightningDiT/datasets冲突
+    datasets_module = importlib.import_module('datasets')
+    sys.modules['datasets'] = datasets_module
+except ImportError:
+    pass
+
 import math
 import yaml
 import json
@@ -87,11 +96,39 @@ def do_train(train_config, accelerator):
             sys.path.insert(0, lightningdit_path)
         
         from tokenizer.vavae import VA_VAE
+        from tokenizer.autoencoder import AutoencoderKL
+        import yaml
+        
+        # 读取官方配置文件
         vae_config_path = f'LightningDiT/tokenizer/configs/{train_config["vae"]["model_name"]}.yaml'
-        vae = VA_VAE(vae_config_path)
+        with open(vae_config_path, 'r') as f:
+            vae_config = yaml.safe_load(f)
+        
+        # 动态指定我们微调的VAE模型路径，不修改官方文件
+        custom_vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+        
+        # 直接创建AutoencoderKL实例，指定我们的checkpoint路径
+        vae_model = AutoencoderKL(
+            ckpt_path=custom_vae_checkpoint,
+            **vae_config['model']['params']
+        )
+        
+        # 创建VA_VAE包装器（不使用配置文件中的路径）
+        class CustomVAVAE:
+            def __init__(self, model):
+                self.model = model
+                
+            def encode_to_latents(self, images):
+                return self.model.encode_to_latents(images)
+                
+            def decode_to_images(self, latents):
+                return self.model.decode_to_images(latents)
+        
+        vae = CustomVAVAE(vae_model)
+        
         if accelerator.is_main_process:
-            print(f"[SETUP] Successfully loaded VAE model: {train_config['vae']['model_name']}")
-            print(f"[SETUP] VAE config path: {vae_config_path}")
+            print(f"[SETUP] Successfully loaded custom VAE model from: {custom_vae_checkpoint}")
+            print(f"[SETUP] VAE config: {train_config['vae']['model_name']}")
     except Exception as e:
         if accelerator.is_main_process:
             print(f"[WARNING] Failed to load VAE: {e}")
