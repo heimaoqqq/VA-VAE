@@ -78,9 +78,8 @@ def do_train(train_config, accelerator):
     # get rank
     rank = accelerator.local_process_index
 
-    # Load VAE for decoding
-    vae = AutoencoderKL.from_pretrained(train_config['vae']['vae_path'], subfolder="vae").to(device)
-    vae.eval()
+    # Load VAE for decoding (only needed for sampling)
+    vae = None  # 推迟加载到需要时
     
     # Create model:
     if 'downsample_ratio' in train_config['vae']:
@@ -346,15 +345,15 @@ def load_weights_with_shape_check(model, checkpoint, rank=0):
 @torch.no_grad()
 def generate_samples(ema_model, vae, transport, device, step, output_dir, num_samples=16):
     """
-    生成样本并保存为图像
+    生成样本并保存latent可视化
     """
     from torchvision.utils import save_image
     import torch
     
     ema_model.eval()
     with torch.no_grad():
-        # 生成随机噪声
-        z = torch.randn(num_samples, 16, 32, 32, device=device)  # 16通道，32x32大小
+        # 生成随机噪声 - 修正通道数为32（VA-VAE的latent维度）
+        z = torch.randn(num_samples, 32, 16, 16, device=device)  # 32通道，16x16大小
         y = torch.zeros(num_samples, dtype=torch.long, device=device)  # 无条件生成
         
         # 使用ODE采样器
@@ -370,19 +369,17 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         )
         samples = sample_fn[-1]  # 获取最终样本
         
-        # 解码为图像
-        samples = samples / 0.18215  # 反归一化
-        images = vae.decode(samples).sample
-        images = (images + 1) / 2  # 从[-1,1]转换到[0,1]
-        images = torch.clamp(images, 0, 1)
+        # 可视化latent的前3个通道作为RGB
+        latent_vis = samples[:, :3, :, :]  # 取前3个通道
+        latent_vis = (latent_vis - latent_vis.min()) / (latent_vis.max() - latent_vis.min())  # 归一化到[0,1]
         
-        # 保存图像
-        save_path = f"{output_dir}/samples_step_{step:07d}.png"
-        save_image(images, save_path, nrow=4)
-        print(f"[SAMPLING] Saved samples to {save_path}")
+        # 保存latent可视化
+        save_path = f"{output_dir}/samples_latent_step_{step:07d}.png"
+        save_image(latent_vis, save_path, nrow=4)
+        print(f"[SAMPLING] Saved latent visualization to {save_path}")
     
     ema_model.train()
-    return images
+    return samples
 
 def update_ema(ema_model, model, decay=0.9999):
     """
