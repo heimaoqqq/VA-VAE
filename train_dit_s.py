@@ -199,7 +199,7 @@ def do_train(train_config, accelerator):
             logger.info(f"Validation Dataset contains {len(valid_dataset):,} images {train_config['data']['valid_path']}")
 
     # Prepare models for training:
-    update_ema(ema, model.module, decay=0)  # Initialize EMA
+    update_ema(ema, accelerator.unwrap_model(model), decay=0)  # Initialize EMA
     model.train()
     ema.eval()
     
@@ -241,7 +241,7 @@ def do_train(train_config, accelerator):
                     accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
             
             opt.step()
-            update_ema(ema, model.module)
+            update_ema(ema, accelerator.unwrap_model(model))
 
             # Log loss values:
             if 'cos_loss' in loss_dict:
@@ -272,7 +272,7 @@ def do_train(train_config, accelerator):
             if train_steps % train_config['train']['ckpt_every'] == 0 and train_steps > 0:
                 if accelerator.is_main_process:
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": accelerator.unwrap_model(model).state_dict(),
                         "ema": ema.state_dict(),
                         "opt": opt.state_dict(),
                         "config": train_config,
