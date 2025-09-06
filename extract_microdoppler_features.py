@@ -159,16 +159,38 @@ def main(args):
             with open(init_file, 'w') as f:
                 f.write("# Auto-generated __init__.py for package imports\n")
     
-    # 导入官方模块
+    # 导入官方模块 - 使用直接导入方式
     try:
+        # 方法1: 尝试标准包导入
         from tokenizer.vavae import VA_VAE
         from datasets.img_latent_dataset import ImgLatentDataset
-        print("✅ 成功导入官方模块")
-    except ImportError as e:
-        print(f"❌ 导入官方模块失败: {e}")
-        print(f"   当前Python路径: {sys.path[-3:]}")
-        print("   请确保已正确克隆LightningDiT仓库到正确位置")
-        return
+        print("✅ 成功导入官方模块 (标准包导入)")
+    except ImportError as e1:
+        print(f"❌ 标准导入失败: {e1}")
+        try:
+            # 方法2: 使用importlib直接导入
+            import importlib.util
+            
+            # 导入vavae模块
+            vavae_path = os.path.join(tokenizer_dir, 'vavae.py')
+            spec_vavae = importlib.util.spec_from_file_location("vavae", vavae_path)
+            vavae_module = importlib.util.module_from_spec(spec_vavae)
+            spec_vavae.loader.exec_module(vavae_module)
+            VA_VAE = vavae_module.VA_VAE
+            
+            # 导入img_latent_dataset模块
+            dataset_path = os.path.join(datasets_dir, 'img_latent_dataset.py')
+            spec_dataset = importlib.util.spec_from_file_location("img_latent_dataset", dataset_path)
+            dataset_module = importlib.util.module_from_spec(spec_dataset)
+            spec_dataset.loader.exec_module(dataset_module)
+            ImgLatentDataset = dataset_module.ImgLatentDataset
+            
+            print("✅ 成功导入官方模块 (直接文件导入)")
+        except Exception as e2:
+            print(f"❌ 直接导入也失败: {e2}")
+            print(f"   当前Python路径: {sys.path[-3:]}")
+            print("   请确保已正确克隆LightningDiT仓库到正确位置")
+            return
     
     # 创建与官方一致的VA-VAE配置
     vae_config = {
