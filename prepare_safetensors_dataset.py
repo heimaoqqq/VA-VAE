@@ -32,7 +32,7 @@ def convert_to_safetensors(input_path, output_dir, split='train'):
         print(f"❌ 文件不存在: {latent_file}")
         return
     
-    data = torch.load(latent_file, map_location='cpu')
+    data = torch.load(latent_file, map_location='cpu', weights_only=False)
     latents = data['latents']  # [N, C, H, W]
     user_ids = data.get('user_ids', None)  # 用户ID标签
     
