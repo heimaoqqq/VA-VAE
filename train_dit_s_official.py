@@ -78,8 +78,29 @@ def do_train(train_config, accelerator):
     # get rank
     rank = accelerator.local_process_index
 
-    # Load VAE for decoding (only needed for sampling)
-    vae = None  # 推迟加载到需要时
+    # Load VAE for decoding (needed for sampling)
+    vae = None
+    try:
+        # 添加LightningDiT路径到系统路径
+        import sys
+        import os
+        lightningdit_path = os.path.join(os.getcwd(), 'LightningDiT')
+        if lightningdit_path not in sys.path:
+            sys.path.insert(0, lightningdit_path)
+        
+        from tokenizer.vavae import VA_VAE
+        vae_config_path = f'LightningDiT/tokenizer/configs/{train_config["vae"]["model_name"]}.yaml'
+        vae = VA_VAE(vae_config_path)
+        if accelerator.is_main_process:
+            print(f"[SETUP] Successfully loaded VAE model: {train_config['vae']['model_name']}")
+            print(f"[SETUP] VAE config path: {vae_config_path}")
+    except Exception as e:
+        if accelerator.is_main_process:
+            print(f"[WARNING] Failed to load VAE: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"[WARNING] VAE will be None, cannot decode images during training")
+        vae = None
     
     # Create model:
     if 'downsample_ratio' in train_config['vae']:
@@ -155,7 +176,7 @@ def do_train(train_config, accelerator):
         logger.info(f"Batch size {batch_size_per_gpu} per gpu, with {global_batch_size} global batch size")
     
     if 'valid_path' in train_config['data']:
-        # 修改点3：验证集也使用我们的数据集
+        # 使用用户已处理的验证集
         valid_dataset = MicroDopplerLatentDataset(
             data_dir=train_config['data']['valid_path'],
             latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
@@ -164,18 +185,26 @@ def do_train(train_config, accelerator):
         valid_loader = DataLoader(
             valid_dataset,
             batch_size=batch_size_per_gpu,
-            shuffle=True,
+            shuffle=False,
             num_workers=train_config['data']['num_workers'],
             pin_memory=True,
-            drop_last=True
+            drop_last=False
         )
         if accelerator.is_main_process:
-            logger.info(f"Validation Dataset contains {len(valid_dataset):,} images {train_config['data']['valid_path']}")
+            logger.info(f"Training dataset: {len(dataset):,} images")
+            logger.info(f"Validation dataset: {len(valid_dataset):,} images")
+            print(f"[SETUP] Using pre-processed validation set: {len(valid_dataset):,} images")
+    else:
+        valid_loader = None
+        if accelerator.is_main_process:
+            logger.info(f"Training dataset: {len(dataset):,} images")
+            print(f"[SETUP] No validation set configured")
 
     # Prepare models for training:
     update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
     model.train()  # important! This enables embedding dropout for classifier-free guidance
     ema.eval()  # EMA model should always be in eval mode
+
     
     train_config['train']['resume'] = train_config['train']['resume'] if 'resume' in train_config['train'] else False
 
@@ -290,16 +319,18 @@ def do_train(train_config, accelerator):
                 dist.barrier()
 
                 # Evaluate on validation set
-                if 'valid_path' in train_config['data']:
-                    if accelerator.is_main_process:
-                        logger.info(f"Start evaluating at step {train_steps}")
-                    val_loss = evaluate(model, valid_loader, device, transport, (0.0, 1.0))
-                    dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
-                    val_loss = val_loss.item() / dist.get_world_size()
-                    if accelerator.is_main_process:
-                        logger.info(f"Validation Loss: {val_loss:.4f}")
+                if accelerator.is_main_process:
+                    print(f"[VALIDATION] Evaluating at step {train_steps}...")
+                    logger.info(f"Start evaluating at step {train_steps}")
+                val_loss = evaluate(model, valid_loader, device, transport)
+                dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
+                val_loss = val_loss.item() / dist.get_world_size()
+                if accelerator.is_main_process:
+                    print(f"[VALIDATION] Step {train_steps}: Train Loss: {avg_loss:.4f}, Val Loss: {val_loss:.4f}")
+                    logger.info(f"Validation Loss: {val_loss:.4f}")
+                    if writer is not None:
                         writer.add_scalar('Loss/validation', val_loss, train_steps)
-                    model.train()
+                model.train()
             if train_steps >= train_config['train']['max_steps']:
                 break
         if train_steps >= train_config['train']['max_steps']:
@@ -392,23 +423,35 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         # 使用VAE解码latent为真实图像
         if vae is not None:
             try:
+                # 创建保存目录
+                import os
+                os.makedirs(output_dir, exist_ok=True)
+                print(f"[SAMPLING DEBUG] Output directory: {output_dir}")
+                
                 # 确保VAE在正确设备上
                 if hasattr(vae, 'to'):
                     vae = vae.to(device)
                 
                 # 使用VA-VAE解码latent为图像
+                print(f"[SAMPLING DEBUG] Decoding {samples_denorm.shape} latents to images...")
                 decoded_images = vae.decode_to_images(samples_denorm)
+                print(f"[SAMPLING DEBUG] Decoded {len(decoded_images)} images, each of shape {decoded_images[0].shape if len(decoded_images) > 0 else 'N/A'}")
                 
                 # 按照官方方式保存单个图像文件
                 from PIL import Image
+                saved_files = []
                 for i, image in enumerate(decoded_images):
                     save_path = f"{output_dir}/sample_{step:07d}_{i:02d}.png"
                     Image.fromarray(image).save(save_path)
+                    saved_files.append(save_path)
+                    print(f"[SAMPLING DEBUG] Saved: {save_path}")
                 
-                print(f"[SAMPLING] Saved {len(decoded_images)} decoded images to {output_dir}")
+                print(f"[SAMPLING] Successfully saved {len(saved_files)} decoded images to {output_dir}")
                 
             except Exception as e:
                 print(f"[ERROR] VAE decoding failed: {e}")
+                import traceback
+                traceback.print_exc()
                 print(f"[ERROR] Cannot save images without VAE decoding")
         else:
             print(f"[ERROR] VAE is None, cannot decode latents to images")
