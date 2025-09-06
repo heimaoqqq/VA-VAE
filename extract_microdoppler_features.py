@@ -268,20 +268,11 @@ def main(args):
     # 计算latent统计（官方方式）
     print("📊 计算统计信息...")
     dataset = ImgLatentDataset(output_dir, latent_norm=True)
-    latent_stats = dataset.get_latent_stats()
+    mean_tensor, std_tensor = dataset.get_latent_stats()  # 正确：返回tuple (mean, std)
     
-    # 调试：检查返回类型
-    print(f"Debug: latent_stats type = {type(latent_stats)}")
-    if isinstance(latent_stats, dict):
-        mean_tensor = latent_stats['mean']
-        std_tensor = latent_stats['std']
-        mean_range = f"[{mean_tensor.min():.3f}, {mean_tensor.max():.3f}]"
-        std_range = f"[{std_tensor.min():.3f}, {std_tensor.max():.3f}]"
-        print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
-    else:
-        print(f"   返回类型异常: {type(latent_stats)}")
-        print("   使用默认统计信息")
-    
+    mean_range = f"[{mean_tensor.min():.3f}, {mean_tensor.max():.3f}]"
+    std_range = f"[{std_tensor.min():.3f}, {std_tensor.max():.3f}]"
+    print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
     print(f'✅ 数据集包含 {len(dataset)} 个样本')
     print('🎉 特征提取完成！可以开始训练了')
 
