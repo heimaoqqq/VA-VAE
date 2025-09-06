@@ -1,0 +1,74 @@
+# DiT-S configuration for micro-Doppler dataset
+# Based on official LightningDiT config with minimal modifications
+
+# Data configuration
+data:
+  data_path: './latents_safetensors/train'  # 训练集latent路径(safetensors格式)
+  valid_path: './latents_safetensors/val'    # 验证集latent路径(safetensors格式)
+  
+  # 关键设置
+  image_size: 256        # 原始图像尺寸
+  num_classes: 0         # 无条件生成
+  num_workers: 4         # 数据加载线程数
+  
+  # Channel-wise normalization (与官方LightningDiT一致)
+  latent_norm: true      # 使用channel-wise归一化
+  latent_multiplier: 1.0 # 归一化后不需要额外缩放
+
+# VAE configuration (我们的VA-VAE)
+vae:
+  model_name: 'vavae_f16d32'
+  downsample_ratio: 16   # 256x256 -> 16x16 latent
+
+# Model configuration - DiT-S (最小模型)
+model:
+  model_type: 'LightningDiT-S/2'  # S模型，33M参数
+  use_qknorm: false               # 官方推荐设置
+  use_swiglu: true                # 使用SwiGLU激活
+  use_rope: true                  # 使用RoPE位置编码
+  use_rmsnorm: true               # 使用RMSNorm
+  wo_shift: false                 # 不使用shift
+  in_chans: 32                    # VA-VAE的32个通道
+  use_checkpoint: false           # 小模型不需要梯度检查点
+
+# Training configuration
+train:
+  max_steps: 50000               # 总训练步数
+  global_batch_size: 32           # 全局batch size (调小以适应数据集)
+  global_seed: 0
+  output_dir: './outputs'
+  exp_name: 'dit_s_microdoppler'
+  ckpt: null                      # 从头训练，无预训练权重
+  log_every: 100                  # 日志频率
+  ckpt_every: 5000               # 保存频率
+  resume: false                   # 不恢复训练
+
+# Optimizer configuration (与官方一致)
+optimizer:
+  lr: 0.0001                      # 学习率调小（数据集小）
+  beta2: 0.95                     # Adam beta2
+  max_grad_norm: 1.0              # 梯度裁剪
+
+# Transport configuration (Rectified Flow，与官方一致)
+transport:
+  path_type: Linear
+  prediction: velocity
+  loss_weight: null
+  sample_eps: null
+  train_eps: null
+  use_lognorm: true               # 使用lognorm
+  use_cosine_loss: true           # 使用余弦损失
+
+# Sampling configuration (推理时使用)
+sample:
+  mode: ODE
+  sampling_method: euler          # 使用euler采样
+  atol: 0.000001
+  rtol: 0.001
+  reverse: false
+  likelihood: false
+  num_sampling_steps: 250         # 采样步数
+  cfg_scale: 1.0                  # 无条件生成不需要CFG
+  per_proc_batch_size: 4
+  cfg_interval_start: 0.11
+  timestep_shift: 0.3
