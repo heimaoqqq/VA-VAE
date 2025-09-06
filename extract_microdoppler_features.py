@@ -104,47 +104,9 @@ def main(args):
         print("   请先运行: git clone https://github.com/Alpha-VLLM/LightningDiT.git")
         return
     
-    # 调试：显示LightningDiT目录内容
-    print(f"📂 LightningDiT路径: {lightningdit_check_path}")
+    # 设置路径
     datasets_dir = os.path.join(lightningdit_check_path, 'datasets')
     tokenizer_dir = os.path.join(lightningdit_check_path, 'tokenizer')
-    
-    if os.path.exists(datasets_dir):
-        print("✅ datasets目录存在")
-        datasets_files = os.listdir(datasets_dir)
-        print(f"   datasets文件: {datasets_files}")
-        if 'img_latent_dataset.py' in datasets_files:
-            print("✅ img_latent_dataset.py存在")
-        else:
-            print("❌ img_latent_dataset.py不存在")
-        if '__init__.py' in datasets_files:
-            print("✅ datasets/__init__.py存在")
-        else:
-            print("❌ datasets/__init__.py不存在 - 这是导入失败的原因!")
-    else:
-        print("❌ datasets目录不存在")
-    
-    if os.path.exists(tokenizer_dir):
-        print("✅ tokenizer目录存在")
-        tokenizer_files = os.listdir(tokenizer_dir)
-        print(f"   tokenizer文件: {tokenizer_files}")
-        if 'vavae.py' in tokenizer_files:
-            print("✅ vavae.py存在")
-        else:
-            print("❌ vavae.py不存在")
-        if '__init__.py' in tokenizer_files:
-            print("✅ tokenizer/__init__.py存在")
-        else:
-            print("❌ tokenizer/__init__.py不存在 - 这是导入失败的原因!")
-    else:
-        print("❌ tokenizer目录不存在")
-    
-    # 检查根目录的__init__.py
-    root_init = os.path.join(lightningdit_check_path, '__init__.py')
-    if os.path.exists(root_init):
-        print("✅ LightningDiT/__init__.py存在")
-    else:
-        print("❌ LightningDiT/__init__.py不存在")
     
     # 自动创建缺失的__init__.py文件
     init_files_to_create = [
@@ -155,7 +117,6 @@ def main(args):
     
     for init_file in init_files_to_create:
         if not os.path.exists(init_file):
-            print(f"🔧 创建缺失的__init__.py: {init_file}")
             with open(init_file, 'w') as f:
                 f.write("# Auto-generated __init__.py for package imports\n")
     
@@ -177,7 +138,7 @@ def main(args):
         spec_dataset.loader.exec_module(dataset_module)
         ImgLatentDataset = dataset_module.ImgLatentDataset
         
-        print("✅ 成功导入官方模块 (直接文件导入)")
+        print("✅ 官方模块导入完成")
     except Exception as e:
         print(f"❌ 导入失败: {e}")
         print(f"   当前Python路径: {sys.path[-3:]}")
@@ -200,7 +161,6 @@ def main(args):
     
     # 替换checkpoint路径
     if args.vae_checkpoint:
-        print(f"   设置检查点路径: {args.vae_checkpoint}")
         vae_config_content = vae_config_content.replace('/path/to/checkpoint.pt', args.vae_checkpoint)
     
     # 创建临时配置文件
@@ -246,15 +206,16 @@ def main(args):
         y = data[1]             # (N,) - 标签
         
         run_images += x.shape[0]
-        if run_images % 100 == 0:
-            print(f'{datetime.now()} 处理 {run_images}/{total_data_in_loop} 图像')
+        if run_images % 1000 == 0:
+            print(f'📊 处理进度: {run_images}/{total_data_in_loop} ({run_images/total_data_in_loop*100:.1f}%)')
         
         # 编码为latent（使用官方VA-VAE接口）
         with torch.no_grad():
             z = vae.encode_images(x).detach().cpu()  # (N, 32, 16, 16)
         
+        # 第一次显示latent形状
         if batch_idx == 0:
-            print(f'Latent shape: {z.shape}, dtype: {z.dtype}')
+            print(f'✅ Latent形状: {z.shape}')
         
         latents.append(z)
         labels.append(y)
@@ -272,17 +233,13 @@ def main(args):
                 'labels': labels
             }
             
-            print(f"保存批次 {saved_files}:")
-            for key in save_dict:
-                print(f"  {key}: {save_dict[key].shape}")
-            
             save_filename = os.path.join(output_dir, f'latents_rank00_shard{saved_files:03d}.safetensors')
             save_file(
                 save_dict,
                 save_filename,
                 metadata={'total_size': f'{latents.shape[0]}', 'dtype': f'{latents.dtype}'}
             )
-            print(f'✅ 保存: {save_filename}')
+            print(f'💾 保存批次 {saved_files}: {latents.shape[0]} 样本')
             
             # 重置
             latents = []
@@ -300,24 +257,23 @@ def main(args):
             'labels': labels
         }
         
-        print(f"保存最终批次 {saved_files}:")
-        for key in save_dict:
-            print(f"  {key}: {save_dict[key].shape}")
-        
         save_filename = os.path.join(output_dir, f'latents_rank00_shard{saved_files:03d}.safetensors')
         save_file(
             save_dict,
             save_filename,
             metadata={'total_size': f'{latents.shape[0]}', 'dtype': f'{latents.dtype}'}
         )
-        print(f'✅ 保存: {save_filename}')
+        print(f'💾 保存最终批次: {latents.shape[0]} 样本')
     
     # 计算latent统计（官方方式）
-    print("📊 计算latent统计...")
+    print("📊 计算统计信息...")
     dataset = ImgLatentDataset(output_dir, latent_norm=True)
-    print(f"✅ 统计计算完成，数据集包含 {len(dataset)} 个样本")
-    
-    print("🎉 特征提取完成！")
+    latent_stats = dataset.get_latent_stats()
+    mean_range = f"[{latent_stats['mean'].min():.3f}, {latent_stats['mean'].max():.3f}]"
+    std_range = f"[{latent_stats['std'].min():.3f}, {latent_stats['std'].max():.3f}]"
+    print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
+    print(f'✅ 数据集包含 {len(dataset)} 个样本')
+    print('🎉 特征提取完成！可以开始训练了')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="微多普勒特征提取")
