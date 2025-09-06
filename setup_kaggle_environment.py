@@ -66,6 +66,7 @@ def main():
         
         # 扩散模型 (DiT-S需要)
         ("diffusers==0.32.1", "Hugging Face Diffusers库"),
+        ("torchdiffeq", "ODE求解器，LightningDiT transport需要"),
         
         # 机器学习工具
         ("scikit-learn", "机器学习算法"),
@@ -138,11 +139,11 @@ def main():
         print("\n✅ 环境准备就绪，可以开始训练LightningDiT-S模型")
         
         # 显示下一步
-        print("\n📝 下一步:")
-        print("1. 运行数据集划分: python prepare_dataset_split.py")
-        print("2. 预编码latents: python latent_processing.py")
-        print("3. 转换数据格式: python prepare_safetensors_dataset.py")
-        print("4. 开始训练: python train_dit_s.py --config configs/dit_s_microdoppler.yaml")
+        print("\n📝 Kaggle环境下一步:")
+        print("1. 提取训练集特征: python extract_microdoppler_features.py --split train")
+        print("2. 提取验证集特征: python extract_microdoppler_features.py --split val") 
+        print("3. 开始DiT-S训练: python train_dit_s.py --config configs/dit_s_microdoppler.yaml")
+        print("4. 注意：所有操作都在Kaggle Notebook中进行，无需本地测试")
         
         return True
 
