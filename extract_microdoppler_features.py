@@ -269,6 +269,11 @@ def main(args):
     print("📊 计算统计信息...")
     dataset = ImgLatentDataset(output_dir, latent_norm=True)
     latent_stats = dataset.get_latent_stats()
+    
+    # 处理可能的tuple返回
+    if isinstance(latent_stats, tuple):
+        latent_stats = latent_stats[0]
+    
     mean_range = f"[{latent_stats['mean'].min():.3f}, {latent_stats['mean'].max():.3f}]"
     std_range = f"[{latent_stats['std'].min():.3f}, {latent_stats['std'].max():.3f}]"
     print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
