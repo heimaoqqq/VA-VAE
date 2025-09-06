@@ -13,6 +13,7 @@ import torch
 import torch.distributed as dist
 import torch.backends.cuda
 import torch.backends.cudnn
+import sys  # 添加sys用于强制刷新输出
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -67,6 +68,11 @@ def do_train(train_config, accelerator):
         # add configs to tensorboard
         config_str=json.dumps(train_config, indent=4)
         writer.add_text('training configs', config_str, global_step=0)
+    else:
+        # 非主进程也需要logger变量（空的）
+        logger = logging.getLogger(__name__)
+        logger.addHandler(logging.NullHandler())
+        writer = None
     checkpoint_dir = f"{train_config['train']['output_dir']}/{train_config['train']['exp_name']}/checkpoints"
 
     # get rank
@@ -115,6 +121,10 @@ def do_train(train_config, accelerator):
         use_lognorm = train_config['transport']['use_lognorm'] if 'use_lognorm' in train_config['transport'] else False,
     )  # default: velocity; 
     if accelerator.is_main_process:
+        print(f"[MAIN PROCESS] LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+        print(f"[MAIN PROCESS] Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
+        print(f'[MAIN PROCESS] Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
+        print(f'[MAIN PROCESS] Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
         logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
         logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
         logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
@@ -194,8 +204,20 @@ def do_train(train_config, accelerator):
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {use_checkpoint}")
 
+    # 添加训练开始标记
+    if accelerator.is_main_process:
+        print(f"[TRAINING START] Starting training loop...", flush=True)
+        print(f"[TRAINING INFO] Total steps: {train_config['train']['max_steps']}", flush=True)
+        print(f"[TRAINING INFO] Log every: {train_config['train']['log_every']} steps", flush=True)
+        print(f"[TRAINING INFO] Checkpoint every: {train_config['train']['ckpt_every']} steps", flush=True)
+    
     while True:
         for x, y in loader:
+            # 每10步输出一次进度（调试用）
+            if train_steps % 10 == 0 and accelerator.is_main_process:
+                print(f"[PROGRESS] Step {train_steps}...", flush=True)
+                sys.stdout.flush()  # 强制刷新输出缓冲区
+            
             if accelerator.mixed_precision == 'no':
                 x = x.to(device, dtype=torch.float32)
                 y = y
@@ -233,10 +255,12 @@ def do_train(train_config, accelerator):
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
                 dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
                 avg_loss = avg_loss.item() / dist.get_world_size()
-                # 使用dist.get_rank()判断主进程，与logger保持一致
-                if dist.get_rank() == 0:
+                # 直接print确保能看到输出
+                if accelerator.is_main_process:
+                    print(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
                     logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
-                    writer.add_scalar('Loss/train', avg_loss, train_steps)
+                    if writer is not None:
+                        writer.add_scalar('Loss/train', avg_loss, train_steps)
                 # Reset monitoring variables:
                 running_loss = 0
                 log_steps = 0
