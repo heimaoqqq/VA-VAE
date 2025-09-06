@@ -19,9 +19,6 @@ import sys
 # 添加LightningDiT路径
 sys.path.append('./LightningDiT')
 
-from datasets.img_latent_dataset import ImgLatentDataset
-from simplified_vavae import SimplifiedVAVAE
-
 class MicrodopplerDataset(torch.utils.data.Dataset):
     """微多普勒数据集，模仿官方ImageFolder结构"""
     
@@ -70,15 +67,10 @@ def load_image_paths(dataset_root, split_file, split_name):
     print(f"✅ 加载了{len(image_paths)}张图像")
     return image_paths
 
-def create_transform():
-    """创建图像变换，模仿VA-VAE的预处理"""
-    from torchvision import transforms
-    
-    return transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-    ])
+def create_transform(vae):
+    """使用官方VA-VAE的图像变换"""
+    # 使用官方VA-VAE的预处理管道
+    return vae.img_transform(p_hflip=0.0)  # 无水平翻转
 
 def main(args):
     """
@@ -96,17 +88,40 @@ def main(args):
     os.makedirs(output_dir, exist_ok=True)
     print(f"📁 输出目录: {output_dir}")
     
-    # 创建VA-VAE模型
+    # 创建VA-VAE模型（使用官方VA-VAE接口）
     print("🔧 加载VA-VAE模型...")
-    vae = SimplifiedVAVAE(args.vae_checkpoint)
+    # 导入官方模块
+    from tokenizer.vavae import VA_VAE
+    from datasets.img_latent_dataset import ImgLatentDataset
+    
+    # 创建与官方一致的VA-VAE配置
+    vae_config = {
+        'model_name': 'vavae_f16d32',
+        'downsample_ratio': 16,
+        'checkpoint_path': args.vae_checkpoint
+    }
+    
+    # 使用官方VA-VAE类
+    vae = VA_VAE('./LightningDiT/configs/lightningdit_xl_vavae_f16d32.yaml')
+    # 如果有我们的检查点，加载权重
+    if args.vae_checkpoint:
+        print(f"   加载检查点: {args.vae_checkpoint}")
+        checkpoint = torch.load(args.vae_checkpoint, map_location='cpu', weights_only=False)
+        if 'model_state_dict' in checkpoint:
+            vae.model.load_state_dict(checkpoint['model_state_dict'])
+        elif 'state_dict' in checkpoint:
+            vae.model.load_state_dict(checkpoint['state_dict'])
+        else:
+            vae.model.load_state_dict(checkpoint)
+    
     vae.to(device)
     vae.eval()
     
     # 加载数据
     image_paths = load_image_paths(args.data_path, args.split_file, args.split)
     
-    # 创建数据集和加载器（无数据增强）
-    transform = create_transform()
+    # 创建数据集和加载器（使用官方VA-VAE变换）
+    transform = create_transform(vae)
     dataset = MicrodopplerDataset(image_paths, transform=transform)
     
     loader = DataLoader(
@@ -137,9 +152,9 @@ def main(args):
         if run_images % 100 == 0:
             print(f'{datetime.now()} 处理 {run_images}/{total_data_in_loop} 图像')
         
-        # 编码为latent
+        # 编码为latent（使用官方VA-VAE接口）
         with torch.no_grad():
-            z = vae.encode(x).detach().cpu()  # (N, 32, 16, 16)
+            z = vae.encode_images(x).detach().cpu()  # (N, 32, 16, 16)
         
         if batch_idx == 0:
             print(f'Latent shape: {z.shape}, dtype: {z.dtype}')
