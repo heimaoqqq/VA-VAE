@@ -30,10 +30,46 @@ import sys
 # 添加LightningDiT路径
 sys.path.append('./LightningDiT')
 
-from models.lightningdit import LightningDiT_models
-from transport import create_transport, Sampler
-from accelerate import Accelerator
-from datasets.img_latent_dataset import ImgLatentDataset
+# 直接文件导入LightningDiT模块
+import importlib.util
+import os
+
+# 检查LightningDiT路径
+lightningdit_path = '/kaggle/working/VA-VAE/LightningDiT'
+if not os.path.exists(lightningdit_path):
+    lightningdit_path = './LightningDiT'
+
+# 创建必需的__init__.py文件
+init_files = [
+    os.path.join(lightningdit_path, '__init__.py'),
+    os.path.join(lightningdit_path, 'datasets', '__init__.py'),
+    os.path.join(lightningdit_path, 'models', '__init__.py'),
+    os.path.join(lightningdit_path, 'transport', '__init__.py')
+]
+
+for init_file in init_files:
+    if not os.path.exists(init_file):
+        os.makedirs(os.path.dirname(init_file), exist_ok=True)
+        with open(init_file, 'w') as f:
+            f.write("# Auto-generated __init__.py\n")
+
+try:
+    # 导入数据集模块
+    dataset_path = os.path.join(lightningdit_path, 'datasets', 'img_latent_dataset.py')
+    spec_dataset = importlib.util.spec_from_file_location("img_latent_dataset", dataset_path)
+    dataset_module = importlib.util.module_from_spec(spec_dataset)
+    spec_dataset.loader.exec_module(dataset_module)
+    ImgLatentDataset = dataset_module.ImgLatentDataset
+    
+    # 尝试标准导入其他模块
+    from models.lightningdit import LightningDiT_models
+    from transport import create_transport, Sampler
+    from accelerate import Accelerator
+    print("✅ 所有模块导入成功")
+    
+except Exception as e:
+    print(f"❌ 模块导入失败: {e}")
+    raise
 
 # 我们自己的模块  
 from simplified_vavae import SimplifiedVAVAE
