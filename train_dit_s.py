@@ -94,7 +94,7 @@ def do_train(train_config, accelerator):
         experiment_dir = f"{train_config['train']['output_dir']}/{exp_name}"
         checkpoint_dir = f"{experiment_dir}/checkpoints"
         os.makedirs(checkpoint_dir, exist_ok=True)
-        logger = create_logger(experiment_dir)
+        logger = create_logger(experiment_dir, accelerator)
         logger.info(f"Experiment directory created at {experiment_dir}")
         tensorboard_dir_log = f"tensorboard_logs/{exp_name}"
         os.makedirs(tensorboard_dir_log, exist_ok=True)
@@ -259,8 +259,8 @@ def do_train(train_config, accelerator):
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss.item() / dist.get_world_size()
+                avg_loss = accelerator.gather(avg_loss).mean()
+                avg_loss = avg_loss.item()
                 if accelerator.is_main_process:
                     logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
                     writer.add_scalar('Loss/train', avg_loss, train_steps)
@@ -281,15 +281,15 @@ def do_train(train_config, accelerator):
                     checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
-                dist.barrier()
+                accelerator.wait_for_everyone()
 
                 # Evaluate on validation set
                 if 'valid_path' in train_config['data']:
                     if accelerator.is_main_process:
                         logger.info(f"Start evaluating at step {train_steps}")
                     val_loss = evaluate(model, valid_loader, device, transport, (0.0, 1.0))
-                    dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
-                    val_loss = val_loss.item() / dist.get_world_size()
+                    val_loss = accelerator.gather(val_loss).mean()
+                    val_loss = val_loss.item()
                     if accelerator.is_main_process:
                         logger.info(f"Validation Loss: {val_loss:.4f}")
                         writer.add_scalar('Loss/validation', val_loss, train_steps)
@@ -346,11 +346,13 @@ def load_config(config_path):
         config = yaml.safe_load(file)
     return config
 
-def create_logger(logging_dir):
+def create_logger(logging_dir, accelerator=None):
     """
     Create a logger that writes to a log file and stdout.
+    使用Accelerate而非原生PyTorch分布式
     """
-    if dist.get_rank() == 0:  # real logger
+    # 使用Accelerate的is_main_process替代dist.get_rank() == 0
+    if accelerator is None or accelerator.is_main_process:  # real logger
         logging.basicConfig(
             level=logging.INFO,
             format='[\033[34m%(asctime)s\033[0m] %(message)s',
