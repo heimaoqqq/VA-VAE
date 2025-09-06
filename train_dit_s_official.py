@@ -36,8 +36,8 @@ from diffusers.models import AutoencoderKL
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from accelerate import Accelerator
-# 修改点1：使用我们的数据集
-from microdoppler_latent_dataset import MicroDopplerLatentDataset
+# 修改点1：使用简化版数据集（完全匹配官方格式）
+from microdoppler_latent_dataset_simple import MicroDopplerLatentDataset
 
 def do_train(train_config, accelerator):
     """
