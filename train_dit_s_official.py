@@ -352,27 +352,54 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         z = torch.randn(num_samples, 32, 16, 16, device=device)  # 32通道，16x16大小
         y = torch.zeros(num_samples, dtype=torch.long, device=device)  # 无条件生成
         
+        # 打印调试信息
+        print(f"[SAMPLING DEBUG] Initial noise stats: mean={z.mean():.3f}, std={z.std():.3f}")
+        
+        # 使用更少的采样步数用于早期训练（加快速度）
+        num_steps = 50 if step < 5000 else 250
+        
         # 使用官方采样配置
         sampler = Sampler(transport)
         sample_fn = sampler.sample_ode(
             sampling_method='euler',        # 官方使用euler
-            num_steps=250,                  # 官方使用250步
+            num_steps=num_steps,            # 早期使用较少步数
             atol=1e-6,                     # 官方配置
             rtol=1e-3,                     # 官方配置
-            timestep_shift=0.1,            # 官方timestep_shift
+            timestep_shift=0.0,            # 不使用timestep shift（从0开始）
         )
         # 调用采样函数
         samples = sample_fn(z, ema_model, **dict(y=y))
         samples = samples[-1]  # 获取最终样本
         
-        # 可视化latent的前3个通道作为RGB
-        latent_vis = samples[:, :3, :, :]  # 取前3个通道
-        latent_vis = (latent_vis - latent_vis.min()) / (latent_vis.max() - latent_vis.min())  # 归一化到[0,1]
+        print(f"[SAMPLING DEBUG] Generated samples stats: mean={samples.mean():.3f}, std={samples.std():.3f}")
         
-        # 保存latent可视化
+        # 关键：反归一化！训练时做了channel-wise归一化，生成后需要反归一化
+        # 加载统计信息
+        latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
+        if os.path.exists(latent_stats_path):
+            stats = torch.load(latent_stats_path)
+            mean = stats['mean'].to(device)  # [32, 1, 1]
+            std = stats['std'].to(device)     # [32, 1, 1]
+            # 反归一化：x = z * std + mean
+            samples_denorm = samples * std.unsqueeze(0) + mean.unsqueeze(0)
+            print(f"[SAMPLING DEBUG] After denorm: mean={samples_denorm.mean():.3f}, std={samples_denorm.std():.3f}")
+        else:
+            samples_denorm = samples
+        
+        # 保存多种可视化以便调试
+        # 1. 前3个通道（反归一化后）
+        latent_vis = samples_denorm[:, :3, :, :]
+        latent_vis = (latent_vis - latent_vis.min()) / (latent_vis.max() - latent_vis.min() + 1e-5)
         save_path = f"{output_dir}/samples_latent_step_{step:07d}.png"
         save_image(latent_vis, save_path, nrow=4)
-        print(f"[SAMPLING] Saved latent visualization to {save_path}")
+        
+        # 2. 前3个通道（归一化的，直接模型输出）
+        latent_vis_norm = samples[:, :3, :, :]
+        latent_vis_norm = (latent_vis_norm - latent_vis_norm.min()) / (latent_vis_norm.max() - latent_vis_norm.min() + 1e-5)
+        save_path_norm = f"{output_dir}/samples_norm_step_{step:07d}.png"
+        save_image(latent_vis_norm, save_path_norm, nrow=4)
+        
+        print(f"[SAMPLING] Saved visualizations to {output_dir}")
     
     ema_model.train()
     return samples
