@@ -504,6 +504,12 @@ def LightningDiT_XL_2(**kwargs):
 def LightningDiT_L_2(**kwargs):
     return LightningDiT(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
 
+def LightningDiT_S_1(**kwargs):
+    return LightningDiT(depth=12, hidden_size=384, patch_size=1, num_heads=6, **kwargs)
+
+def LightningDiT_S_2(**kwargs):
+    return LightningDiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
+
 def LightningDiT_B_1(**kwargs):
     return LightningDiT(depth=12, hidden_size=768, patch_size=1, num_heads=12, **kwargs)
 
@@ -523,6 +529,7 @@ def LightningDiT_1p6B_2(**kwargs):
     return LightningDiT(depth=28, hidden_size=1792, patch_size=2, num_heads=28, **kwargs)
 
 LightningDiT_models = {
+    'LightningDiT-S/1': LightningDiT_S_1, 'LightningDiT-S/2': LightningDiT_S_2,
     'LightningDiT-B/1': LightningDiT_B_1, 'LightningDiT-B/2': LightningDiT_B_2,
     'LightningDiT-L/2': LightningDiT_L_2,
     'LightningDiT-XL/1': LightningDiT_XL_1, 'LightningDiT-XL/2': LightningDiT_XL_2,
