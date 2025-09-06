@@ -381,7 +381,9 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
     with torch.no_grad():
         # 生成随机噪声 - 修正通道数为32（VA-VAE的latent维度）
         z = torch.randn(num_samples, 32, 16, 16, device=device)  # 32通道，16x16大小
-        y = torch.zeros(num_samples, dtype=torch.long, device=device)  # 无条件生成
+        # 条件生成：随机选择用户ID (0-30，对应31个用户)
+        y = torch.randint(0, 31, (num_samples,), dtype=torch.long, device=device)
+        print(f"[SAMPLING DEBUG] Generating for user IDs: {y.cpu().numpy()}")
         
         # 打印调试信息
         print(f"[SAMPLING DEBUG] Initial noise stats: mean={z.mean():.3f}, std={z.std():.3f}")
