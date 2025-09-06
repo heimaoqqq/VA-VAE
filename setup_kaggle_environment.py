@@ -86,6 +86,7 @@ def main():
         # 其他工具
         ("einops", "张量操作"),
         ("safetensors", "安全张量保存"),
+        ("fairscale", "分布式训练库"),
     ]
     
     # 安装依赖
