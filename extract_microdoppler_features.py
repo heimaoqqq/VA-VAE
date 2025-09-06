@@ -199,18 +199,25 @@ def main(args):
         'checkpoint_path': args.vae_checkpoint
     }
     
-    # 使用官方VA-VAE类
-    vae = VA_VAE('./LightningDiT/configs/lightningdit_xl_vavae_f16d32.yaml')
-    # 如果有我们的检查点，加载权重
+    # 使用官方VA-VAE类 - 需要先修改配置文件中的checkpoint路径
+    vae_config_path = os.path.join(lightningdit_check_path, 'tokenizer/configs/vavae_f16d32.yaml')
+    
+    # 读取并修改配置
+    with open(vae_config_path, 'r') as f:
+        vae_config_content = f.read()
+    
+    # 替换checkpoint路径
     if args.vae_checkpoint:
-        print(f"   加载检查点: {args.vae_checkpoint}")
-        checkpoint = torch.load(args.vae_checkpoint, map_location='cpu', weights_only=False)
-        if 'model_state_dict' in checkpoint:
-            vae.model.load_state_dict(checkpoint['model_state_dict'])
-        elif 'state_dict' in checkpoint:
-            vae.model.load_state_dict(checkpoint['state_dict'])
-        else:
-            vae.model.load_state_dict(checkpoint)
+        print(f"   设置检查点路径: {args.vae_checkpoint}")
+        vae_config_content = vae_config_content.replace('/path/to/checkpoint.pt', args.vae_checkpoint)
+    
+    # 创建临时配置文件
+    temp_config_path = './temp_vavae_config.yaml'
+    with open(temp_config_path, 'w') as f:
+        f.write(vae_config_content)
+    
+    # 初始化VA-VAE
+    vae = VA_VAE(temp_config_path)
     
     vae.to(device)
     vae.eval()
