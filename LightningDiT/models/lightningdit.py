@@ -23,7 +23,7 @@ from models.swiglu_ffn import SwiGLUFFN
 from models.pos_embed import VisionRotaryEmbeddingFast
 from models.rmsnorm import RMSNorm
 
-@torch.compile
+@torch.compile  # T4 GPU (CUDA 7.5) 支持Triton编译器
 def modulate(x, shift, scale):
     if shift is None:
         return x * (1 + scale.unsqueeze(1))
@@ -130,7 +130,7 @@ class TimestepEmbedder(nn.Module):
             
         return embedding
     
-    @torch.compile
+    @torch.compile  # T4 GPU支持
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
         t_emb = self.mlp(t_freq)
@@ -160,7 +160,7 @@ class LabelEmbedder(nn.Module):
         labels = torch.where(drop_ids, self.num_classes, labels)
         return labels
 
-    @torch.compile
+    @torch.compile  # T4 GPU支持
     def forward(self, labels, train, force_drop_ids=None):
         use_dropout = self.dropout_prob > 0
         if (train and use_dropout) or (force_drop_ids is not None):
@@ -504,12 +504,6 @@ def LightningDiT_XL_2(**kwargs):
 def LightningDiT_L_2(**kwargs):
     return LightningDiT(depth=24, hidden_size=1024, patch_size=2, num_heads=16, **kwargs)
 
-def LightningDiT_S_1(**kwargs):
-    return LightningDiT(depth=12, hidden_size=384, patch_size=1, num_heads=6, **kwargs)
-
-def LightningDiT_S_2(**kwargs):
-    return LightningDiT(depth=12, hidden_size=384, patch_size=2, num_heads=6, **kwargs)
-
 def LightningDiT_B_1(**kwargs):
     return LightningDiT(depth=12, hidden_size=768, patch_size=1, num_heads=12, **kwargs)
 
@@ -529,7 +523,6 @@ def LightningDiT_1p6B_2(**kwargs):
     return LightningDiT(depth=28, hidden_size=1792, patch_size=2, num_heads=28, **kwargs)
 
 LightningDiT_models = {
-    'LightningDiT-S/1': LightningDiT_S_1, 'LightningDiT-S/2': LightningDiT_S_2,
     'LightningDiT-B/1': LightningDiT_B_1, 'LightningDiT-B/2': LightningDiT_B_2,
     'LightningDiT-L/2': LightningDiT_L_2,
     'LightningDiT-XL/1': LightningDiT_XL_1, 'LightningDiT-XL/2': LightningDiT_XL_2,
