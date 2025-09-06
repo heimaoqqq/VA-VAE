@@ -34,9 +34,15 @@ def convert_to_safetensors(input_path, output_dir, split='train'):
     
     data = torch.load(latent_file, map_location='cpu')
     latents = data['latents']  # [N, C, H, W]
+    user_ids = data.get('user_ids', None)  # 用户ID标签
     
     print(f"✅ 加载了 {len(latents)} 个latents")
     print(f"   Shape: {latents[0].shape}")
+    
+    if user_ids is not None:
+        print(f"   用户标签: {len(user_ids)} 个，范围 {user_ids.min()}-{user_ids.max()}")
+    else:
+        print("   ⚠️ 未找到用户标签，将使用0作为默认标签")
     
     # 计算channel-wise统计（与官方一致）
     print("📊 计算channel-wise统计...")
