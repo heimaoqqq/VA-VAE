@@ -481,9 +481,10 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
             mean = stats['mean'].to(device)  # [32, 1, 1]
             std = stats['std'].to(device)     # [32, 1, 1]
             latent_multiplier = 1.0  # VA-VAE使用1.0，不是0.18215
-            # 反归一化：按照官方公式
-            samples_denorm = (samples * std.unsqueeze(0)) / latent_multiplier + mean.unsqueeze(0)
+            # 反归一化：按照官方公式，不需要unsqueeze(0)因为样本已经是4D
+            samples_denorm = (samples * std) / latent_multiplier + mean
             print(f"[SAMPLING DEBUG] After denorm: mean={samples_denorm.mean():.3f}, std={samples_denorm.std():.3f}")
+            print(f"[SAMPLING DEBUG] samples_denorm shape: {samples_denorm.shape}")
         else:
             samples_denorm = samples
         
