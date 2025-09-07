@@ -461,7 +461,15 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         samples = sample_fn(z, ema_model, **dict(y=y))
         samples = samples[-1]  # 获取最终样本
         
+        # 修复维度问题：确保samples是4D张量 [batch, channels, height, width]
+        if samples.dim() == 5:
+            # 如果是5维 [1, batch, channels, height, width]，去掉第一个维度
+            samples = samples.squeeze(0)
+        elif samples.dim() != 4:
+            raise ValueError(f"Unexpected samples shape: {samples.shape}, expected 4D tensor")
+            
         print(f"[SAMPLING DEBUG] Generated samples stats: mean={samples.mean():.3f}, std={samples.std():.3f}")
+        print(f"[SAMPLING DEBUG] Samples shape after fixing: {samples.shape}")
         
         # 关键：反归一化！训练时做了channel-wise归一化，生成后需要反归一化
         # 官方公式：samples = (samples * latent_std) / latent_multiplier + latent_mean
