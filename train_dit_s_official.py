@@ -96,8 +96,8 @@ def do_train(train_config, accelerator):
             sys.path.insert(0, lightningdit_path)
         
         from tokenizer.vavae import VA_VAE
-        from tokenizer.autoencoder import AutoencoderKL
         import yaml
+        import tempfile
         
         # 读取官方配置文件
         vae_config_path = f'LightningDiT/tokenizer/configs/{train_config["vae"]["model_name"]}.yaml'
@@ -107,24 +107,21 @@ def do_train(train_config, accelerator):
         # 动态指定我们微调的VAE模型路径，不修改官方文件
         custom_vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
         
-        # 直接创建AutoencoderKL实例，指定我们的checkpoint路径
-        vae_model = AutoencoderKL(
-            ckpt_path=custom_vae_checkpoint,
-            **vae_config['model']['params']
-        )
+        # 创建临时配置文件，指定我们的checkpoint路径
+        vae_config['ckpt_path'] = custom_vae_checkpoint
         
-        # 创建VA_VAE包装器（不使用配置文件中的路径）
-        class CustomVAVAE:
-            def __init__(self, model):
-                self.model = model
-                
-            def encode_to_latents(self, images):
-                return self.model.encode_to_latents(images)
-                
-            def decode_to_images(self, latents):
-                return self.model.decode_to_images(latents)
+        # 写入临时配置文件
+        temp_config_fd, temp_config_path = tempfile.mkstemp(suffix='.yaml')
+        with open(temp_config_path, 'w') as f:
+            yaml.dump(vae_config, f, default_flow_style=False)
+        os.close(temp_config_fd)
         
-        vae = CustomVAVAE(vae_model)
+        try:
+            # 使用官方VA_VAE类加载
+            vae = VA_VAE(temp_config_path)
+        finally:
+            # 清理临时文件
+            os.unlink(temp_config_path)
         
         if accelerator.is_main_process:
             print(f"[SETUP] Successfully loaded custom VAE model from: {custom_vae_checkpoint}")
@@ -357,7 +354,7 @@ def do_train(train_config, accelerator):
                 if accelerator.is_main_process:
                     print(f"[VALIDATION] Evaluating at step {train_steps}...")
                     logger.info(f"Start evaluating at step {train_steps}")
-                val_loss = evaluate(model, valid_loader, device, transport)
+                val_loss = evaluate(model, valid_loader, device, transport, train_config['transport']['sample_eps'])
                 dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
                 val_loss = val_loss.item() / dist.get_world_size()
                 if accelerator.is_main_process:
