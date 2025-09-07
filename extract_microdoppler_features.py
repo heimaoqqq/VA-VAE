@@ -251,15 +251,29 @@ def main(args):
     
     # 分布式数据加载器配置
     if 'RANK' in os.environ and torch.distributed.is_initialized():
-        # 分布式采样器 - 每个进程处理不同的数据子集
-        sampler = torch.utils.data.distributed.DistributedSampler(
-            dataset, 
-            num_replicas=world_size, 
-            rank=rank,
-            shuffle=False
-        )
+        # 手动精确分割，避免重复或丢失样本
+        total_samples = len(dataset)
+        samples_per_process = total_samples // world_size
+        remainder = total_samples % world_size
+        
+        # 计算当前进程的样本范围
+        if rank < remainder:
+            # 前remainder个进程多分配1个样本
+            start_idx = rank * (samples_per_process + 1)
+            end_idx = start_idx + samples_per_process + 1
+        else:
+            # 后续进程正常分配
+            start_idx = remainder * (samples_per_process + 1) + (rank - remainder) * samples_per_process
+            end_idx = start_idx + samples_per_process
+            
+        # 创建自定义索引
+        indices = list(range(start_idx, end_idx))
+        sampler = torch.utils.data.sampler.SubsetRandomSampler(indices)
+        
         effective_batch_size = args.batch_size
-        print(f"📊 分布式采样器 - 进程 {rank} 处理 {len(sampler)} 个样本，batch_size={effective_batch_size}")
+        actual_samples = len(indices)
+        print(f"📊 精确分割 - 进程 {rank} 处理样本 [{start_idx}:{end_idx}] = {actual_samples} 个样本")
+        print(f"   总样本数验证: {total_samples}, 当前进程: {actual_samples}")
     else:
         # 常规模式
         sampler = None
