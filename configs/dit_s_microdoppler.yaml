@@ -32,23 +32,23 @@ model:
 
 # Training configuration
 train:
-  max_steps: 20000               # 缩短训练，避免过拟合
-  global_batch_size: 64           # 双GPU可以使用更大batch size
+  max_steps: 30000               # 提高上限，依靠早停机制防止过拟合
+  global_batch_size: 16           # 小批次提供更好泛化和梯度噪声正则化
   global_seed: 0
   output_dir: '/kaggle/working/VA-VAE/outputs'
-  exp_name: 'dit_s_microdoppler_regularized'
+  exp_name: 'dit_s_microdoppler_bs16_optimized'
   ckpt: null                      # DiT-S暂无预训练权重，考虑使用DiT-L+智能初始化
   log_every: 1000                 # 日志频率
   ckpt_every: 2000               # 每2000步评估和保存
   resume: false                   # 不恢复训练
-  early_stopping_patience: 3      # 验证损失3次不改善就停止
+  early_stopping_patience: 5      # 增加耐心值，给模型更多收敛机会
 
-# Optimizer configuration (防过拟合优化)
+# Optimizer configuration (小批次优化配置)
 optimizer:
-  lr: 0.0001                      # 降低学习率，减缓过拟合
-  beta2: 0.95                     # Adam beta2
-  max_grad_norm: 1.0              # 梯度裁剪
-  weight_decay: 0.01              # 添加权重衰减正则化
+  lr: 0.0001                      # 小批次适用的学习率
+  beta2: 0.99                     # 提高beta2适应更noisy的梯度
+  max_grad_norm: 0.5              # 更严格梯度裁剪适应小批次噪声
+  weight_decay: 0.005             # 减少权重衰减（小批次已提供正则化）
 
 # Transport configuration (Rectified Flow，与官方一致)
 transport:
