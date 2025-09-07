@@ -169,6 +169,7 @@ def do_train(train_config, accelerator):
     model = LightningDiT_models[train_config['model']['model_type']](
         input_size=latent_size,
         num_classes=train_config['data']['num_classes'],
+        class_dropout_prob=train_config['model'].get('class_dropout_prob', 0.1),  # CFG dropout正则化
         use_qknorm=train_config['model']['use_qknorm'],
         use_swiglu=train_config['model']['use_swiglu'] if 'use_swiglu' in train_config['model'] else False,
         use_rope=train_config['model']['use_rope'] if 'use_rope' in train_config['model'] else False,
@@ -210,7 +211,12 @@ def do_train(train_config, accelerator):
         logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
         logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
         logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
-    opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, betas=(0.9, train_config['optimizer']['beta2']))
+    # 使用权重衰减正则化（不同于官方的weight_decay=0）
+    weight_decay = train_config['optimizer'].get('weight_decay', 0.01)
+    opt = torch.optim.AdamW(model.parameters(), 
+                           lr=train_config['optimizer']['lr'], 
+                           weight_decay=weight_decay, 
+                           betas=(0.9, train_config['optimizer']['beta2']))
     
     # 创建数据加载器 - 使用现有的latent数据集
     train_dataset = MicroDopplerLatentDataset(
