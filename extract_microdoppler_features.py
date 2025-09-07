@@ -200,9 +200,23 @@ def main(args):
     # 初始化VA-VAE
     vae = VA_VAE(temp_config_path)
     
-    # 启用多GPU支持
+    # 启用多GPU支持 - 修复DataParallel兼容性
     if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        vae.model = torch.nn.DataParallel(vae.model)
+        # 保存原始model的引用
+        original_model = vae.model
+        vae.model = torch.nn.DataParallel(original_model)
+        
+        # 添加encode和decode方法的兼容性包装
+        def encode_compatible(images):
+            return vae.model.module.encode(images)
+        
+        def decode_compatible(latents):
+            return vae.model.module.decode(latents)
+        
+        # 重新绑定方法到DataParallel包装的模型
+        vae.model.encode = encode_compatible
+        vae.model.decode = decode_compatible
+        
         print(f"📊 VA-VAE使用 {torch.cuda.device_count()} 个GPU进行并行处理")
     
     # VA_VAE的model已经在load()中设置为.cuda().eval()，无需再次设置
