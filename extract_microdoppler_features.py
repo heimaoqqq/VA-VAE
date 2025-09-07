@@ -321,7 +321,7 @@ def main(args):
                 'labels': labels
             }
             
-            save_filename = os.path.join(output_dir, f'latents_rank00_shard{saved_files:03d}.safetensors')
+            save_filename = os.path.join(output_dir, f'latents_rank{rank:02d}_shard{saved_files:03d}.safetensors')
             save_file(
                 save_dict,
                 save_filename,
@@ -345,7 +345,7 @@ def main(args):
             'labels': labels
         }
         
-        save_filename = os.path.join(output_dir, f'latents_rank00_shard{saved_files:03d}.safetensors')
+        save_filename = os.path.join(output_dir, f'latents_rank{rank:02d}_shard{saved_files:03d}.safetensors')
         save_file(
             save_dict,
             save_filename,
@@ -353,16 +353,24 @@ def main(args):
         )
         print(f'💾 保存最终批次: {latents.shape[0]} 样本')
     
-    # 计算latent统计（官方方式）
-    print("📊 计算统计信息...")
-    dataset = ImgLatentDataset(output_dir, latent_norm=True)
-    mean_tensor, std_tensor = dataset.get_latent_stats()  # 正确：返回tuple (mean, std)
+    # 只在主进程计算统计信息
+    if rank == 0:
+        print("📊 计算统计信息...")
+        dataset = ImgLatentDataset(output_dir, latent_norm=True)
+        mean_tensor, std_tensor = dataset.get_latent_stats()  # 正确：返回tuple (mean, std)
+        
+        mean_range = f"[{mean_tensor.min():.3f}, {mean_tensor.max():.3f}]"
+        std_range = f"[{std_tensor.min():.3f}, {std_tensor.max():.3f}]"
+        print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
+        print(f'✅ 数据集包含 {len(dataset)} 个样本')
+        print('🎉 特征提取完成！可以开始训练了')
+    else:
+        print(f"📊 进程 {rank} 完成特征提取")
     
-    mean_range = f"[{mean_tensor.min():.3f}, {mean_tensor.max():.3f}]"
-    std_range = f"[{std_tensor.min():.3f}, {std_tensor.max():.3f}]"
-    print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
-    print(f'✅ 数据集包含 {len(dataset)} 个样本')
-    print('🎉 特征提取完成！可以开始训练了')
+    # 清理分布式环境
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+        print(f"🧹 进程 {rank} 清理完成")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="微多普勒特征提取")
