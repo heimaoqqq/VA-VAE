@@ -7,7 +7,7 @@ data:
   valid_path: './latents_safetensors/val'   # 验证数据路径
   image_size: 256             # 原始图像大小
   num_classes: 31             # 31个用户作为类别数
-  num_workers: 8             # 增加数据加载并行度，适配小批次训练
+  num_workers: 4               # 适配Kaggle环境的系统建议值，避免过度创建进程
   
   # Channel-wise normalization (与官方LightningDiT一致)
   latent_norm: true      # 使用channel-wise归一化
@@ -33,7 +33,7 @@ model:
 # Training configuration
 train:
   max_steps: 30000               # 提高上限，依靠早停机制防止过拟合
-  global_batch_size: 24           # 平衡过拟合防止和GPU利用率的折中方案
+  global_batch_size: 16           # 平衡过拟合防止和GPU利用率的折中方案
   global_seed: 0
   output_dir: '/kaggle/working/VA-VAE/outputs'
   exp_name: 'dit_s_microdoppler_bs24_balanced'
