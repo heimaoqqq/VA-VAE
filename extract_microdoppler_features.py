@@ -41,8 +41,31 @@ class MicrodopplerDataset(torch.utils.data.Dataset):
         if self.transform:
             image = self.transform(image)
         
-        # 无条件生成，所有标签为0
-        label = 0
+        # 条件生成：从文件路径提取用户ID
+        # 路径格式: /path/to/ID_X/IDX_caseX_X_DopplerX.jpg
+        import re
+        path_parts = Path(image_path).parts
+        user_folder = None
+        for part in path_parts:
+            if part.startswith('ID_'):
+                user_folder = part
+                break
+                
+        if user_folder:
+            # 提取用户ID: ID_1->0, ID_2->1, ..., ID_31->30
+            match = re.match(r'ID_(\d+)', user_folder)
+            if match:
+                user_id = int(match.group(1))
+                label = user_id - 1  # ID_1->0, ID_2->1, etc.
+                if label < 0 or label >= 31:
+                    print(f"⚠️ 用户ID超出范围: {user_folder} -> {label}, 使用0")
+                    label = 0
+            else:
+                print(f"⚠️ 无法解析用户ID: {user_folder}, 使用0")
+                label = 0
+        else:
+            print(f"⚠️ 未找到用户文件夹: {image_path}, 使用0")
+            label = 0
         
         return image, label
 
