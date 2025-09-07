@@ -99,16 +99,41 @@ def do_train(train_config, accelerator):
         import yaml
         import tempfile
         
-        # 读取官方配置文件
-        vae_config_path = f'LightningDiT/tokenizer/configs/{train_config["vae"]["model_name"]}.yaml'
-        with open(vae_config_path, 'r') as f:
-            vae_config = yaml.safe_load(f)
-        
-        # 动态指定我们微调的VAE模型路径，不修改官方文件
+        # 动态指定我们微调的VAE模型路径
         custom_vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
         
-        # 创建临时配置文件，指定我们的checkpoint路径
-        vae_config['ckpt_path'] = custom_vae_checkpoint
+        # 创建与step4_train_vavae.py完全一致的配置
+        vae_config = {
+            'ckpt_path': custom_vae_checkpoint,
+            'model': {
+                'base_learning_rate': 2.0e-05,  # Stage 3学习率
+                'target': 'ldm.models.autoencoder.AutoencoderKL',
+                'params': {
+                    'monitor': 'val/rec_loss',
+                    'embed_dim': 32,
+                    'use_vf': 'dinov2',
+                    'reverse_proj': True,
+                    'ddconfig': {
+                        'double_z': True, 'z_channels': 32, 'resolution': 256,
+                        'in_channels': 3, 'out_ch': 3, 'ch': 128,
+                        'ch_mult': [1, 1, 2, 2, 4], 'num_res_blocks': 2,
+                        'attn_resolutions': [16], 'dropout': 0.0
+                    },
+                    'lossconfig': {
+                        'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
+                        'params': {
+                            'disc_start': 1, 'disc_num_layers': 3, 'disc_weight': 0.5,
+                            'disc_factor': 1.0, 'disc_in_channels': 3, 'disc_conditional': False,
+                            'disc_loss': 'hinge', 'pixelloss_weight': 1.0, 'perceptual_weight': 1.0,
+                            'kl_weight': 1e-6, 'logvar_init': 0.0, 'use_actnorm': False,
+                            'pp_style': False, 'vf_weight': 0.1, 'adaptive_vf': False,
+                            'distmat_weight': 1.0, 'cos_weight': 1.0,
+                            'distmat_margin': 0.25, 'cos_margin': 0.5
+                        }
+                    }
+                }
+            }
+        }
         
         # 写入临时配置文件
         temp_config_fd, temp_config_path = tempfile.mkstemp(suffix='.yaml')
@@ -117,7 +142,7 @@ def do_train(train_config, accelerator):
         os.close(temp_config_fd)
         
         try:
-            # 使用官方VA_VAE类加载
+            # 使用官方VA_VAE类加载，配置完全匹配step4_train_vavae.py
             vae = VA_VAE(temp_config_path)
         finally:
             # 清理临时文件
