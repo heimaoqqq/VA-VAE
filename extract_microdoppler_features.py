@@ -105,14 +105,32 @@ def main(args):
     """
     print("🚀 开始提取微多普勒latent特征...")
     
-    # 设置设备 - 支持多GPU
-    if torch.cuda.is_available():
+    # 初始化分布式环境（支持torchrun）
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        # torchrun分布式模式
+        torch.distributed.init_process_group(backend='nccl')
+        local_rank = int(os.environ.get('LOCAL_RANK', 0))
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        rank = int(os.environ.get('RANK', 0))
+        
+        torch.cuda.set_device(local_rank)
+        device = local_rank
+        
+        print(f"🚀 分布式模式 - Rank: {rank}/{world_size}, 本地GPU: {local_rank}")
+    elif torch.cuda.is_available():
+        # 单机多GPU模式
         num_gpus = torch.cuda.device_count()
-        print(f"🔧 检测到 {num_gpus} 个GPU")
+        print(f"🔧 检测到 {num_gpus} 个GPU，使用DataParallel模式")
         device = 0
         torch.cuda.set_device(device)
+        local_rank = 0
+        world_size = 1
+        rank = 0
     else:
         device = 'cpu'
+        local_rank = 0
+        world_size = 1
+        rank = 0
         print("⚠️ 未检测到GPU，使用CPU")
     
     # 设置输出目录
@@ -200,9 +218,12 @@ def main(args):
     # 初始化VA-VAE
     vae = VA_VAE(temp_config_path)
     
-    # 启用多GPU支持 - 修复DataParallel兼容性
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        # 保存原始model的引用
+    # 多GPU支持 - 分布式优先，DataParallel作为备选
+    if 'RANK' in os.environ and torch.distributed.is_initialized():
+        # 分布式模式 - 每个进程处理自己的GPU
+        print(f"📊 分布式模式 - 进程 {rank} 使用 GPU {local_rank}")
+    elif torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        # DataParallel模式（性能较低但简单）
         original_model = vae.model
         vae.model = torch.nn.DataParallel(original_model)
         
@@ -213,11 +234,10 @@ def main(args):
         def decode_compatible(latents):
             return vae.model.module.decode(latents)
         
-        # 重新绑定方法到DataParallel包装的模型
         vae.model.encode = encode_compatible
         vae.model.decode = decode_compatible
         
-        print(f"📊 VA-VAE使用 {torch.cuda.device_count()} 个GPU进行并行处理")
+        print(f"📊 DataParallel模式 - 使用 {torch.cuda.device_count()} 个GPU")
     
     # VA_VAE的model已经在load()中设置为.cuda().eval()，无需再次设置
     print("✅ VA-VAE模型加载完成")
@@ -229,20 +249,33 @@ def main(args):
     transform = create_transform(vae)
     dataset = MicrodopplerDataset(image_paths, transform=transform)
     
-    # 根据GPU数量调整batch_size
-    effective_batch_size = args.batch_size
-    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        # 多GPU时可以使用更大的batch_size
-        print(f"📊 多GPU环境，batch_size保持为 {effective_batch_size}")
+    # 分布式数据加载器配置
+    if 'RANK' in os.environ and torch.distributed.is_initialized():
+        # 分布式采样器 - 每个进程处理不同的数据子集
+        sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset, 
+            num_replicas=world_size, 
+            rank=rank,
+            shuffle=False
+        )
+        effective_batch_size = args.batch_size
+        print(f"📊 分布式采样器 - 进程 {rank} 处理 {len(sampler)} 个样本，batch_size={effective_batch_size}")
+    else:
+        # 常规模式
+        sampler = None
+        effective_batch_size = args.batch_size
+        if torch.cuda.device_count() > 1:
+            print(f"📊 DataParallel模式，batch_size={effective_batch_size}")
     
     loader = DataLoader(
         dataset,
         batch_size=effective_batch_size,
-        shuffle=False,
+        shuffle=False if sampler is not None else False,
+        sampler=sampler,
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=False,
-        persistent_workers=True if args.num_workers > 0 else False  # 提高数据加载效率
+        persistent_workers=True if args.num_workers > 0 else False
     )
     
     total_data_in_loop = len(loader.dataset)
