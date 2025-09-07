@@ -280,15 +280,16 @@ def test_config_consistency():
             
         print(f"   - 模型patch_size: {patch_size}")
         
-        # 一致性检查
-        if model_type == 'LightningDiT-S/1' and expected_latent_size == 16:
+        # 一致性检查（修正逻辑）
+        # input_size应该等于实际latent尺寸，与patch_size无关
+        if expected_latent_size == 16:  # VA-VAE输出16×16
             print("   ✅ 配置一致性检查通过")
-            return True
-        elif model_type == 'LightningDiT-S/2' and expected_latent_size == 32:
-            print("   ✅ 配置一致性检查通过")
+            print(f"   说明: input_size={expected_latent_size}匹配VA-VAE输出")
+            print(f"   patch_size={patch_size}决定patches数量: {expected_latent_size//patch_size}×{expected_latent_size//patch_size}={expected_latent_size//patch_size*expected_latent_size//patch_size}个patches")
             return True
         else:
-            print(f"   ❌ 配置不一致: {model_type} 不匹配 latent_size={expected_latent_size}")
+            print(f"   ❌ 配置不一致: VA-VAE输出16×16但计算得到latent_size={expected_latent_size}")
+            print(f"   请检查downsample_ratio设置")
             return False
             
     except Exception as e:
