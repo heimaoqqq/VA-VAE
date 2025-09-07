@@ -47,7 +47,7 @@ from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from accelerate import Accelerator
 # 修改点1：使用简化版数据集（完全匹配官方格式）
-from microdoppler_latent_dataset_simple import MicroDopplerLatentDataset
+from microdoppler_latent_dataset import MicroDopplerLatentDataset
 
 def do_train(train_config, accelerator):
     """
@@ -160,12 +160,9 @@ def do_train(train_config, accelerator):
         vae = None
     
     # Create model:
-    if 'downsample_ratio' in train_config['vae']:
-        downsample_ratio = train_config['vae']['downsample_ratio']
-    else:
-        downsample_ratio = 16
-    assert train_config['data']['image_size'] % downsample_ratio == 0, "Image size must be divisible by 8 (for the VAE encoder)."
-    latent_size = train_config['data']['image_size'] // downsample_ratio
+    assert train_config['data']['image_size'] % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
+    latent_size = train_config['data']['image_size'] // 8
+    
     model = LightningDiT_models[train_config['model']['model_type']](
         input_size=latent_size,
         num_classes=train_config['data']['num_classes'],
@@ -212,16 +209,16 @@ def do_train(train_config, accelerator):
         logger.info(f'Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
     opt = torch.optim.AdamW(model.parameters(), lr=train_config['optimizer']['lr'], weight_decay=0, betas=(0.9, train_config['optimizer']['beta2']))
     
-    # 修改点2：使用我们的数据集
-    dataset = MicroDopplerLatentDataset(
-        data_dir=train_config['data']['data_path'],  # 注意官方用的是data_path
-        latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
-        latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 0.18215,
+    # 创建数据加载器 - 使用现有的latent数据集
+    train_dataset = MicroDopplerLatentDataset(
+        data_dir=train_config['data']['data_path'],
+        latent_norm=train_config['data']['latent_norm'],
+        latent_multiplier=train_config['data']['latent_multiplier']
     )
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
     global_batch_size = batch_size_per_gpu * accelerator.num_processes
     loader = DataLoader(
-        dataset,
+        train_dataset,
         batch_size=batch_size_per_gpu,
         shuffle=True,
         num_workers=train_config['data']['num_workers'],
@@ -229,15 +226,21 @@ def do_train(train_config, accelerator):
         drop_last=True
     )
     if accelerator.is_main_process:
-        logger.info(f"Dataset contains {len(dataset):,} images {train_config['data']['data_path']}")
+        logger.info(f"Dataset contains {len(train_dataset):,} latents from {train_config['data']['data_path']}")
         logger.info(f"Batch size {batch_size_per_gpu} per gpu, with {global_batch_size} global batch size")
+        # 打印标签统计
+        if hasattr(train_dataset, 'labels') and len(train_dataset.labels) > 0:
+            import collections
+            label_counts = collections.Counter(train_dataset.labels)
+            print(f"[DATASET INFO] 标签分布: {dict(sorted(label_counts.items()))}")
+            print(f"[DATASET INFO] 标签范围: {min(train_dataset.labels)} - {max(train_dataset.labels)}")
     
-    if 'valid_path' in train_config['data']:
-        # 使用用户已处理的验证集
+    if 'valid_path' in train_config['data'] and train_config['data']['valid_path']:
+        # 使用独立验证集
         valid_dataset = MicroDopplerLatentDataset(
             data_dir=train_config['data']['valid_path'],
-            latent_norm=train_config['data']['latent_norm'] if 'latent_norm' in train_config['data'] else False,
-            latent_multiplier=train_config['data']['latent_multiplier'] if 'latent_multiplier' in train_config['data'] else 0.18215,
+            latent_norm=train_config['data']['latent_norm'],
+            latent_multiplier=train_config['data']['latent_multiplier']
         )
         valid_loader = DataLoader(
             valid_dataset,
@@ -247,15 +250,12 @@ def do_train(train_config, accelerator):
             pin_memory=True,
             drop_last=False
         )
-        if accelerator.is_main_process:
-            logger.info(f"Training dataset: {len(dataset):,} images")
-            logger.info(f"Validation dataset: {len(valid_dataset):,} images")
-            print(f"[SETUP] Using pre-processed validation set: {len(valid_dataset):,} images")
     else:
         valid_loader = None
-        if accelerator.is_main_process:
-            logger.info(f"Training dataset: {len(dataset):,} images")
-            print(f"[SETUP] No validation set configured")
+    if accelerator.is_main_process:
+        logger.info(f"Training dataset: {len(train_dataset):,} images")
+        logger.info(f"Validation dataset: {len(valid_dataset):,} images")
+        print(f"[SETUP] Validation set: {len(valid_dataset):,} images")
 
     # Prepare models for training:
     update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
@@ -293,7 +293,7 @@ def do_train(train_config, accelerator):
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {use_checkpoint}")
 
-    # 添加训练开始标记
+    # 打印训练开始信息
     if accelerator.is_main_process:
         print(f"[TRAINING START] Starting training loop...", flush=True)
         print(f"[TRAINING INFO] Total steps: {train_config['train']['max_steps']}", flush=True)
@@ -305,10 +305,11 @@ def do_train(train_config, accelerator):
             
             if accelerator.mixed_precision == 'no':
                 x = x.to(device, dtype=torch.float32)
-                y = y
+                y = y.to(device)
             else:
                 x = x.to(device)
                 y = y.to(device)
+            
             model_kwargs = dict(y=y)
             loss_dict = transport.training_losses(model, x, model_kwargs)
             if 'cos_loss' in loss_dict:
@@ -427,7 +428,7 @@ def load_weights_with_shape_check(model, checkpoint, rank=0):
     return model
 
 @torch.no_grad()
-def generate_samples(ema_model, vae, transport, device, step, output_dir, num_samples=16):
+def generate_samples(ema_model, vae, transport, device, step, output_dir, num_samples=8):
     """
     生成样本并保存latent可视化
     """
@@ -445,21 +446,41 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         # 打印调试信息
         print(f"[SAMPLING DEBUG] Initial noise stats: mean={z.mean():.3f}, std={z.std():.3f}")
         
-        # 使用更少的采样步数用于早期训练（加快速度）
-        num_steps = 50 if step < 5000 else 250
-        
         # 使用官方采样配置
+        num_steps = 50 if step < 5000 else 250
+        cfg_scale = 10.0 if step >= 10000 else 1.0  # 训练后期启用CFG，官方推荐10.0
+        cfg_interval_start = 0.11                  # 官方CFG间隔设置
+        timestep_shift = 0.1                       # 用户指定的timestep shift
+        using_cfg = cfg_scale > 1.0
+        
         sampler = Sampler(transport)
         sample_fn = sampler.sample_ode(
             sampling_method='euler',        # 官方使用euler
-            num_steps=num_steps,            # 早期使用较少步数
+            num_steps=num_steps,            
             atol=1e-6,                     # 官方配置
             rtol=1e-3,                     # 官方配置
-            timestep_shift=0.0,            # 不使用timestep shift（从0开始）
+            reverse=False,                 # 官方配置
+            timestep_shift=timestep_shift, # 设置为0.1
         )
-        # 调用采样函数
-        samples = sample_fn(z, ema_model, **dict(y=y))
-        samples = samples[-1]  # 获取最终样本
+        
+        # 按照官方方式实现CFG
+        if using_cfg:
+            # CFG需要双倍batch处理条件和无条件
+            z_cfg = torch.cat([z, z], 0)
+            y_null = torch.tensor([31] * num_samples, device=device)  # null class (超出0-30用户类别)
+            y_cfg = torch.cat([y, y_null], 0)
+            model_kwargs = dict(y=y_cfg, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
+            
+            # 使用CFG前向传播
+            samples = sample_fn(z_cfg, ema_model.forward_with_cfg, **model_kwargs)
+            samples = samples[-1]  # 获取最终时间步的样本
+            samples, _ = samples.chunk(2, dim=0)  # 去掉null class样本
+            print(f"[SAMPLING DEBUG] Using CFG with scale={cfg_scale}")
+        else:
+            # 标准采样
+            samples = sample_fn(z, ema_model, **dict(y=y))
+            samples = samples[-1]  # 获取最终时间步的样本
+            print(f"[SAMPLING DEBUG] Using standard sampling (no CFG)")
         
         # 修复维度问题：确保samples是4D张量 [batch, channels, height, width]
         if samples.dim() == 5:
