@@ -40,8 +40,8 @@ def test_vae_latent_size():
     return expected_latent_size
 
 def test_dit_model_compatibility():
-    """测试DiT模型配置兼容性"""
-    print("\n🧪 测试2: DiT模型配置")
+    """测试DiT模型配置兼容性 - 实际创建模型验证参数"""
+    print("\n🧪 测试2: DiT模型配置与实际VA-VAE latent匹配")
     
     try:
         from models.lightningdit import LightningDiT_models
@@ -58,7 +58,7 @@ def test_dit_model_compatibility():
         
         print(f"   原始图像尺寸: {image_size}")
         print(f"   下采样比例: {downsample_ratio}")
-        print(f"   计算latent尺寸: {latent_size}")
+        print(f"   计算latent尺寸: {latent_size}×{latent_size}")
         
         # 创建模型
         model_type = config['model']['model_type']
@@ -79,12 +79,60 @@ def test_dit_model_compatibility():
         print(f"   ✅ DiT模型创建成功")
         print(f"   模型参数量: {sum(p.numel() for p in model.parameters()):,}")
         
-        return model, latent_size
+        # 测试实际latent尺寸匹配
+        return test_model_input_compatibility(model, latent_size, config)
         
     except Exception as e:
         print(f"   ❌ DiT模型创建失败: {e}")
         import traceback
         traceback.print_exc()
+        return None, None
+
+def test_model_input_compatibility(model, latent_size, config):
+    """测试模型与实际latent输入的兼容性"""
+    print(f"   🧪 测试模型输入兼容性...")
+    
+    try:
+        # 创建模拟VA-VAE latent输入
+        batch_size = 1
+        in_channels = config['model']['in_chans']  # 32
+        
+        # VA-VAE实际输出尺寸 (已知为16×16)
+        actual_latent_h, actual_latent_w = 16, 16
+        
+        print(f"   模拟VA-VAE输出: [{batch_size}, {in_channels}, {actual_latent_h}, {actual_latent_w}]")
+        
+        # 测试实际latent尺寸
+        x = torch.randn(batch_size, in_channels, actual_latent_h, actual_latent_w)
+        y = torch.randint(0, config['data']['num_classes'], (batch_size,))
+        t = torch.randn(batch_size)
+        
+        # 尝试前向传播
+        model.eval()
+        with torch.no_grad():
+            try:
+                output = model(x, t, y=y)
+                print(f"   ✅ 16×16 latent输入成功: 输出{output.shape}")
+                return model, 16  # 返回实际工作的尺寸
+            except Exception as e16:
+                print(f"   ❌ 16×16 latent失败: {e16}")
+                
+                # 尝试配置计算的尺寸
+                if latent_size != 16:
+                    print(f"   🧪 尝试配置计算的{latent_size}×{latent_size}...")
+                    x_config = torch.randn(batch_size, in_channels, latent_size, latent_size)
+                    try:
+                        output = model(x_config, t, y=y)
+                        print(f"   ✅ {latent_size}×{latent_size} latent成功: 输出{output.shape}")
+                        print(f"   ⚠️ 配置与实际VA-VAE输出不匹配!")
+                        return model, latent_size
+                    except Exception as econfig:
+                        print(f"   ❌ {latent_size}×{latent_size} latent也失败: {econfig}")
+                
+                raise e16
+                
+    except Exception as e:
+        print(f"   ❌ 输入兼容性测试失败: {e}")
         return None, None
 
 def test_forward_pass(model, latent_size):
