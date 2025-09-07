@@ -7,7 +7,7 @@ data:
   valid_path: './latents_safetensors/val'   # 验证数据路径
   image_size: 256             # 原始图像大小
   num_classes: 31             # 31个用户作为类别数
-  num_workers: 4              # 数据加载器工作进程数
+  num_workers: 6              # 增加数据加载并行度，适配小批次训练
   
   # Channel-wise normalization (与官方LightningDiT一致)
   latent_norm: true      # 使用channel-wise归一化
@@ -68,8 +68,8 @@ sample:
   rtol: 0.001
   reverse: false
   likelihood: false
-  num_sampling_steps: 250         # 采样步数
+  num_sampling_steps: 300         # 采样步数
   cfg_scale: 10.0                 # 条件生成使用CFG=10.0
   per_proc_batch_size: 4
   cfg_interval_start: 0.11
-  timestep_shift: 0.3
+  timestep_shift: 0.1
