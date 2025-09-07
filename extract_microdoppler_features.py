@@ -105,9 +105,15 @@ def main(args):
     """
     print("🚀 开始提取微多普勒latent特征...")
     
-    # 设置设备
-    device = 0 if torch.cuda.is_available() else 'cpu'
-    torch.cuda.set_device(device) if torch.cuda.is_available() else None
+    # 设置设备 - 支持多GPU
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        print(f"🔧 检测到 {num_gpus} 个GPU")
+        device = 0
+        torch.cuda.set_device(device)
+    else:
+        device = 'cpu'
+        print("⚠️ 未检测到GPU，使用CPU")
     
     # 设置输出目录
     output_dir = os.path.join(args.output_path, args.split)
@@ -194,6 +200,11 @@ def main(args):
     # 初始化VA-VAE
     vae = VA_VAE(temp_config_path)
     
+    # 启用多GPU支持
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        vae.model = torch.nn.DataParallel(vae.model)
+        print(f"📊 VA-VAE使用 {torch.cuda.device_count()} 个GPU进行并行处理")
+    
     # VA_VAE的model已经在load()中设置为.cuda().eval()，无需再次设置
     print("✅ VA-VAE模型加载完成")
     
@@ -204,13 +215,20 @@ def main(args):
     transform = create_transform(vae)
     dataset = MicrodopplerDataset(image_paths, transform=transform)
     
+    # 根据GPU数量调整batch_size
+    effective_batch_size = args.batch_size
+    if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+        # 多GPU时可以使用更大的batch_size
+        print(f"📊 多GPU环境，batch_size保持为 {effective_batch_size}")
+    
     loader = DataLoader(
         dataset,
-        batch_size=args.batch_size,
+        batch_size=effective_batch_size,
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
-        drop_last=False
+        drop_last=False,
+        persistent_workers=True if args.num_workers > 0 else False  # 提高数据加载效率
     )
     
     total_data_in_loop = len(loader.dataset)
