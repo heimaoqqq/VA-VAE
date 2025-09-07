@@ -160,8 +160,17 @@ def do_train(train_config, accelerator):
         vae = None
     
     # Create model:
-    assert train_config['data']['image_size'] % 8 == 0, "Image size must be divisible by 8 (for the VAE encoder)."
-    latent_size = train_config['data']['image_size'] // 8
+    # VA-VAE实际输出16x16 latent (不是标准VAE的32x32)
+    downsample_ratio = train_config['vae']['downsample_ratio']
+    assert train_config['data']['image_size'] % downsample_ratio == 0, f"Image size must be divisible by {downsample_ratio}"
+    latent_size = train_config['data']['image_size'] // downsample_ratio
+    
+    # 创建DiT模型 - 添加调试打印
+    print(f"[DEBUG] 创建模型参数:")
+    print(f"  - model_type: {train_config['model']['model_type']}")
+    print(f"  - input_size: {latent_size}")
+    print(f"  - num_classes: {train_config['data']['num_classes']}")
+    print(f"  - in_channels: {train_config['model']['in_chans'] if 'in_chans' in train_config['model'] else 4}")
     
     model = LightningDiT_models[train_config['model']['model_type']](
         input_size=latent_size,
@@ -174,6 +183,12 @@ def do_train(train_config, accelerator):
         in_channels=train_config['model']['in_chans'] if 'in_chans' in train_config['model'] else 4,
         use_checkpoint=train_config['model']['use_checkpoint'] if 'use_checkpoint' in train_config['model'] else False,
     )
+    
+    # 验证模型的PatchEmbed设置
+    print(f"[DEBUG] 模型创建后验证:")
+    print(f"  - model.x_embedder.img_size: {model.x_embedder.img_size}")
+    print(f"  - model.patch_size: {model.patch_size}")
+    print(f"  - model.x_embedder.num_patches: {model.x_embedder.num_patches}")
 
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
 
