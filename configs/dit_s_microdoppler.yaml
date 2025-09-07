@@ -43,7 +43,7 @@ train:
 
 # Optimizer configuration (与官方一致)
 optimizer:
-  lr: 0.0001                      # 学习率调小（数据集小）
+  lr: 0.0002                      # 提高学习率，与官方一致
   beta2: 0.95                     # Adam beta2
   max_grad_norm: 1.0              # 梯度裁剪
 
@@ -66,7 +66,7 @@ sample:
   reverse: false
   likelihood: false
   num_sampling_steps: 250         # 采样步数
-  cfg_scale: 1.0                  # 无条件生成不需要CFG
+  cfg_scale: 10.0                 # 条件生成使用CFG=10.0
   per_proc_batch_size: 4
   cfg_interval_start: 0.11
   timestep_shift: 0.3
