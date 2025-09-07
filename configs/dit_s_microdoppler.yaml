@@ -20,7 +20,7 @@ vae:
 
 # Model configuration - DiT-S (最小模型，手动添加)
 model:
-  model_type: 'LightningDiT-S/2'  # S模型，33M参数，最小版本
+  model_type: 'LightningDiT-S/2'  # S模型，patch_size=2正确配置
   use_qknorm: false               # 官方推荐设置
   use_swiglu: true                # 使用SwiGLU激活
   use_rope: true                  # 使用RoPE位置编码
@@ -31,12 +31,12 @@ model:
 
 # Training configuration
 train:
-  max_steps: 60000               # 总训练步数
+  max_steps: 60000              # 延长训练步数
   global_batch_size: 64           # 双GPU可以使用更大batch size
   global_seed: 0
   output_dir: '/kaggle/working/VA-VAE/outputs'
   exp_name: 'dit_s_microdoppler'
-  ckpt: null                      # 从头训练，无预训练权重
+  ckpt: null                      # DiT-S暂无预训练权重，考虑使用DiT-L+智能初始化
   log_every: 1000                 # 日志频率
   ckpt_every: 5000               # 保存频率
   resume: false                   # 不恢复训练
@@ -69,4 +69,4 @@ sample:
   cfg_scale: 10.0                 # 条件生成使用CFG=10.0
   per_proc_batch_size: 4
   cfg_interval_start: 0.11
-  timestep_shift: 0.3
+  timestep_shift: 0.1
