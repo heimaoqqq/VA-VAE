@@ -31,7 +31,7 @@ model:
 
 # Training configuration
 train:
-  max_steps: 50000               # 总训练步数
+  max_steps: 60000               # 总训练步数
   global_batch_size: 64           # 双GPU可以使用更大batch size
   global_seed: 0
   output_dir: '/kaggle/working/VA-VAE/outputs'
