@@ -47,7 +47,7 @@ from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from accelerate import Accelerator
 # 修改点1：使用简化版数据集（完全匹配官方格式）
-from microdoppler_latent_dataset import MicroDopplerLatentDataset
+from microdoppler_latent_dataset_simple import MicroDopplerLatentDataset
 
 def do_train(train_config, accelerator):
     """
@@ -252,10 +252,15 @@ def do_train(train_config, accelerator):
         )
     else:
         valid_loader = None
+        valid_dataset = None
+    
     if accelerator.is_main_process:
         logger.info(f"Training dataset: {len(train_dataset):,} images")
-        logger.info(f"Validation dataset: {len(valid_dataset):,} images")
-        print(f"[SETUP] Validation set: {len(valid_dataset):,} images")
+        if valid_dataset is not None:
+            logger.info(f"Validation dataset: {len(valid_dataset):,} images")
+            print(f"[SETUP] Validation set: {len(valid_dataset):,} images")
+        else:
+            print(f"[SETUP] No validation set configured")
 
     # Prepare models for training:
     update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
