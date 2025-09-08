@@ -41,7 +41,8 @@ train:
   log_every: 1000                 # 日志频率
   ckpt_every: 2000               # 每2000步评估和保存
   resume: false                   # 不恢复训练
-  early_stopping_patience: 8      # 进一步增加耐心，模型仍在收敛
+  early_stopping_patience: 10     # 增加耐心，验证损失仍在缓慢下降
+  ema_decay: 0.999               # 小数据集优化的EMA衰减率
 
 # Optimizer configuration (小批次优化配置)
 optimizer:
@@ -72,7 +73,7 @@ sample:
   rtol: 0.001
   reverse: false
   likelihood: false
-  num_sampling_steps: 300         # 平衡质量和推理速度
+  num_sampling_steps: 200         # 平衡质量和推理速度
   cfg_scale: 7.0                  # 降低CFG避免过度引导丢失微动细节
   per_proc_batch_size: 4
   cfg_interval_start: 0.11
