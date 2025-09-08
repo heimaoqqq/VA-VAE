@@ -1,9 +1,10 @@
 """
-条件生成质量评估脚本
-使用训练好的分类器评估生成样本，筛选置信度>90%的样本
+用户分类器训练脚本
+使用真实微多普勒图像训练ResNet18分类器，用于评估生成样本质量
 """
 import torch
-import torch.nn.functional as F
+import torch.nn as nn
+import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import torchvision.transforms as transforms
 import timm
@@ -12,35 +13,47 @@ import argparse
 from pathlib import Path
 import numpy as np
 from PIL import Image
-import json
-import shutil
-from tqdm import tqdm
+from sklearn.metrics import accuracy_score, classification_report
 import matplotlib.pyplot as plt
-from collections import defaultdict
+import json
+from tqdm import tqdm
 
-class GeneratedSampleDataset(Dataset):
-    """生成样本数据集"""
+class MicroDopplerDataset(Dataset):
+    """微多普勒数据集"""
     def __init__(self, data_dir, transform=None):
         self.data_dir = Path(data_dir)
         self.transform = transform
         self.samples = []
         
-        # 扫描所有用户目录
-        for user_dir in sorted(self.data_dir.glob("user_*")):
+        # 扫描所有用户目录（适配实际数据集格式：ID1, ID2, etc.）
+        user_mapping = {}  # 调试映射
+        for user_dir in sorted(self.data_dir.glob("ID*")):
             if user_dir.is_dir():
-                user_id = int(user_dir.name.split('_')[1])
+                # 从ID_1, ID_2, ... 转换为 0, 1, 2, ...
+                user_id = int(user_dir.name.replace('ID_', '')) - 1  # ID_1 -> 0, ID_2 -> 1, etc.
+                user_mapping[user_dir.name] = user_id
                 
-                # 扫描该用户的所有生成图像
-                for img_path in sorted(user_dir.glob("*.png")):
+                # 扫描该用户的所有图像（支持jpg和png）
+                img_count = 0
+                for img_path in list(user_dir.glob("*.jpg")) + list(user_dir.glob("*.png")):
                     self.samples.append((str(img_path), user_id))
+                    img_count += 1
+                
+                if img_count > 0:
+                    print(f"  {user_dir.name} -> user_id {user_id}: {img_count} images")
         
-        print(f"Found {len(self.samples)} generated samples from {len(set([s[1] for s in self.samples]))} users")
+        unique_users = sorted(set([s[1] for s in self.samples]))
+        print(f"\n📊 映射检查:")
+        print(f"Found {len(self.samples)} samples from {len(unique_users)} users")
+        print(f"User ID range: {min(unique_users)} to {max(unique_users)}")
+        print(f"Directory mapping: {user_mapping}")
+        print(f"Expected classes for model: 0-30 = 31 total")
     
     def __len__(self):
         return len(self.samples)
     
     def __getitem__(self, idx):
-        img_path, true_label = self.samples[idx]
+        img_path, label = self.samples[idx]
         
         # 加载图像
         image = Image.open(img_path).convert('RGB')
@@ -48,312 +61,191 @@ class GeneratedSampleDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         
-        return image, true_label, img_path
-
-def load_classifier(model_path, device):
-    """加载训练好的分类器"""
-    checkpoint = torch.load(model_path, map_location=device)
-    
-    # 创建模型
-    model = timm.create_model('resnet18', pretrained=False, num_classes=checkpoint['num_classes'])
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model = model.to(device)
-    model.eval()
-    
-    print(f"Loaded classifier from {model_path}")
-    print(f"Best validation accuracy: {checkpoint['best_val_acc']:.2f}%")
-    
-    return model
+        return image, label
 
 def create_transforms():
-    """创建数据变换（与分类器训练时保持一致）"""
+    """创建数据变换（无数据增强）"""
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((224, 224)),  # ResNet标准输入尺寸
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                           std=[0.229, 0.224, 0.225])
+                           std=[0.229, 0.224, 0.225])  # ImageNet标准化
     ])
     return transform
 
-def evaluate_samples(model, dataloader, device, confidence_threshold=0.9):
-    """评估生成样本"""
+def train_epoch(model, dataloader, criterion, optimizer, device):
+    """训练一个epoch"""
+    model.train()
+    total_loss = 0
+    correct = 0
+    total = 0
+    
+    pbar = tqdm(dataloader, desc="Training")
+    for images, labels in pbar:
+        images, labels = images.to(device), labels.to(device)
+        
+        optimizer.zero_grad()
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+        _, predicted = outputs.max(1)
+        total += labels.size(0)
+        correct += predicted.eq(labels).sum().item()
+        
+        pbar.set_postfix({
+            'Loss': f'{loss.item():.4f}',
+            'Acc': f'{100.*correct/total:.2f}%'
+        })
+    
+    return total_loss / len(dataloader), 100. * correct / total
+
+def validate_epoch(model, dataloader, criterion, device):
+    """验证一个epoch"""
     model.eval()
-    
-    results = {
-        'predictions': [],
-        'true_labels': [],
-        'confidences': [],
-        'max_probs': [],
-        'image_paths': [],
-        'correct': [],
-        'high_confidence': []
-    }
-    
-    user_stats = defaultdict(lambda: {
-        'total': 0, 'correct': 0, 'high_conf': 0, 'high_conf_correct': 0
-    })
+    total_loss = 0
+    correct = 0
+    total = 0
+    all_preds = []
+    all_labels = []
     
     with torch.no_grad():
-        pbar = tqdm(dataloader, desc="Evaluating")
-        for images, true_labels, img_paths in pbar:
-            images = images.to(device)
+        pbar = tqdm(dataloader, desc="Validating")
+        for images, labels in pbar:
+            images, labels = images.to(device), labels.to(device)
             
-            # 前向传播
             outputs = model(images)
-            probabilities = F.softmax(outputs, dim=1)
-            max_probs, predictions = torch.max(probabilities, dim=1)
+            loss = criterion(outputs, labels)
             
-            # 转换为numpy
-            predictions_np = predictions.cpu().numpy()
-            true_labels_np = true_labels.numpy()
-            max_probs_np = max_probs.cpu().numpy()
+            total_loss += loss.item()
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            correct += predicted.eq(labels).sum().item()
             
-            # 记录结果
-            for i in range(len(predictions_np)):
-                pred = predictions_np[i]
-                true_label = true_labels_np[i]
-                max_prob = max_probs_np[i]
-                img_path = img_paths[i]
-                
-                is_correct = (pred == true_label)
-                is_high_conf = (max_prob >= confidence_threshold)
-                
-                results['predictions'].append(pred)
-                results['true_labels'].append(true_label)
-                results['confidences'].append(probabilities[i].cpu().numpy())
-                results['max_probs'].append(max_prob)
-                results['image_paths'].append(img_path)
-                results['correct'].append(is_correct)
-                results['high_confidence'].append(is_high_conf)
-                
-                # 更新用户统计
-                user_stats[true_label]['total'] += 1
-                if is_correct:
-                    user_stats[true_label]['correct'] += 1
-                if is_high_conf:
-                    user_stats[true_label]['high_conf'] += 1
-                    if is_correct:
-                        user_stats[true_label]['high_conf_correct'] += 1
-            
-            # 更新进度条
-            total_correct = sum(results['correct'])
-            total_high_conf = sum(results['high_confidence'])
-            accuracy = total_correct / len(results['correct']) if results['correct'] else 0
-            high_conf_ratio = total_high_conf / len(results['high_confidence']) if results['high_confidence'] else 0
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
             
             pbar.set_postfix({
-                'Acc': f'{accuracy*100:.1f}%',
-                'HighConf': f'{high_conf_ratio*100:.1f}%'
+                'Loss': f'{loss.item():.4f}',
+                'Acc': f'{100.*correct/total:.2f}%'
             })
     
-    return results, user_stats
+    return total_loss / len(dataloader), 100. * correct / total, all_preds, all_labels
 
-def save_high_confidence_samples(results, output_dir, confidence_threshold=0.9):
-    """保存高置信度样本"""
-    output_dir = Path(output_dir)
+def load_dataset_split(dataset, split_file):
+    """使用prepare_dataset_split.py生成的划分文件"""
+    if not os.path.exists(split_file):
+        print(f"⚠️ 划分文件不存在: {split_file}")
+        print("⚠️ 使用内置随机划分")
+        return split_dataset_random(dataset)
     
-    # 创建总目录
-    high_conf_dir = output_dir / f"high_confidence_samples_threshold_{confidence_threshold}"
-    high_conf_dir.mkdir(parents=True, exist_ok=True)
+    print(f"📋 使用预设划分文件: {split_file}")
+    with open(split_file, 'r', encoding='utf-8') as f:
+        split_data = json.load(f)
     
-    # 为每个用户创建目录
-    for user_id in range(31):  # 假设有31个用户
-        user_dir = high_conf_dir / f"user_{user_id:02d}"
-        user_dir.mkdir(exist_ok=True)
+    # 创建更智能的路径匹配
+    # 1. 文件名到索引映射
+    filename_to_indices = {}
+    # 2. 用户+文件名到索引映射 
+    user_filename_to_idx = {}
     
-    saved_count = 0
-    saved_correct = 0
-    
-    for i, (is_high_conf, is_correct, img_path, true_label, pred) in enumerate(
-        zip(results['high_confidence'], results['correct'], results['image_paths'], 
-            results['true_labels'], results['predictions'])
-    ):
-        if is_high_conf:
-            # 确定保存路径
-            user_dir = high_conf_dir / f"user_{true_label:02d}"
-            original_filename = Path(img_path).name
-            
-            # 添加预测信息到文件名
-            name_parts = original_filename.split('.')
-            if is_correct:
-                new_filename = f"{name_parts[0]}_CORRECT_pred{pred}.{name_parts[1]}"
-                saved_correct += 1
-            else:
-                new_filename = f"{name_parts[0]}_WRONG_pred{pred}.{name_parts[1]}"
-            
-            new_path = user_dir / new_filename
-            
-            # 复制文件
-            shutil.copy2(img_path, new_path)
-            saved_count += 1
-    
-    print(f"\nSaved {saved_count} high-confidence samples")
-    print(f"  - Correct predictions: {saved_correct}")
-    print(f"  - Wrong predictions: {saved_count - saved_correct}")
-    print(f"  - Accuracy among high-confidence samples: {saved_correct/saved_count*100:.1f}%")
-    
-    return saved_count, saved_correct
-
-def generate_evaluation_report(results, user_stats, output_dir, confidence_threshold=0.9):
-    """生成评估报告"""
-    output_dir = Path(output_dir)
-    
-    # 计算总体统计
-    total_samples = len(results['predictions'])
-    total_correct = sum(results['correct'])
-    total_high_conf = sum(results['high_confidence'])
-    high_conf_correct = sum(c and h for c, h in zip(results['correct'], results['high_confidence']))
-    
-    overall_accuracy = total_correct / total_samples
-    high_conf_ratio = total_high_conf / total_samples
-    high_conf_accuracy = high_conf_correct / total_high_conf if total_high_conf > 0 else 0
-    
-    # 生成报告
-    report = {
-        'evaluation_summary': {
-            'total_samples': total_samples,
-            'total_correct': total_correct,
-            'overall_accuracy': overall_accuracy,
-            'high_confidence_samples': total_high_conf,
-            'high_confidence_ratio': high_conf_ratio,
-            'high_confidence_correct': high_conf_correct,
-            'high_confidence_accuracy': high_conf_accuracy,
-            'confidence_threshold': confidence_threshold
-        },
-        'per_user_stats': {}
-    }
-    
-    # 每用户统计
-    for user_id in sorted(user_stats.keys()):
-        stats = user_stats[user_id]
-        user_accuracy = stats['correct'] / stats['total'] if stats['total'] > 0 else 0
-        user_high_conf_ratio = stats['high_conf'] / stats['total'] if stats['total'] > 0 else 0
-        user_high_conf_accuracy = stats['high_conf_correct'] / stats['high_conf'] if stats['high_conf'] > 0 else 0
+    for idx, (img_path, label) in enumerate(dataset.samples):
+        img_path_obj = Path(img_path)
+        filename = img_path_obj.name
+        user_dir = img_path_obj.parent.name  # ID_1, ID_2, etc.
         
-        report['per_user_stats'][f'user_{user_id:02d}'] = {
-            'total_samples': stats['total'],
-            'correct_predictions': stats['correct'],
-            'accuracy': user_accuracy,
-            'high_confidence_samples': stats['high_conf'],
-            'high_confidence_ratio': user_high_conf_ratio,
-            'high_confidence_correct': stats['high_conf_correct'],
-            'high_confidence_accuracy': user_high_conf_accuracy
-        }
-    
-    # 转换numpy类型为Python原生类型（用于JSON序列化）
-    def convert_numpy_types(obj):
-        if isinstance(obj, dict):
-            return {k: convert_numpy_types(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [convert_numpy_types(v) for v in obj]
-        elif hasattr(obj, 'item'):  # numpy标量
-            return obj.item()
-        elif isinstance(obj, (np.integer, np.int64, np.int32)):
-            return int(obj)
-        elif isinstance(obj, (np.floating, np.float64, np.float32)):
-            return float(obj)
-        else:
-            return obj
-    
-    # 保存JSON报告  
-    report_path = output_dir / 'evaluation_report.json'
-    with open(report_path, 'w') as f:
-        # 转换numpy类型为Python原生类型，然后保存
-        converted_report = convert_numpy_types(report)
-        json.dump(converted_report, f, indent=2)
-    
-    # 生成文本报告
-    text_report_path = output_dir / 'evaluation_report.txt'
-    with open(text_report_path, 'w') as f:
-        f.write("=== CONDITIONAL GENERATION EVALUATION REPORT ===\n\n")
-        f.write(f"Confidence Threshold: {confidence_threshold}\n\n")
+        # 建立多种映射关系
+        if filename not in filename_to_indices:
+            filename_to_indices[filename] = []
+        filename_to_indices[filename].append(idx)
         
-        f.write("OVERALL STATISTICS:\n")
-        f.write(f"  Total Samples: {total_samples}\n")
-        f.write(f"  Correct Predictions: {total_correct}\n")
-        f.write(f"  Overall Accuracy: {overall_accuracy:.3f} ({overall_accuracy*100:.1f}%)\n")
-        f.write(f"  High-Confidence Samples: {total_high_conf}\n")
-        f.write(f"  High-Confidence Ratio: {high_conf_ratio:.3f} ({high_conf_ratio*100:.1f}%)\n")
-        f.write(f"  High-Confidence Accuracy: {high_conf_accuracy:.3f} ({high_conf_accuracy*100:.1f}%)\n\n")
+        user_filename_key = f"{user_dir}/{filename}"
+        user_filename_to_idx[user_filename_key] = idx
+    
+    train_indices = []
+    val_indices = []
+    
+    def find_matching_index(file_path):
+        """精确匹配文件路径到数据集索引"""
+        path_obj = Path(file_path)
+        filename = path_obj.name
         
-        f.write("PER-USER STATISTICS:\n")
-        f.write("User | Total | Correct | Acc(%) | HighConf | HCRatio(%) | HCAcc(%)\n")
-        f.write("-" * 70 + "\n")
+        # 方法1: 直接绝对路径匹配（最精确）
+        for idx, (sample_path, label) in enumerate(dataset.samples):
+            if str(sample_path) == str(file_path):
+                return idx
         
-        for user_id in sorted(user_stats.keys()):
-            stats = user_stats[user_id]
-            user_accuracy = stats['correct'] / stats['total'] if stats['total'] > 0 else 0
-            user_high_conf_ratio = stats['high_conf'] / stats['total'] if stats['total'] > 0 else 0
-            user_high_conf_accuracy = stats['high_conf_correct'] / stats['high_conf'] if stats['high_conf'] > 0 else 0
-            
-            f.write(f"{user_id:4d} | {stats['total']:5d} | {stats['correct']:7d} | "
-                   f"{user_accuracy*100:6.1f} | {stats['high_conf']:8d} | "
-                   f"{user_high_conf_ratio*100:10.1f} | {user_high_conf_accuracy*100:7.1f}\n")
+        # 方法2: 用户目录+文件名匹配
+        user_dir = None
+        for part in path_obj.parts:
+            if part.startswith('ID_'):
+                user_dir = part
+                break
+        
+        if user_dir:
+            user_filename_key = f"{user_dir}/{filename}"
+            if user_filename_key in user_filename_to_idx:
+                return user_filename_to_idx[user_filename_key]
+        
+        # 方法3: 仅文件名匹配（如果唯一）
+        if filename in filename_to_indices:
+            indices = filename_to_indices[filename]
+            if len(indices) == 1:
+                return indices[0]
+        
+        return None
     
-    # 绘制统计图表
-    plt.figure(figsize=(15, 10))
+    # 处理训练集和验证集 - 适配prepare_dataset_split.py的嵌套结构
+    user_train_counts = {}
+    user_val_counts = {}
     
-    # 准备数据
-    user_ids = sorted(user_stats.keys())
-    accuracies = [user_stats[uid]['correct'] / user_stats[uid]['total'] for uid in user_ids]
-    high_conf_ratios = [user_stats[uid]['high_conf'] / user_stats[uid]['total'] for uid in user_ids]
-    high_conf_accuracies = [user_stats[uid]['high_conf_correct'] / user_stats[uid]['high_conf'] 
-                           if user_stats[uid]['high_conf'] > 0 else 0 for uid in user_ids]
+    # 处理训练集
+    for user_id, file_paths in split_data['train'].items():
+        user_train_counts[user_id] = len(file_paths)
+        for file_path in file_paths:
+            idx = find_matching_index(file_path)
+            if idx is not None:
+                train_indices.append(idx)
     
-    # 子图1: 每用户准确率
-    plt.subplot(2, 2, 1)
-    plt.bar(user_ids, accuracies)
-    plt.axhline(y=overall_accuracy, color='r', linestyle='--', label=f'Overall: {overall_accuracy:.3f}')
-    plt.title('Accuracy per User')
-    plt.xlabel('User ID')
-    plt.ylabel('Accuracy')
-    plt.legend()
+    # 处理验证集
+    for user_id, file_paths in split_data['val'].items():
+        user_val_counts[user_id] = len(file_paths)
+        for file_path in file_paths:
+            idx = find_matching_index(file_path)
+            if idx is not None:
+                val_indices.append(idx)
     
-    # 子图2: 每用户高置信度比例
-    plt.subplot(2, 2, 2)
-    plt.bar(user_ids, high_conf_ratios)
-    plt.axhline(y=high_conf_ratio, color='r', linestyle='--', label=f'Overall: {high_conf_ratio:.3f}')
-    plt.title('High-Confidence Ratio per User')
-    plt.xlabel('User ID')
-    plt.ylabel('High-Confidence Ratio')
-    plt.legend()
+    # 输出每个用户的划分统计
+    print(f"📊 数据集划分统计:")
+    for user_id in sorted(user_train_counts.keys(), key=lambda x: int(x.split('_')[1])):
+        train_count = user_train_counts.get(user_id, 0)
+        val_count = user_val_counts.get(user_id, 0)
+        print(f"   {user_id}: 训练集 {train_count} 张, 验证集 {val_count} 张")
     
-    # 子图3: 每用户高置信度样本准确率
-    plt.subplot(2, 2, 3)
-    plt.bar(user_ids, high_conf_accuracies)
-    plt.axhline(y=high_conf_accuracy, color='r', linestyle='--', label=f'Overall: {high_conf_accuracy:.3f}')
-    plt.title('High-Confidence Sample Accuracy per User')
-    plt.xlabel('User ID')
-    plt.ylabel('Accuracy')
-    plt.legend()
+    total_train = len(train_indices)
+    total_val = len(val_indices)
+    print(f"\n📋 总计: 训练集 {total_train} 样本, 验证集 {total_val} 样本")
     
-    # 子图4: 置信度分布
-    plt.subplot(2, 2, 4)
-    plt.hist(results['max_probs'], bins=50, alpha=0.7, edgecolor='black')
-    plt.axvline(x=confidence_threshold, color='r', linestyle='--', 
-               label=f'Threshold: {confidence_threshold}')
-    plt.title('Confidence Score Distribution')
-    plt.xlabel('Max Probability')
-    plt.ylabel('Count')
-    plt.legend()
+    # 创建数据集子集
+    train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    val_dataset = torch.utils.data.Subset(dataset, val_indices)
     
-    plt.tight_layout()
-    plt.savefig(output_dir / 'evaluation_charts.png', dpi=300, bbox_inches='tight')
-    plt.close()
+    print(f"✅ 训练集: {len(train_dataset)} 样本")
+    print(f"✅ 验证集: {len(val_dataset)} 样本")
     
-    print(f"Evaluation report saved to {report_path}")
-    print(f"Text report saved to {text_report_path}")
-    print(f"Charts saved to {output_dir / 'evaluation_charts.png'}")
-    
-    return report
+    return train_dataset, val_dataset
 
 def main():
-    parser = argparse.ArgumentParser(description='Evaluate generated samples')
-    parser.add_argument('--generated_dir', type=str, required=True, help='Directory with generated samples')
-    parser.add_argument('--classifier_path', type=str, required=True, help='Path to trained classifier')
-    parser.add_argument('--output_dir', type=str, default='./evaluation_results', help='Output directory')
-    parser.add_argument('--confidence_threshold', type=float, default=0.9, help='Confidence threshold')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size for evaluation')
+    parser = argparse.ArgumentParser(description='Train user classifier')
+    parser.add_argument('--data_dir', type=str, required=True, help='Path to original image dataset')
+    parser.add_argument('--output_dir', type=str, default='./classifier_output', help='Output directory for model and logs')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
+    parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--num_classes', type=int, default=31, help='Number of users')
+    parser.add_argument('--train_ratio', type=float, default=0.8, help='Training set ratio') 
     
     args = parser.parse_args()
     
@@ -365,37 +257,138 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 加载分类器
-    print("Loading classifier...")
-    classifier = load_classifier(args.classifier_path, device)
-    
     # 创建数据变换
     transform = create_transforms()
     
-    # 加载生成样本数据集
-    print("Loading generated samples...")
-    dataset = GeneratedSampleDataset(args.generated_dir, transform=transform)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
+    # 加载数据集
+    print("Loading dataset...")
+    full_dataset = MicroDopplerDataset(args.data_dir, transform=transform)
     
-    # 评估样本
-    print(f"Evaluating samples with confidence threshold {args.confidence_threshold}...")
-    results, user_stats = evaluate_samples(classifier, dataloader, device, args.confidence_threshold)
+    # 使用预设划分文件（如果存在）
+    split_file = '/kaggle/working/dataset_split.json'
+    train_dataset, val_dataset = load_dataset_split(full_dataset, split_file)
     
-    # 保存高置信度样本
-    print("Saving high-confidence samples...")
-    saved_count, saved_correct = save_high_confidence_samples(results, args.output_dir, args.confidence_threshold)
+    # 创建数据加载器
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)
     
-    # 生成评估报告
-    print("Generating evaluation report...")
-    report = generate_evaluation_report(results, user_stats, args.output_dir, args.confidence_threshold)
+    # 创建模型
+    print("Creating ResNet18 model...")
+    model = timm.create_model('resnet18', pretrained=True, num_classes=args.num_classes)
+    model = model.to(device)
     
-    # 打印总结
-    print(f"\n=== EVALUATION SUMMARY ===")
-    print(f"Total samples evaluated: {len(results['predictions'])}")
-    print(f"Overall accuracy: {report['evaluation_summary']['overall_accuracy']:.3f} ({report['evaluation_summary']['overall_accuracy']*100:.1f}%)")
-    print(f"High-confidence samples: {report['evaluation_summary']['high_confidence_samples']} ({report['evaluation_summary']['high_confidence_ratio']*100:.1f}%)")
-    print(f"High-confidence accuracy: {report['evaluation_summary']['high_confidence_accuracy']:.3f} ({report['evaluation_summary']['high_confidence_accuracy']*100:.1f}%)")
-    print(f"High-confidence samples saved: {saved_count}")
+    # 定义损失函数和优化器
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+    
+    # 训练历史
+    history = {
+        'train_loss': [],
+        'train_acc': [],
+        'val_loss': [],
+        'val_acc': []
+    }
+    
+    best_val_acc = 0
+    best_model_state = None
+    early_stop_patience = 10  # 10个epoch早停
+    early_stop_counter = 0
+    
+    print(f"\nStarting training for {args.epochs} epochs (Early stopping: {early_stop_patience} epochs)...")
+    for epoch in range(args.epochs):
+        print(f"\nEpoch {epoch+1}/{args.epochs}")
+        
+        # 训练
+        train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device)
+        
+        # 验证
+        val_loss, val_acc, val_preds, val_labels = validate_epoch(model, val_loader, criterion, device)
+        
+        # 更新学习率
+        scheduler.step()
+        
+        # 记录历史
+        history['train_loss'].append(train_loss)
+        history['train_acc'].append(train_acc)
+        history['val_loss'].append(val_loss)
+        history['val_acc'].append(val_acc)
+        
+        print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
+        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
+        
+        # 保存最佳模型和早停检查
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_model_state = model.state_dict().copy()
+            early_stop_counter = 0  # 重置早停计数器
+            print(f"🎯 New best validation accuracy: {best_val_acc:.2f}%")
+        else:
+            early_stop_counter += 1
+            print(f"📈 Early stopping counter: {early_stop_counter}/{early_stop_patience}")
+            
+            # 早停检查
+            if early_stop_counter >= early_stop_patience:
+                print(f"🛑 Early stopping triggered! No improvement for {early_stop_patience} epochs")
+                print(f"🏆 Best validation accuracy: {best_val_acc:.2f}%")
+                break
+    
+    # 保存最佳模型
+    model_path = output_dir / 'best_classifier.pth'
+    torch.save({
+        'model_state_dict': best_model_state,
+        'best_val_acc': best_val_acc,
+        'num_classes': args.num_classes,
+        'model_name': 'resnet18'
+    }, model_path)
+    print(f"Best model saved to {model_path}")
+    
+    # 保存训练历史
+    history_path = output_dir / 'training_history.json'
+    with open(history_path, 'w') as f:
+        json.dump(history, f, indent=2)
+    
+    # 绘制训练曲线
+    plt.figure(figsize=(12, 4))
+    
+    plt.subplot(1, 2, 1)
+    plt.plot(history['train_loss'], label='Train')
+    plt.plot(history['val_loss'], label='Validation')
+    plt.title('Loss')
+    plt.legend()
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    
+    plt.subplot(1, 2, 2)
+    plt.plot(history['train_acc'], label='Train')
+    plt.plot(history['val_acc'], label='Validation')
+    plt.title('Accuracy')
+    plt.legend()
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy (%)')
+    
+    plt.tight_layout()
+    plt.savefig(output_dir / 'training_curves.png')
+    plt.close()
+    
+    # 最终验证报告
+    model.load_state_dict(best_model_state)
+    val_loss, val_acc, val_preds, val_labels = validate_epoch(model, val_loader, criterion, device)
+    
+    # 生成分类报告
+    report = classification_report(val_labels, val_preds, target_names=[f'User_{i:02d}' for i in range(args.num_classes)])
+    
+    report_path = output_dir / 'classification_report.txt'
+    with open(report_path, 'w') as f:
+        f.write(f"Best Validation Accuracy: {best_val_acc:.2f}%\n\n")
+        f.write("Classification Report:\n")
+        f.write(report)
+    
+    print(f"\nTraining completed!")
+    print(f"Best validation accuracy: {best_val_acc:.2f}%")
+    print(f"Model saved to: {model_path}")
+    print(f"Training history saved to: {history_path}")
+    print(f"Classification report saved to: {report_path}")
 
 if __name__ == "__main__":
     main()
