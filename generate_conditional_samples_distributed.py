@@ -341,8 +341,9 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                         torch.save({'mean': mean, 'std': std}, './latents_safetensors/train/latents_stats.pt')
                         print(f"✅ 从数据集计算统计完成，已保存到 ./latents_safetensors/train/latents_stats.pt")
                         
-                        # 反归一化
-                        samples_denorm = samples * std + mean
+                        # 反归一化（与官方公式保持一致）
+                        latent_multiplier = 1.0  # VA-VAE使用1.0
+                        samples_denorm = (samples * std) / latent_multiplier + mean
                         
                         if rank == 0 and batch_idx == 0:
                             print(f"🔍 反归一化后范围: [{samples_denorm.min():.3f}, {samples_denorm.max():.3f}], 标准差: {samples_denorm.std():.3f}")
@@ -392,7 +393,7 @@ def main():
                        default='configs/dit_s_microdoppler.yaml', 
                        help='Config file path')
     parser.add_argument('--output_dir', type=str, default='./generated_samples', help='Output directory')
-    parser.add_argument('--num_samples', type=int, default=200, help='Samples per user')
+    parser.add_argument('--num_samples', '--samples_per_user', type=int, default=200, help='Samples per user')
     parser.add_argument('--cfg_scale', type=float, default=10.0, help='CFG scale（与配置文件一致）')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
