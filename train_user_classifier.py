@@ -26,16 +26,28 @@ class MicroDopplerDataset(Dataset):
         self.samples = []
         
         # 扫描所有用户目录（适配实际数据集格式：ID1, ID2, etc.）
+        user_mapping = {}  # 调试映射
         for user_dir in sorted(self.data_dir.glob("ID*")):
             if user_dir.is_dir():
                 # 从ID1, ID2, ... 转换为 0, 1, 2, ...
                 user_id = int(user_dir.name.replace('ID', '')) - 1  # ID1 -> 0, ID2 -> 1, etc.
+                user_mapping[user_dir.name] = user_id
                 
                 # 扫描该用户的所有图像（支持jpg和png）
+                img_count = 0
                 for img_path in list(user_dir.glob("*.jpg")) + list(user_dir.glob("*.png")):
                     self.samples.append((str(img_path), user_id))
+                    img_count += 1
+                
+                if img_count > 0:
+                    print(f"  {user_dir.name} -> user_id {user_id}: {img_count} images")
         
-        print(f"Found {len(self.samples)} samples from {len(set([s[1] for s in self.samples]))} users")
+        unique_users = sorted(set([s[1] for s in self.samples]))
+        print(f"\n📊 映射检查:")
+        print(f"Found {len(self.samples)} samples from {len(unique_users)} users")
+        print(f"User ID range: {min(unique_users)} to {max(unique_users)}")
+        print(f"Directory mapping: {user_mapping}")
+        print(f"Expected classes for model: 0-30 + null(31) = 32 total")
     
     def __len__(self):
         return len(self.samples)
