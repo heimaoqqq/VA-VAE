@@ -315,7 +315,7 @@ def do_train(train_config, accelerator):
     # Early stopping variables
     best_val_loss = float('inf')
     patience_counter = 0
-    early_stopping_patience = train_config['train'].get('early_stopping_patience', 10)
+    early_stopping_patience = train_config['train'].get('early_stopping_patience', 12)
     use_checkpoint = train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {use_checkpoint}")
