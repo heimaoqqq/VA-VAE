@@ -182,7 +182,14 @@ def save_high_confidence_samples(results, output_dir, confidence_threshold=0.9):
             name_parts = original_filename.split('.')
             
             # 简化文件名，只包含置信度信息
-            conf_value = confidence.item() if hasattr(confidence, 'item') else confidence
+            if hasattr(confidence, 'item'):
+                try:
+                    conf_value = confidence.item()
+                except ValueError:
+                    # 如果是多元素数组，取第一个元素
+                    conf_value = float(confidence.flatten()[0])
+            else:
+                conf_value = float(confidence)
             new_filename = f"{name_parts[0]}_conf{conf_value:.3f}.{name_parts[1]}"
             new_path = user_dir / new_filename
             
