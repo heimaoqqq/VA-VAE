@@ -28,27 +28,27 @@ model:
   wo_shift: false                 # 不使用shift
   in_chans: 32                    # VA-VAE的32个通道
   use_checkpoint: false           # 小模型不需要梯度检查点
-  class_dropout_prob: 0.20        # 进一步增强CFG正则化以防过拟合
+  class_dropout_prob: 0.0         # 完全不dropout，强制保留所有条件信息（经验证的做法）
 
 # Training configuration
 train:
-  max_steps: 50000               # 延长训练，模型仍在学习中
+  max_steps: 50000               # 延长训练以充分学习用户特征
   global_batch_size: 16           # 平衡过拟合防止和GPU利用率的折中方案
   global_seed: 0
   output_dir: '/kaggle/working/VA-VAE/outputs'
-  exp_name: 'dit_s_microdoppler_bs16_detail_optimized'
+  exp_name: 'dit_s_microdoppler_safer'  # 保守方案
   ckpt: null                      # DiT-S暂无预训练权重，考虑使用DiT-L+智能初始化
   log_every: 1000                 # 日志频率
   ckpt_every: 2000               # 每2000步评估和保存
   resume: false                   # 不恢复训练
-  early_stopping_patience: 12     # 增加耐心，验证损失仍在缓慢下降
+  early_stopping_patience: 8      # 稍微延长耐心
   ema_decay: 0.999               # 小数据集优化的EMA衰减率
 
 # Optimizer configuration (小批次优化配置)
 optimizer:
-  lr: 0.0001                      # 小批次适用的学习率
+  lr: 0.00005                     # 降低学习率以稳定训练
   beta2: 0.99                     # 提高beta2适应更noisy的梯度
-  max_grad_norm: 0.5              # 更严格梯度裁剪适应小批次噪声
+  max_grad_norm: 1.0              # 标准梯度裁剪
   weight_decay: 0.01              # 增加权重衰减以防过拟合
 
 # Transport configuration (Rectified Flow官方优化)
@@ -73,8 +73,8 @@ sample:
   rtol: 0.001
   reverse: false
   likelihood: false
-  num_sampling_steps: 200         # 平衡质量和推理速度
-  cfg_scale: 7.0                  # 降低CFG避免过度引导丢失微动细节
+  num_sampling_steps: 300         # 增加采样步数以提高质量
+  cfg_scale: 10.0                 # 提高CFG增强条件引导（经验证的做法）
   per_proc_batch_size: 4
   cfg_interval_start: 0.11
   timestep_shift: 0.1             # 保留更多早期去噪过程
