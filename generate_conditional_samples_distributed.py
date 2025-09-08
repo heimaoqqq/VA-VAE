@@ -310,7 +310,7 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
             # 🔴 关键步骤：反归一化！（完全按照官方train_dit_s_official.py实现）
             # 官方公式：samples_denorm = (samples * std) / latent_multiplier + mean
             # 因为训练时做了：feature = (feature - mean) / std * latent_multiplier
-            latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
+            latent_stats_path = '/kaggle/working/latents_safetensors/train/latent_stats.pt'
             if os.path.exists(latent_stats_path):
                 stats = torch.load(latent_stats_path, map_location=device)
                 mean = stats['mean'].to(device)  # [32, 1, 1]
@@ -378,7 +378,7 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                 except Exception as e:
                     if rank == 0:
                         print(f"❌ VAE解码失败: {e}")
-                sample_idx += 1
+                sample_idx += current_batch_size  # 修复：按batch大小递增
     
     # 等待所有进程完成
     if world_size > 1:
