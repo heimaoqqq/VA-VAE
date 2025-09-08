@@ -213,7 +213,6 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                         std = std.squeeze(0)    # [32, 1, 1]
                         
                         # 保存统计文件供下次使用
-                        import os
                         os.makedirs('./latents_safetensors/train', exist_ok=True)
                         torch.save({'mean': mean, 'std': std}, './latents_safetensors/train/latent_stats.pt')
                         print(f"✅ 从数据集计算统计完成，已保存到 ./latents_safetensors/train/latent_stats.pt")
