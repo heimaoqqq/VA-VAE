@@ -32,16 +32,16 @@ model:
 
 # Training configuration
 train:
-  max_steps: 30000               # 提高上限，依靠早停机制防止过拟合
+  max_steps: 50000               # 延长训练，模型仍在学习中
   global_batch_size: 16           # 平衡过拟合防止和GPU利用率的折中方案
   global_seed: 0
   output_dir: '/kaggle/working/VA-VAE/outputs'
-  exp_name: 'dit_s_microdoppler_bs24_balanced'
+  exp_name: 'dit_s_microdoppler_bs16_detail_optimized'
   ckpt: null                      # DiT-S暂无预训练权重，考虑使用DiT-L+智能初始化
   log_every: 1000                 # 日志频率
   ckpt_every: 2000               # 每2000步评估和保存
   resume: false                   # 不恢复训练
-  early_stopping_patience: 5      # 增加耐心值，给模型更多收敛机会
+  early_stopping_patience: 8      # 进一步增加耐心，模型仍在收敛
 
 # Optimizer configuration (小批次优化配置)
 optimizer:
@@ -50,26 +50,30 @@ optimizer:
   max_grad_norm: 0.5              # 更严格梯度裁剪适应小批次噪声
   weight_decay: 0.005             # 减少权重衰减（小批次已提供正则化）
 
-# Transport configuration (Rectified Flow，与官方一致)
+# Transport configuration (Rectified Flow官方优化)
 transport:
   path_type: Linear
   prediction: velocity
   loss_weight: null
   sample_eps: null
   train_eps: null
-  use_lognorm: true               # 使用lognorm
-  use_cosine_loss: true           # 使用余弦损失
+  use_lognorm: true               # 启用logit_normal采样(官方固定mu=0,sigma=1)
+  use_cosine_loss: true           # 使用余弦损失提升训练稳定性
+  # 官方高级优化参数
+  partitial_train: null           # 部分时间步训练（高级技术）
+  partial_ratio: 1.0              # 部分训练比例
+  shift_lg: false                 # 不使用shifted logit-normal
 
-# Sampling configuration (推理时使用)
+# Sampling configuration (微多普勒优化版)
 sample:
   mode: ODE
-  sampling_method: euler          # 使用euler采样
+  sampling_method: 'dopri5'       # 高精度自适应求解器，更适合时频图像细节
   atol: 0.000001
   rtol: 0.001
   reverse: false
   likelihood: false
-  num_sampling_steps: 300         # 采样步数
-  cfg_scale: 10.0                 # 条件生成使用CFG=10.0
+  num_sampling_steps: 300         # 平衡质量和推理速度
+  cfg_scale: 7.0                  # 降低CFG避免过度引导丢失微动细节
   per_proc_batch_size: 4
   cfg_interval_start: 0.11
-  timestep_shift: 0.1
+  timestep_shift: 0.1             # 保留更多早期去噪过程
