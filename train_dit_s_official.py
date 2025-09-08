@@ -201,12 +201,20 @@ def do_train(train_config, accelerator):
         train_config['transport']['sample_eps'],
         use_cosine_loss = train_config['transport']['use_cosine_loss'] if 'use_cosine_loss' in train_config['transport'] else False,
         use_lognorm = train_config['transport']['use_lognorm'] if 'use_lognorm' in train_config['transport'] else False,
-    )  # default: velocity; 
+        partitial_train = train_config['transport']['partitial_train'] if 'partitial_train' in train_config['transport'] else None,
+        partial_ratio = train_config['transport']['partial_ratio'] if 'partial_ratio' in train_config['transport'] else 1.0,
+        shift_lg = train_config['transport']['shift_lg'] if 'shift_lg' in train_config['transport'] else False,
+    )  # 完整的官方transport配置 
     if accelerator.is_main_process:
         print(f"[MAIN PROCESS] LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
         print(f"[MAIN PROCESS] Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
         print(f'[MAIN PROCESS] Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
         print(f'[MAIN PROCESS] Use cosine loss: {train_config["transport"]["use_cosine_loss"]}')
+        # 打印采样配置信息
+        sample_config = train_config.get('sample', {})
+        print(f'[MAIN PROCESS] Sampling method: {sample_config.get("sampling_method", "euler")}')
+        print(f'[MAIN PROCESS] Sampling steps: {sample_config.get("num_sampling_steps", "dynamic")}')
+        print(f'[MAIN PROCESS] CFG scale: {sample_config.get("cfg_scale", "dynamic")}')
         logger.info(f"LightningDiT Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
         logger.info(f"Optimizer: AdamW, lr={train_config['optimizer']['lr']}, beta2={train_config['optimizer']['beta2']}")
         logger.info(f'Use lognorm sampling: {train_config["transport"]["use_lognorm"]}')
@@ -460,21 +468,25 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
         # 打印调试信息
         print(f"[SAMPLING DEBUG] Initial noise stats: mean={z.mean():.3f}, std={z.std():.3f}")
         
-        # 使用官方采样配置
-        num_steps = 50 if step < 5000 else 250
-        cfg_scale = 10.0 if step >= 10000 else 1.0  # 训练后期启用CFG，官方推荐10.0
-        cfg_interval_start = 0.11                  # 官方CFG间隔设置
-        timestep_shift = 0.1                       # 用户指定的timestep shift
+        # 使用配置文件中的采样设置（而非硬编码）
+        sample_config = train_config.get('sample', {})
+        num_steps = sample_config.get('num_sampling_steps', 50 if step < 5000 else 250)
+        cfg_scale = sample_config.get('cfg_scale', 10.0 if step >= 10000 else 1.0)
+        cfg_interval_start = sample_config.get('cfg_interval_start', 0.11)
+        timestep_shift = sample_config.get('timestep_shift', 0.1)
+        sampling_method = sample_config.get('sampling_method', 'euler')
+        atol = sample_config.get('atol', 1e-6)
+        rtol = sample_config.get('rtol', 1e-3)
         using_cfg = cfg_scale > 1.0
         
         sampler = Sampler(transport)
         sample_fn = sampler.sample_ode(
-            sampling_method='euler',        # 官方使用euler
-            num_steps=num_steps,            
-            atol=1e-6,                     # 官方配置
-            rtol=1e-3,                     # 官方配置
-            reverse=False,                 # 官方配置
-            timestep_shift=timestep_shift, # 设置为0.1
+            sampling_method=sampling_method,   # 从配置读取（dopri5或euler）
+            num_steps=num_steps,               # 从配置读取（300步）
+            atol=atol,                         # 从配置读取
+            rtol=rtol,                         # 从配置读取  
+            reverse=sample_config.get('reverse', False),
+            timestep_shift=timestep_shift,     # 从配置读取
         )
         
         # 按照官方方式实现CFG
@@ -489,12 +501,12 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
             samples = sample_fn(z_cfg, ema_model.forward_with_cfg, **model_kwargs)
             samples = samples[-1]  # 获取最终时间步的样本
             samples, _ = samples.chunk(2, dim=0)  # 去掉null class样本
-            print(f"[SAMPLING DEBUG] Using CFG with scale={cfg_scale}")
+            print(f"[SAMPLING DEBUG] Using CFG with scale={cfg_scale}, method={sampling_method}, steps={num_steps}")
         else:
             # 标准采样
             samples = sample_fn(z, ema_model, **dict(y=y))
             samples = samples[-1]  # 获取最终时间步的样本
-            print(f"[SAMPLING DEBUG] Using standard sampling (no CFG)")
+            print(f"[SAMPLING DEBUG] Using standard sampling (no CFG), method={sampling_method}, steps={num_steps}")
         
         # 修复维度问题：确保samples是4D张量 [batch, channels, height, width]
         if samples.dim() == 5:
