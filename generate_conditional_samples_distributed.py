@@ -101,14 +101,14 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                                         output_dir, cfg_scale=10.0, seed=42, batch_size=16, 
                                         rank=0, world_size=1):
     """分布式生成指定用户的条件样本"""
-    # 创建采样函数
+    # 创建采样函数（与官方train_dit_s_official.py保持一致）
     sample_fn = sampler.sample_ode(
-        sampling_method="dopri5",
-        num_steps=50,
-        atol=1e-5,
-        rtol=1e-4,
+        sampling_method="dopri5",  # 高精度ODE求解器
+        num_steps=300,             # 使用300步以获得高质量
+        atol=1e-6,                 # 更严格的误差容限
+        rtol=1e-3,                 
         reverse=False,
-        timestep_shift=0.0,
+        timestep_shift=0.1,        # 与官方配置一致
     )
     
     # 计算每个进程处理的样本数
@@ -154,11 +154,16 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                 y_null = torch.tensor([31] * current_batch_size, device=device)
                 y_cfg = torch.cat([y, y_null], 0)
                 
-                # 手动实现CFG
+                # 手动实现CFG（与官方train_dit_s_official.py一致）
                 def model_fn(x, t):
-                    pred = model(x, t, y=y_cfg)
-                    pred_cond, pred_uncond = pred.chunk(2, dim=0)
-                    return pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+                    # 使用模型的forward_with_cfg方法（如果存在）
+                    if hasattr(model, 'forward_with_cfg'):
+                        return model.forward_with_cfg(x, t, y=y_cfg, cfg_scale=cfg_scale)
+                    else:
+                        # 手动实现CFG
+                        pred = model(x, t, y=y_cfg)
+                        pred_cond, pred_uncond = pred.chunk(2, dim=0)
+                        return pred_uncond + cfg_scale * (pred_cond - pred_uncond)
                 
                 samples = sample_fn(z_cfg, model_fn)
                 samples = samples[-1]
@@ -172,14 +177,36 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
             
             # 检查latent范围 (仅rank 0输出)
             if rank == 0 and batch_idx == 0:
-                print(f"🔍 Latent范围: [{samples.min():.3f}, {samples.max():.3f}], 标准差: {samples.std():.3f}")
+                print(f"🔍 生成的Latent范围: [{samples.min():.3f}, {samples.max():.3f}], 标准差: {samples.std():.3f}")
             
-            # VAE解码
-            images = vae.decode(samples)
+            # 🔴 关键步骤：反归一化！
+            # 训练时做了: feature = (feature - mean) / std * latent_multiplier
+            # 所以推理时需要: samples = samples / latent_multiplier * std + mean
+            latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
+            if os.path.exists(latent_stats_path):
+                stats = torch.load(latent_stats_path, map_location=device)
+                mean = stats['mean'].to(device)  # [32, 1, 1]
+                std = stats['std'].to(device)     # [32, 1, 1]
+                latent_multiplier = 1.0  # VA-VAE使用1.0
+                
+                # 反归一化公式（与train_dit_s_official.py完全一致）
+                samples_denorm = (samples * std) / latent_multiplier + mean
+                
+                if rank == 0 and batch_idx == 0:
+                    print(f"🔍 反归一化后范围: [{samples_denorm.min():.3f}, {samples_denorm.max():.3f}], 标准差: {samples_denorm.std():.3f}")
+                    print(f"📊 使用统计信息: mean shape={mean.shape}, std shape={std.shape}")
+            else:
+                if rank == 0:
+                    print(f"⚠️ 警告: 找不到latent统计文件 {latent_stats_path}")
+                    print(f"⚠️ 跳过反归一化步骤，可能导致生成噪声！")
+                samples_denorm = samples
+            
+            # VAE解码（使用反归一化后的latent）
+            images = vae.decode(samples_denorm)
             
             # 检查解码后范围 (仅rank 0输出)
             if rank == 0 and batch_idx == 0:
-                print(f"🔍 解码后范围: [{images.min():.3f}, {images.max():.3f}], 标准差: {images.std():.3f}")
+                print(f"🔍 解码后图像范围: [{images.min():.3f}, {images.max():.3f}], 标准差: {images.std():.3f}")
             
             # 后处理：[0,1] -> [0,255]
             images = torch.clamp(images, 0, 1)
