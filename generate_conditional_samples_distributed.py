@@ -179,8 +179,11 @@ def load_model_and_config(checkpoint_path, config_path, local_rank):
         try:
             # 使用官方VA_VAE类加载
             vae = VA_VAE(temp_config_path)
-            vae = vae.to(device)
-            vae.eval()
+            # 检查是否有.to()方法（与官方train_dit_s_official.py一致）
+            if hasattr(vae, 'to'):
+                vae = vae.to(device)
+            if hasattr(vae, 'eval'):
+                vae.eval()
             if local_rank == 0:
                 print(f"✅ VAE加载完成: {custom_vae_checkpoint}")
         finally:
