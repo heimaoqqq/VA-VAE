@@ -105,33 +105,19 @@ def main(args):
     """
     print("🚀 开始提取微多普勒latent特征...")
     
-    # 初始化分布式环境（支持torchrun）
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        # torchrun分布式模式
-        torch.distributed.init_process_group(backend='nccl')
-        local_rank = int(os.environ.get('LOCAL_RANK', 0))
-        world_size = int(os.environ.get('WORLD_SIZE', 1))
-        rank = int(os.environ.get('RANK', 0))
+    # 设置分布式和设备
+    if 'RANK' in os.environ:
+        rank = int(os.environ['RANK'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
         
         torch.cuda.set_device(local_rank)
+        torch.distributed.init_process_group(backend='nccl')
         device = local_rank
-        
-        print(f"🚀 分布式模式 - Rank: {rank}/{world_size}, 本地GPU: {local_rank}")
-    elif torch.cuda.is_available():
-        # 单机多GPU模式
-        num_gpus = torch.cuda.device_count()
-        print(f"🔧 检测到 {num_gpus} 个GPU，使用DataParallel模式")
-        device = 0
-        torch.cuda.set_device(device)
-        local_rank = 0
-        world_size = 1
-        rank = 0
     else:
-        device = 'cpu'
-        local_rank = 0
-        world_size = 1
-        rank = 0
-        print("⚠️ 未检测到GPU，使用CPU")
+        device = 0 if torch.cuda.is_available() else 'cpu'
+        torch.cuda.set_device(device) if torch.cuda.is_available() else None
+        print(f"📊 单进程模式 - 使用设备 {device}")
     
     # 设置输出目录
     output_dir = os.path.join(args.output_path, args.split)
@@ -218,27 +204,6 @@ def main(args):
     # 初始化VA-VAE
     vae = VA_VAE(temp_config_path)
     
-    # 多GPU支持 - 分布式优先，DataParallel作为备选
-    if 'RANK' in os.environ and torch.distributed.is_initialized():
-        # 分布式模式 - 每个进程处理自己的GPU
-        print(f"📊 分布式模式 - 进程 {rank} 使用 GPU {local_rank}")
-    elif torch.cuda.is_available() and torch.cuda.device_count() > 1:
-        # DataParallel模式（性能较低但简单）
-        original_model = vae.model
-        vae.model = torch.nn.DataParallel(original_model)
-        
-        # 添加encode和decode方法的兼容性包装
-        def encode_compatible(images):
-            return vae.model.module.encode(images)
-        
-        def decode_compatible(latents):
-            return vae.model.module.decode(latents)
-        
-        vae.model.encode = encode_compatible
-        vae.model.decode = decode_compatible
-        
-        print(f"📊 DataParallel模式 - 使用 {torch.cuda.device_count()} 个GPU")
-    
     # VA_VAE的model已经在load()中设置为.cuda().eval()，无需再次设置
     print("✅ VA-VAE模型加载完成")
     
@@ -249,47 +214,13 @@ def main(args):
     transform = create_transform(vae)
     dataset = MicrodopplerDataset(image_paths, transform=transform)
     
-    # 分布式数据加载器配置
-    if 'RANK' in os.environ and torch.distributed.is_initialized():
-        # 手动精确分割，避免重复或丢失样本
-        total_samples = len(dataset)
-        samples_per_process = total_samples // world_size
-        remainder = total_samples % world_size
-        
-        # 计算当前进程的样本范围
-        if rank < remainder:
-            # 前remainder个进程多分配1个样本
-            start_idx = rank * (samples_per_process + 1)
-            end_idx = start_idx + samples_per_process + 1
-        else:
-            # 后续进程正常分配
-            start_idx = remainder * (samples_per_process + 1) + (rank - remainder) * samples_per_process
-            end_idx = start_idx + samples_per_process
-            
-        # 创建自定义索引
-        indices = list(range(start_idx, end_idx))
-        sampler = torch.utils.data.sampler.SubsetRandomSampler(indices)
-        
-        effective_batch_size = args.batch_size
-        actual_samples = len(indices)
-        print(f"📊 精确分割 - 进程 {rank} 处理样本 [{start_idx}:{end_idx}] = {actual_samples} 个样本")
-        print(f"   总样本数验证: {total_samples}, 当前进程: {actual_samples}")
-    else:
-        # 常规模式
-        sampler = None
-        effective_batch_size = args.batch_size
-        if torch.cuda.device_count() > 1:
-            print(f"📊 DataParallel模式，batch_size={effective_batch_size}")
-    
     loader = DataLoader(
         dataset,
-        batch_size=effective_batch_size,
-        shuffle=False if sampler is not None else False,
-        sampler=sampler,
+        batch_size=args.batch_size,
+        shuffle=False,
         num_workers=args.num_workers,
         pin_memory=True,
-        drop_last=False,
-        persistent_workers=True if args.num_workers > 0 else False
+        drop_last=False
     )
     
     total_data_in_loop = len(loader.dataset)
@@ -335,7 +266,7 @@ def main(args):
                 'labels': labels
             }
             
-            save_filename = os.path.join(output_dir, f'latents_rank{rank:02d}_shard{saved_files:03d}.safetensors')
+            save_filename = os.path.join(output_dir, f'latents_rank00_shard{saved_files:03d}.safetensors')
             save_file(
                 save_dict,
                 save_filename,
@@ -359,7 +290,7 @@ def main(args):
             'labels': labels
         }
         
-        save_filename = os.path.join(output_dir, f'latents_rank{rank:02d}_shard{saved_files:03d}.safetensors')
+        save_filename = os.path.join(output_dir, f'latents_rank00_shard{saved_files:03d}.safetensors')
         save_file(
             save_dict,
             save_filename,
@@ -367,24 +298,48 @@ def main(args):
         )
         print(f'💾 保存最终批次: {latents.shape[0]} 样本')
     
-    # 只在主进程计算统计信息
-    if rank == 0:
-        print("📊 计算统计信息...")
-        dataset = ImgLatentDataset(output_dir, latent_norm=True)
-        mean_tensor, std_tensor = dataset.get_latent_stats()  # 正确：返回tuple (mean, std)
-        
-        mean_range = f"[{mean_tensor.min():.3f}, {mean_tensor.max():.3f}]"
-        std_range = f"[{std_tensor.min():.3f}, {std_tensor.max():.3f}]"
-        print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
-        print(f'✅ 数据集包含 {len(dataset)} 个样本')
-        print('🎉 特征提取完成！可以开始训练了')
-    else:
-        print(f"📊 进程 {rank} 完成特征提取")
+    # 计算latent统计（官方方式）
+    print("📊 计算统计信息...")
+    dataset = ImgLatentDataset(output_dir, latent_norm=True)
+    mean_tensor, std_tensor = dataset.get_latent_stats()  # 正确：返回tuple (mean, std)
     
-    # 清理分布式环境
+    mean_range = f"[{mean_tensor.min():.3f}, {mean_tensor.max():.3f}]"
+    std_range = f"[{std_tensor.min():.3f}, {std_tensor.max():.3f}]"
+    print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
+    print(f'✅ 当前进程数据集包含 {len(dataset)} 个样本')
+    
+    # 🔍 添加总样本数统计（避免分布式处理的误解）
     if torch.distributed.is_initialized():
-        torch.distributed.destroy_process_group()
-        print(f"🧹 进程 {rank} 清理完成")
+        torch.distributed.barrier()  # 等待所有进程完成
+        
+        if torch.distributed.get_rank() == 0:
+            # 只让rank 0进程统计总数
+            print("🔢 统计所有进程处理的总样本数...")
+            total_samples = 0
+            safetensors_files = []
+            
+            for file_path in Path(output_dir).glob("*.safetensors"):
+                safetensors_files.append(file_path)
+                
+            from safetensors import safe_open
+            for file_path in safetensors_files:
+                try:
+                    with safe_open(file_path, framework="pt", device="cpu") as f:
+                        latents_shape = f.get_slice('latents').shape
+                        file_samples = latents_shape[0]
+                        total_samples += file_samples
+                        print(f"   📄 {file_path.name}: {file_samples} 样本")
+                except Exception as e:
+                    print(f"   ⚠️ 无法读取 {file_path.name}: {e}")
+            
+            print(f"📊 【总计】所有进程共处理 {total_samples} 个样本")
+            print(f"📁 输出目录: {output_dir}")
+            print(f"📄 生成了 {len(safetensors_files)} 个safetensors文件")
+    else:
+        # 单进程模式
+        print(f"📊 【总计】处理了 {len(dataset)} 个样本")
+    
+    print('🎉 特征提取完成！可以开始训练了')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="微多普勒特征提取")
