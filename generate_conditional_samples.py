@@ -131,18 +131,27 @@ def generate_samples_for_user(model, vae, transport, sampler, user_id, num_sampl
                 y_null = torch.tensor([31], device=device)  # null class
                 y_cfg = torch.cat([y, y_null], 0)
                 
-                model_kwargs = dict(y=y_cfg, cfg_scale=cfg_scale)
-                
-                # 使用正确的模型引用
+                # 创建模型包装函数
                 if torch.cuda.device_count() > 1:
-                    samples = sample_fn(z_cfg, model.module.forward_with_cfg, **model_kwargs)
+                    def model_fn(x, t):
+                        return model.module.forward_with_cfg(x, t, y=y_cfg, cfg_scale=cfg_scale)
                 else:
-                    samples = sample_fn(z_cfg, model.forward_with_cfg, **model_kwargs)
+                    def model_fn(x, t):
+                        return model.forward_with_cfg(x, t, y=y_cfg, cfg_scale=cfg_scale)
+                
+                samples = sample_fn(z_cfg, model_fn)
                 samples = samples[-1]
                 samples, _ = samples.chunk(2, dim=0)
             else:
-                model_kwargs = dict(y=y)
-                samples = sample_fn(z, model, **model_kwargs)
+                # 创建标准模型包装函数
+                if torch.cuda.device_count() > 1:
+                    def model_fn(x, t):
+                        return model.module(x, t, y=y)
+                else:
+                    def model_fn(x, t):
+                        return model(x, t, y=y)
+                
+                samples = sample_fn(z, model_fn)
                 samples = samples[-1]
             
             # 解码为图像
@@ -207,9 +216,9 @@ def main():
             cfg_scale=args.cfg_scale, seed=args.seed
         )
     
-    print(f"\nGeneration completed!")
-    print(f"Total samples: {(args.end_user - args.start_user) * args.samples_per_user}")
-    print(f"Output directory: {args.output_dir}")
+    print(f"\n🎉 生成完成!")
+    print(f"总样本数: {args.num_users * args.samples_per_user}")
+    print(f"输出目录: {args.output_dir}")
 
 if __name__ == "__main__":
     main()
