@@ -204,7 +204,7 @@ def load_dataset_split(dataset, split_file):
     
     # 处理验证集
     matched_val = 0
-    for file_path in split_data['validation']:
+    for file_path in split_data['val']:
         idx = find_matching_index(file_path)
         if idx is not None:
             val_indices.append(idx)
@@ -212,10 +212,10 @@ def load_dataset_split(dataset, split_file):
     
     print(f"🔍 路径匹配结果:")
     print(f"  训练集: {matched_train}/{len(split_data['train'])} 匹配成功")
-    print(f"  验证集: {matched_val}/{len(split_data['validation'])} 匹配成功")
+    print(f"  验证集: {matched_val}/{len(split_data['val'])} 匹配成功")
     
     # 如果匹配率太低，回退到随机划分
-    total_expected = len(split_data['train']) + len(split_data['validation'])
+    total_expected = len(split_data['train']) + len(split_data['val'])
     total_matched = matched_train + matched_val
     match_rate = total_matched / total_expected if total_expected > 0 else 0
     
