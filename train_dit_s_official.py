@@ -505,30 +505,18 @@ def generate_samples(ema_model, vae, transport, device, step, output_dir, num_sa
             timestep_shift=timestep_shift,     # 从配置读取
         )
         
-        # CFG实现：针对class_dropout_prob=0.0的特殊处理
+        # 标准CFG实现
         if using_cfg:
-            # 方法：使用零嵌入作为无条件，而不是特定的null类
+            # CFG需要双倍batch处理条件和无条件
             z_cfg = torch.cat([z, z], 0)
-            y_cfg = torch.cat([y, torch.zeros_like(y)], 0)  # 使用0作为无条件类（假设用户ID从0开始）
+            y_null = torch.tensor([31] * num_samples, device=device)  # null class
+            y_cfg = torch.cat([y, y_null], 0)
+            model_kwargs = dict(y=y_cfg, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
             
-            # 定义CFG包装函数
-            def cfg_model_fn(x, t, y):
-                # 分割条件和无条件批次
-                x_cond, x_uncond = x.chunk(2, dim=0)
-                y_cond, y_uncond = y.chunk(2, dim=0)
-                
-                # 分别预测
-                pred_cond = ema_model(x_cond, t, y=y_cond)
-                pred_uncond = ema_model(x_uncond, t, y=y_uncond)
-                
-                # CFG组合
-                pred = pred_uncond + cfg_scale * (pred_cond - pred_uncond)
-                return pred
-            
-            model_kwargs = dict(y=y_cfg)
-            samples = sample_fn(z_cfg, cfg_model_fn, **model_kwargs)
+            # 使用CFG前向传播
+            samples = sample_fn(z_cfg, ema_model.forward_with_cfg, **model_kwargs)
             samples = samples[-1]  # 获取最终时间步的样本
-            samples, _ = samples.chunk(2, dim=0)  # 取条件生成的部分
+            samples, _ = samples.chunk(2, dim=0)  # 去掉null class样本
             print(f"[SAMPLING DEBUG] Using CFG with scale={cfg_scale}, method={sampling_method}, steps={num_steps}")
         else:
             # 标准采样
