@@ -333,10 +333,21 @@ def main(args):
             for file_path in safetensors_files:
                 try:
                     with safe_open(file_path, framework="pt", device="cpu") as f:
-                        latents_shape = f.get_slice('latents').shape
-                        file_samples = latents_shape[0]
-                        total_samples += file_samples
-                        print(f"   📄 {file_path.name}: {file_samples} 样本")
+                        # 直接从metadata获取样本数信息
+                        metadata = f.metadata()
+                        if metadata and 'total_size' in metadata:
+                            file_samples = int(metadata['total_size'])
+                            total_samples += file_samples
+                            print(f"   📄 {file_path.name}: {file_samples} 样本")
+                        else:
+                            # 如果metadata不可用，加载tensor获取形状（作为fallback）
+                            if 'latents' in f.keys():
+                                latents = f.get_tensor('latents')
+                                file_samples = latents.shape[0]
+                                total_samples += file_samples
+                                print(f"   📄 {file_path.name}: {file_samples} 样本")
+                            else:
+                                print(f"   ⚠️ {file_path.name} 中没有找到 'latents' 键")
                 except Exception as e:
                     print(f"   ⚠️ 无法读取 {file_path.name}: {e}")
             
