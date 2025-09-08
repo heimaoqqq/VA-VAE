@@ -224,11 +224,11 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                                         output_dir, cfg_scale=10.0, seed=42, batch_size=16, 
                                         rank=0, world_size=1):
     """分布式生成指定用户的条件样本"""
-    # 创建采样器和采样函数 - 完全按照官方配置
+    # 创建采样器和采样函数 - 完全按照配置文件
     sampler = Sampler(transport)
     sample_fn = sampler.sample_ode(
         sampling_method="dopri5",      # 高精度ODE求解器
-        num_steps=150,                 # 采样步数
+        num_steps=300,                 # 采样步数（与配置文件一致）
         atol=1e-6,                     # 绝对误差容限
         rtol=1e-3,                     # 相对误差容限
         reverse=False,                 # 不反向采样
@@ -307,7 +307,7 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
             # 🔴 关键步骤：反归一化！（完全按照官方train_dit_s_official.py实现）
             # 官方公式：samples_denorm = (samples * std) / latent_multiplier + mean
             # 因为训练时做了：feature = (feature - mean) / std * latent_multiplier
-            latent_stats_path = './latents_safetensors/train/latents_stats.pt'
+            latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latents_stats.pt'
             if os.path.exists(latent_stats_path):
                 stats = torch.load(latent_stats_path, map_location=device)
                 mean = stats['mean'].to(device)  # [32, 1, 1]
