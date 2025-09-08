@@ -27,6 +27,9 @@ def load_model_and_config(checkpoint_path, config_path):
     
     # 创建模型
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"🚀 可用GPU数量: {torch.cuda.device_count()}")
+    if torch.cuda.device_count() > 1:
+        print(f"   将使用多GPU: {[torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}")
     
     # 创建DiT模型
     latent_size = config['data']['image_size'] // config['vae']['downsample_ratio']
@@ -43,26 +46,35 @@ def load_model_and_config(checkpoint_path, config_path):
         use_checkpoint=config['model'].get('use_checkpoint', False),
     ).to(device)
     
+    # 多GPU并行化
+    if torch.cuda.device_count() > 1:
+        print(f"🔧 启用多GPU并行化 ({torch.cuda.device_count()} GPUs)")
+        model = torch.nn.DataParallel(model)
+    
     # 加载checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
     # 处理EMA权重
     if 'ema' in checkpoint:
-        model.load_state_dict(checkpoint['ema'])
-        print(f"Loaded EMA model from {checkpoint_path}")
-    elif 'model' in checkpoint:
-        # 移除DDP前缀
-        state_dict = {}
-        for k, v in checkpoint['model'].items():
-            if k.startswith('module.'):
-                state_dict[k[7:]] = v
-            else:
-                state_dict[k] = v
-        model.load_state_dict(state_dict)
-        print(f"Loaded regular model from {checkpoint_path}")
+        state_dict = checkpoint['ema']
+        print("📦 使用EMA权重")
     else:
-        model.load_state_dict(checkpoint)
-        print(f"Loaded direct state dict from {checkpoint_path}")
+        state_dict = checkpoint.get('model', checkpoint)
+        print("📦 使用标准权重")
+    
+    # 清理键名
+    cleaned_state_dict = {}
+    for k, v in state_dict.items():
+        # 移除'module.'和'_orig_mod.'前缀
+        clean_key = k.replace('module.', '').replace('_orig_mod.', '')
+        cleaned_state_dict[clean_key] = v
+    
+    # 如果模型被DataParallel包装，需要添加module.前缀
+    if torch.cuda.device_count() > 1 and not any(k.startswith('module.') for k in cleaned_state_dict.keys()):
+        wrapped_state_dict = {f'module.{k}': v for k, v in cleaned_state_dict.items()}
+        model.load_state_dict(wrapped_state_dict, strict=False)
+    else:
+        model.load_state_dict(cleaned_state_dict, strict=False)
     
     model.eval()
     
@@ -86,54 +98,46 @@ def load_model_and_config(checkpoint_path, config_path):
     
     return model, vae, transport, config, device
 
-def generate_samples_for_user(model, vae, transport, config, device, user_id, num_samples, output_dir):
-    """为指定用户生成样本"""
+def generate_samples_for_user(model, vae, transport, sampler, user_id, num_samples, output_dir, cfg_scale=10.0, seed=42):
+    """为指定用户生成条件样本"""
+    # 创建采样函数
+    sample_fn = sampler.sample_ode
+    torch.manual_seed(seed + user_id)  # 每个用户使用不同种子
+    np.random.seed(seed + user_id)
+    
+    # 获取设备信息
+    if torch.cuda.device_count() > 1:
+        device = next(model.module.parameters()).device
+    else:
+        device = next(model.parameters()).device
+        
     user_dir = Path(output_dir) / f"user_{user_id:02d}"
     user_dir.mkdir(parents=True, exist_ok=True)
     
-    # 采样配置
-    sample_config = config.get('sample', {})
-    num_steps = sample_config.get('num_sampling_steps', 300)
-    cfg_scale = sample_config.get('cfg_scale', 10.0)
-    cfg_interval_start = sample_config.get('cfg_interval_start', 0.11)
-    timestep_shift = sample_config.get('timestep_shift', 0.1)
-    sampling_method = sample_config.get('sampling_method', 'dopri5')
-    atol = sample_config.get('atol', 1e-6)
-    rtol = sample_config.get('rtol', 1e-3)
-    using_cfg = cfg_scale > 1.0
-    
-    # 创建采样器
-    sampler = Sampler(transport)
-    sample_fn = sampler.sample_ode(
-        sampling_method=sampling_method,
-        num_steps=num_steps,
-        atol=atol,
-        rtol=rtol,
-        reverse=sample_config.get('reverse', False),
-        timestep_shift=timestep_shift,
-    )
-    
-    print(f"Generating {num_samples} samples for user {user_id}...")
-    print(f"Using CFG={cfg_scale}, steps={num_steps}, method={sampling_method}")
+    print(f"🎨 生成用户 {user_id} 的样本...")
     
     with torch.no_grad():
         for i in tqdm(range(num_samples), desc=f"User {user_id}"):
-            # 设置固定随机种子确保可重复性
-            torch.manual_seed(user_id * 10000 + i)
-            np.random.seed(user_id * 10000 + i)
+            # 准备条件
+            y = torch.tensor([user_id], device=device)
             
-            # 生成latent噪声
-            z = torch.randn(1, 32, 16, 16, device=device)
-            y = torch.tensor([user_id], dtype=torch.long, device=device)
+            # 创建随机噪声 - 修复：使用正确的latent维度
+            z = torch.randn(1, 32, 16, 16, device=device)  # [B, C, H, W]
             
             # CFG采样
-            if using_cfg:
+            if cfg_scale > 1.0:
+                # 构建CFG batch
                 z_cfg = torch.cat([z, z], 0)
                 y_null = torch.tensor([31], device=device)  # null class
                 y_cfg = torch.cat([y, y_null], 0)
-                model_kwargs = dict(y=y_cfg, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
                 
-                samples = sample_fn(z_cfg, model.forward_with_cfg, **model_kwargs)
+                model_kwargs = dict(y=y_cfg, cfg_scale=cfg_scale)
+                
+                # 使用正确的模型引用
+                if torch.cuda.device_count() > 1:
+                    samples = sample_fn(z_cfg, model.module.forward_with_cfg, **model_kwargs)
+                else:
+                    samples = sample_fn(z_cfg, model.forward_with_cfg, **model_kwargs)
                 samples = samples[-1]
                 samples, _ = samples.chunk(2, dim=0)
             else:
@@ -142,7 +146,7 @@ def generate_samples_for_user(model, vae, transport, config, device, user_id, nu
                 samples = samples[-1]
             
             # 解码为图像
-            images = vae.decode_latents(samples)
+            images = vae.decode(samples)
             
             # 后处理：[0,1] -> [0,255]
             images = torch.clamp(images, 0, 1)
@@ -160,32 +164,47 @@ def generate_samples_for_user(model, vae, transport, config, device, user_id, nu
             filename = user_dir / f"sample_{i:03d}.png"
             pil_image.save(filename)
     
-    print(f"Completed user {user_id}: {num_samples} samples saved to {user_dir}")
+    print(f"✅ 完成用户 {user_id}: {num_samples} 个样本已保存到 {user_dir}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate conditional samples for evaluation')
-    parser.add_argument('--checkpoint', type=str, required=True, help='Path to model checkpoint')
-    parser.add_argument('--config', type=str, required=True, help='Path to config file')
-    parser.add_argument('--output_dir', type=str, default='./generated_samples', help='Output directory')
-    parser.add_argument('--samples_per_user', type=int, default=200, help='Number of samples per user')
-    parser.add_argument('--start_user', type=int, default=0, help='Start user ID')
-    parser.add_argument('--end_user', type=int, default=31, help='End user ID (exclusive)')
+    parser = argparse.ArgumentParser(description='生成条件扩散样本')
+    parser.add_argument('--checkpoint', required=True, help='模型checkpoint路径')
+    parser.add_argument('--config', required=True, help='配置文件路径')
+    parser.add_argument('--vae_checkpoint', help='VAE checkpoint路径')
+    parser.add_argument('--output_dir', default='./generated_samples', help='输出目录')
+    parser.add_argument('--samples_per_user', type=int, default=200, help='每用户生成样本数')
+    parser.add_argument('--cfg_scale', type=float, default=10.0, help='CFG引导强度')
+    parser.add_argument('--seed', type=int, default=42, help='随机种子')
+    parser.add_argument('--num_users', type=int, default=31, help='用户数量')
+    parser.add_argument('--gpu_ids', type=str, default='0,1', help='使用的GPU ID，逗号分隔')
     
     args = parser.parse_args()
+    
+    # 设置可见GPU
+    if args.gpu_ids:
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_ids
+        print(f"🔧 设置可见GPU: {args.gpu_ids}")
     
     # 加载模型
     print(f"Loading model from {args.checkpoint}")
     model, vae, transport, config, device = load_model_and_config(args.checkpoint, args.config)
+    
+    # 创建采样器
+    sampler = Sampler(transport)
+    
+    # 创建采样函数
+    sample_fn = sampler.sample_ode
     
     # 创建输出目录
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # 为每个用户生成样本
-    for user_id in range(args.start_user, args.end_user):
+    for user_id in range(args.num_users):
         generate_samples_for_user(
-            model, vae, transport, config, device,
-            user_id, args.samples_per_user, args.output_dir
+            model, vae, transport, sampler, 
+            user_id, args.samples_per_user, args.output_dir,
+            cfg_scale=args.cfg_scale, seed=args.seed
         )
     
     print(f"\nGeneration completed!")
