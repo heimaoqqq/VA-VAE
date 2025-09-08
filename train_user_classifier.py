@@ -29,8 +29,8 @@ class MicroDopplerDataset(Dataset):
         user_mapping = {}  # 调试映射
         for user_dir in sorted(self.data_dir.glob("ID*")):
             if user_dir.is_dir():
-                # 从ID1, ID2, ... 转换为 0, 1, 2, ...
-                user_id = int(user_dir.name.replace('ID', '')) - 1  # ID1 -> 0, ID2 -> 1, etc.
+                # 从ID_1, ID_2, ... 转换为 0, 1, 2, ...
+                user_id = int(user_dir.name.replace('ID_', '')) - 1  # ID_1 -> 0, ID_2 -> 1, etc.
                 user_mapping[user_dir.name] = user_id
                 
                 # 扫描该用户的所有图像（支持jpg和png）
