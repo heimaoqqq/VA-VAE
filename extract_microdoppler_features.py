@@ -325,8 +325,9 @@ def main(args):
             for file_path in safetensors_files:
                 try:
                     with safe_open(file_path, framework="pt", device="cpu") as f:
-                        latents_shape = f.get_slice('latents').shape
-                        file_samples = latents_shape[0]
+                        # 修复：需要获取tensor而不是slice对象
+                        latents_tensor = f.get_tensor('latents')
+                        file_samples = latents_tensor.shape[0]
                         total_samples += file_samples
                         print(f"   📄 {file_path.name}: {file_samples} 样本")
                 except Exception as e:
