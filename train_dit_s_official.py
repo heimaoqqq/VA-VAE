@@ -311,6 +311,11 @@ def do_train(train_config, accelerator):
     log_steps = 0
     running_loss = 0
     start_time = time()
+    
+    # Early stopping variables
+    best_val_loss = float('inf')
+    patience_counter = 0
+    early_stopping_patience = train_config['train'].get('early_stopping_patience', 10)
     use_checkpoint = train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {use_checkpoint}")
@@ -345,7 +350,7 @@ def do_train(train_config, accelerator):
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model.parameters(), train_config['optimizer']['max_grad_norm'])
             opt.step()
-            update_ema(ema, model.module)
+            update_ema(ema, model.module, decay=train_config['train']['ema_decay'])
 
             # Log loss values:
             if 'cos_loss' in loss_dict:
@@ -404,6 +409,22 @@ def do_train(train_config, accelerator):
                     logger.info(f"Validation Loss: {val_loss:.4f}")
                     if writer is not None:
                         writer.add_scalar('Loss/validation', val_loss, train_steps)
+                    
+                    # Early stopping logic
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        patience_counter = 0
+                        print(f"[EARLY STOPPING] New best validation loss: {best_val_loss:.4f}")
+                        logger.info(f"New best validation loss: {best_val_loss:.4f}")
+                    else:
+                        patience_counter += 1
+                        print(f"[EARLY STOPPING] No improvement. Patience: {patience_counter}/{early_stopping_patience}")
+                        logger.info(f"Early stopping patience: {patience_counter}/{early_stopping_patience}")
+                        
+                        if patience_counter >= early_stopping_patience:
+                            print(f"[EARLY STOPPING] Early stopping triggered after {train_steps} steps")
+                            logger.info(f"Early stopping triggered after {train_steps} steps")
+                            return accelerator
                 model.train()
             if train_steps >= train_config['train']['max_steps']:
                 break
