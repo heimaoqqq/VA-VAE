@@ -180,17 +180,18 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                 print(f"🔍 生成的Latent范围: [{samples.min():.3f}, {samples.max():.3f}], 标准差: {samples.std():.3f}")
             
             # 🔴 关键步骤：反归一化！
-            # 训练时做了: feature = (feature - mean) / std * latent_multiplier
-            # 所以推理时需要: samples = samples / latent_multiplier * std + mean
-            latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
+            # 因为训练配置中 latent_norm: true
+            # 训练时做了: feature = (feature - mean) / std * 1.0
+            # 所以推理时需要: samples = samples * std + mean
+            # 调整为用户实际的latent目录路径
+            latent_stats_path = './latents_safetensors/train/latent_stats.pt'
             if os.path.exists(latent_stats_path):
                 stats = torch.load(latent_stats_path, map_location=device)
                 mean = stats['mean'].to(device)  # [32, 1, 1]
                 std = stats['std'].to(device)     # [32, 1, 1]
-                latent_multiplier = 1.0  # VA-VAE使用1.0
                 
-                # 反归一化公式（与train_dit_s_official.py完全一致）
-                samples_denorm = (samples * std) / latent_multiplier + mean
+                # 反归一化公式（因为latent_multiplier=1.0）
+                samples_denorm = samples * std + mean
                 
                 if rank == 0 and batch_idx == 0:
                     print(f"🔍 反归一化后范围: [{samples_denorm.min():.3f}, {samples_denorm.max():.3f}], 标准差: {samples_denorm.std():.3f}")
@@ -199,7 +200,37 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                 if rank == 0:
                     print(f"⚠️ 警告: 找不到latent统计文件 {latent_stats_path}")
                     print(f"⚠️ 跳过反归一化步骤，可能导致生成噪声！")
-                samples_denorm = samples
+                    print(f"💡 尝试从数据集直接计算统计信息...")
+                    # 如果统计文件不存在，尝试从数据集直接计算
+                    try:
+                        from LightningDiT.datasets.img_latent_dataset import ImgLatentDataset
+                        train_dataset = ImgLatentDataset('./latents_safetensors/train', latent_norm=True)
+                        stats = train_dataset.compute_latent_stats()
+                        mean = stats['mean'].to(device)  # [1, 32, 1, 1]
+                        std = stats['std'].to(device)    # [1, 32, 1, 1]
+                        # 去掉batch维度
+                        mean = mean.squeeze(0)  # [32, 1, 1]
+                        std = std.squeeze(0)    # [32, 1, 1]
+                        
+                        # 保存统计文件供下次使用
+                        import os
+                        os.makedirs('./latents_safetensors/train', exist_ok=True)
+                        torch.save({'mean': mean, 'std': std}, './latents_safetensors/train/latent_stats.pt')
+                        print(f"✅ 从数据集计算统计完成，已保存到 ./latents_safetensors/train/latent_stats.pt")
+                        
+                        # 反归一化
+                        samples_denorm = samples * std + mean
+                        
+                        if rank == 0 and batch_idx == 0:
+                            print(f"🔍 反归一化后范围: [{samples_denorm.min():.3f}, {samples_denorm.max():.3f}], 标准差: {samples_denorm.std():.3f}")
+                            print(f"📊 使用统计信息: mean shape={mean.shape}, std shape={std.shape}")
+                    except Exception as e:
+                        if rank == 0:
+                            print(f"❌ 无法计算统计信息: {e}")
+                            print(f"💡 请先运行: python prepare_latent_stats.py --data_dir ./latents_safetensors/train")
+                        samples_denorm = samples
+                else:
+                    samples_denorm = samples
             
             # VAE解码（使用反归一化后的latent）
             images = vae.decode(samples_denorm)
