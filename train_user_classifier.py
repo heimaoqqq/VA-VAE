@@ -25,13 +25,14 @@ class MicroDopplerDataset(Dataset):
         self.transform = transform
         self.samples = []
         
-        # 扫描所有用户目录
-        for user_dir in sorted(self.data_dir.glob("user_*")):
+        # 扫描所有用户目录（适配实际数据集格式：ID1, ID2, etc.）
+        for user_dir in sorted(self.data_dir.glob("ID*")):
             if user_dir.is_dir():
-                user_id = int(user_dir.name.split('_')[1])
+                # 从ID1, ID2, ... 转换为 0, 1, 2, ...
+                user_id = int(user_dir.name.replace('ID', '')) - 1  # ID1 -> 0, ID2 -> 1, etc.
                 
-                # 扫描该用户的所有图像
-                for img_path in user_dir.glob("*.png"):
+                # 扫描该用户的所有图像（支持jpg和png）
+                for img_path in list(user_dir.glob("*.jpg")) + list(user_dir.glob("*.png")):
                     self.samples.append((str(img_path), user_id))
         
         print(f"Found {len(self.samples)} samples from {len(set([s[1] for s in self.samples]))} users")
