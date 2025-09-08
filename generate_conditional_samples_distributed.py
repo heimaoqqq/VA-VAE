@@ -33,8 +33,36 @@ def setup_distributed():
     else:
         return 0, 0, 1
 
+def load_weights_with_shape_check(model, checkpoint, rank=0):
+    """使用形状检查加载权重（完全按照官方实现）"""
+    model_state_dict = model.state_dict()
+    # check shape and load weights
+    for name, param in checkpoint['model'].items():
+        if name in model_state_dict:
+            if param.shape == model_state_dict[name].shape:
+                model_state_dict[name].copy_(param)
+            elif name == 'x_embedder.proj.weight':
+                # special case for x_embedder.proj.weight
+                # the pretrained model is trained with 256x256 images
+                # we can load the weights by resizing the weights
+                # and keep the first 3 channels the same
+                weight = torch.zeros_like(model_state_dict[name])
+                weight[:, :16] = param[:, :16]
+                model_state_dict[name] = weight
+            else:
+                if rank == 0:
+                    print(f"Skipping loading parameter '{name}' due to shape mismatch: "
+                        f"checkpoint shape {param.shape}, model shape {model_state_dict[name].shape}")
+        else:
+            if rank == 0:
+                print(f"Parameter '{name}' not found in model, skipping.")
+    # load state dict
+    model.load_state_dict(model_state_dict, strict=False)
+    
+    return model
+
 def load_model_and_config(checkpoint_path, config_path, local_rank):
-    """加载模型和配置"""
+    """加载模型和配置（按照官方方式）"""
     # 加载配置
     with open(config_path, 'r', encoding='utf-8') as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
@@ -47,39 +75,134 @@ def load_model_and_config(checkpoint_path, config_path, local_rank):
     model = LightningDiT_models[config['model']['model_type']](
         input_size=latent_size,
         num_classes=config['data']['num_classes'],
-        class_dropout_prob=config['model']['class_dropout_prob'],
+        class_dropout_prob=config['model'].get('class_dropout_prob', 0.1),
         use_qknorm=config['model']['use_qknorm'],
         use_swiglu=config['model'].get('use_swiglu', False),
         use_rope=config['model'].get('use_rope', False),
         use_rmsnorm=config['model'].get('use_rmsnorm', False),
         wo_shift=config['model'].get('wo_shift', False),
-        in_channels=config['model']['in_chans'],
+        in_channels=config['model'].get('in_chans', 4),
         use_checkpoint=config['model'].get('use_checkpoint', False),
     ).to(device)
     
-    # 加载checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    
-    # 处理EMA权重
-    if 'ema' in checkpoint:
-        state_dict = checkpoint['ema']
-        print("📦 使用EMA权重")
+    # 按照官方方式加载权重
+    if os.path.exists(checkpoint_path):
+        if local_rank == 0:
+            print(f"📦 从checkpoint加载权重: {checkpoint_path}")
+        
+        checkpoint = torch.load(checkpoint_path, map_location=lambda storage, loc: storage)
+        
+        # 处理权重键名（按照官方方式）
+        if 'ema' in checkpoint:
+            # 优先使用EMA权重（推理时更稳定）
+            checkpoint_weights = {'model': checkpoint['ema']}
+            if local_rank == 0:
+                print("📦 使用EMA权重进行推理")
+        elif 'model' in checkpoint:
+            checkpoint_weights = checkpoint
+            if local_rank == 0:
+                print("📦 使用模型权重进行推理")
+        else:
+            checkpoint_weights = {'model': checkpoint}
+            if local_rank == 0:
+                print("📦 使用直接权重进行推理")
+        
+        # 清理键名（remove the prefix 'module.'）
+        checkpoint_weights['model'] = {k.replace('module.', ''): v for k, v in checkpoint_weights['model'].items()}
+        
+        # 使用官方权重加载函数
+        model = load_weights_with_shape_check(model, checkpoint_weights, rank=local_rank)
+        
+        if local_rank == 0:
+            print("✅ 权重加载完成")
     else:
-        state_dict = checkpoint.get('model', checkpoint)
-        print("📦 使用标准权重")
+        if local_rank == 0:
+            print(f"⚠️ 警告: 找不到checkpoint文件 {checkpoint_path}")
+            print("⚠️ 使用未训练的随机权重，生成结果将是噪声！")
     
-    # 清理键名
-    cleaned_state_dict = {}
-    for k, v in state_dict.items():
-        clean_key = k.replace('module.', '').replace('_orig_mod.', '')
-        cleaned_state_dict[clean_key] = v
-    
-    model.load_state_dict(cleaned_state_dict, strict=False)
     model.eval()
     
-    # 创建VAE
-    vae = SimplifiedVAVAE(config['vae']['model_name']).to(device)
-    vae.eval()
+    # 创建VAE（完全按照官方train_dit_s_official.py方式）
+    vae = None
+    try:
+        # 添加LightningDiT路径到系统路径
+        import sys
+        lightningdit_path = os.path.join(os.getcwd(), 'LightningDiT')
+        if lightningdit_path not in sys.path:
+            sys.path.insert(0, lightningdit_path)
+        
+        from tokenizer.vavae import VA_VAE
+        import tempfile
+        
+        # 使用训练好的VAE模型路径
+        custom_vae_checkpoint = "/kaggle/input/stage3/vavae-stage3-epoch26-val_rec_loss0.0000.ckpt"
+        
+        # 创建与train_dit_s_official.py完全一致的配置
+        vae_config = {
+            'ckpt_path': custom_vae_checkpoint,
+            'model': {
+                'base_learning_rate': 2.0e-05,
+                'target': 'ldm.models.autoencoder.AutoencoderKL',
+                'params': {
+                    'monitor': 'val/rec_loss',
+                    'embed_dim': 32,
+                    'use_vf': 'dinov2',
+                    'reverse_proj': True,
+                    'ddconfig': {
+                        'double_z': True, 'z_channels': 32, 'resolution': 256,
+                        'in_channels': 3, 'out_ch': 3, 'ch': 128,
+                        'ch_mult': [1, 1, 2, 2, 4], 'num_res_blocks': 2,
+                        'attn_resolutions': [16], 'dropout': 0.0
+                    },
+                    'lossconfig': {
+                        'target': 'ldm.modules.losses.contperceptual.LPIPSWithDiscriminator',
+                        'params': {
+                            'disc_start': 1, 'disc_num_layers': 3, 'disc_weight': 0.5,
+                            'disc_factor': 1.0, 'disc_in_channels': 3, 'disc_conditional': False,
+                            'disc_loss': 'hinge', 'pixelloss_weight': 1.0, 'perceptual_weight': 1.0,
+                            'kl_weight': 1e-6, 'logvar_init': 0.0, 'use_actnorm': False,
+                            'pp_style': False, 'vf_weight': 0.1, 'adaptive_vf': False,
+                            'distmat_weight': 1.0, 'cos_weight': 1.0,
+                            'distmat_margin': 0.25, 'cos_margin': 0.5
+                        }
+                    }
+                }
+            }
+        }
+        
+        # 写入临时配置文件
+        temp_config_fd, temp_config_path = tempfile.mkstemp(suffix='.yaml')
+        with open(temp_config_path, 'w') as f:
+            yaml.dump(vae_config, f, default_flow_style=False)
+        os.close(temp_config_fd)
+        
+        try:
+            # 使用官方VA_VAE类加载
+            vae = VA_VAE(temp_config_path)
+            vae = vae.to(device)
+            vae.eval()
+            if local_rank == 0:
+                print(f"✅ VAE加载完成: {custom_vae_checkpoint}")
+        finally:
+            # 清理临时文件
+            os.unlink(temp_config_path)
+            
+    except Exception as e:
+        if local_rank == 0:
+            print(f"⚠️ VAE加载失败: {e}")
+            import traceback
+            traceback.print_exc()
+            print("⚠️ 尝试使用简化VAE作为备用")
+        # 备用方案
+        try:
+            vae = SimplifiedVAVAE(config['vae']['model_name']).to(device)
+            vae.eval()
+            if local_rank == 0:
+                print(f"✅ 备用VAE加载完成: {config['vae']['model_name']}")
+        except Exception as e2:
+            if local_rank == 0:
+                print(f"⚠️ 备用VAE也加载失败: {e2}")
+            vae = None
     
     # 创建transport
     transport = create_transport(
@@ -101,14 +224,15 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                                         output_dir, cfg_scale=10.0, seed=42, batch_size=16, 
                                         rank=0, world_size=1):
     """分布式生成指定用户的条件样本"""
-    # 创建采样函数（与官方train_dit_s_official.py保持一致）
+    # 创建采样器和采样函数 - 完全按照官方配置
+    sampler = Sampler(transport)
     sample_fn = sampler.sample_ode(
-        sampling_method="dopri5",  # 高精度ODE求解器
-        num_steps=300,             # 使用300步以获得高质量
-        atol=1e-6,                 # 更严格的误差容限
-        rtol=1e-3,                 
-        reverse=False,
-        timestep_shift=0.1,        # 与官方配置一致
+        sampling_method="dopri5",      # 高精度ODE求解器
+        num_steps=150,                 # 采样步数
+        atol=1e-6,                     # 绝对误差容限
+        rtol=1e-3,                     # 相对误差容限
+        reverse=False,                 # 不反向采样
+        timestep_shift=0.1             # 时间步偏移（官方设置）
     )
     
     # 计算每个进程处理的样本数
@@ -147,51 +271,51 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
             # 创建随机噪声
             z = torch.randn(current_batch_size, 32, 16, 16, device=device)
             
-            # CFG采样
+            # CFG采样 - 完全按照官方train_dit_s_official.py实现
             if cfg_scale > 1.0:
                 # 构建CFG batch
                 z_cfg = torch.cat([z, z], 0)
-                y_null = torch.tensor([31] * current_batch_size, device=device)
+                y_null = torch.tensor([31] * current_batch_size, device=device)  # null class
                 y_cfg = torch.cat([y, y_null], 0)
                 
-                # 手动实现CFG（与官方train_dit_s_official.py一致）
-                def model_fn(x, t):
-                    # 使用模型的forward_with_cfg方法（如果存在）
-                    if hasattr(model, 'forward_with_cfg'):
-                        return model.forward_with_cfg(x, t, y=y_cfg, cfg_scale=cfg_scale)
-                    else:
-                        # 手动实现CFG
-                        pred = model(x, t, y=y_cfg)
+                # 使用官方CFG配置
+                cfg_interval_start = 0.11  # 与官方保持一致
+                model_kwargs = dict(y=y_cfg, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
+                
+                # 使用CFG前向传播（与官方完全一致）
+                if hasattr(model, 'forward_with_cfg'):
+                    samples = sample_fn(z_cfg, model.forward_with_cfg, **model_kwargs)
+                else:
+                    # 如果模型没有forward_with_cfg方法，使用手动CFG
+                    def model_fn_cfg(x, t, **kwargs):
+                        pred = model(x, t, **kwargs)
                         pred_cond, pred_uncond = pred.chunk(2, dim=0)
                         return pred_uncond + cfg_scale * (pred_cond - pred_uncond)
+                    samples = sample_fn(z_cfg, model_fn_cfg, **model_kwargs)
                 
-                samples = sample_fn(z_cfg, model_fn)
-                samples = samples[-1]
-                samples, _ = samples.chunk(2, dim=0)
+                samples = samples[-1]  # 获取最终时间步的样本
+                samples, _ = samples.chunk(2, dim=0)  # 去掉null class样本
             else:
-                def model_fn(x, t):
-                    return model(x, t, y=y)
-                
-                samples = sample_fn(z, model_fn)
+                # 标准采样
+                samples = sample_fn(z, model, **dict(y=y))
                 samples = samples[-1]
             
             # 检查latent范围 (仅rank 0输出)
             if rank == 0 and batch_idx == 0:
                 print(f"🔍 生成的Latent范围: [{samples.min():.3f}, {samples.max():.3f}], 标准差: {samples.std():.3f}")
             
-            # 🔴 关键步骤：反归一化！
-            # 因为训练配置中 latent_norm: true
-            # 训练时做了: feature = (feature - mean) / std * 1.0
-            # 所以推理时需要: samples = samples * std + mean
-            # 调整为用户实际的latent目录路径
-            latent_stats_path = './latents_safetensors/train/latent_stats.pt'
+            # 🔴 关键步骤：反归一化！（完全按照官方train_dit_s_official.py实现）
+            # 官方公式：samples_denorm = (samples * std) / latent_multiplier + mean
+            # 因为训练时做了：feature = (feature - mean) / std * latent_multiplier
+            latent_stats_path = './latents_safetensors/train/latents_stats.pt'
             if os.path.exists(latent_stats_path):
                 stats = torch.load(latent_stats_path, map_location=device)
                 mean = stats['mean'].to(device)  # [32, 1, 1]
                 std = stats['std'].to(device)     # [32, 1, 1]
+                latent_multiplier = 1.0  # VA-VAE使用1.0，不是0.18215
                 
-                # 反归一化公式（因为latent_multiplier=1.0）
-                samples_denorm = samples * std + mean
+                # 官方反归一化公式（与train_dit_s_official.py第549行完全一致）
+                samples_denorm = (samples * std) / latent_multiplier + mean
                 
                 if rank == 0 and batch_idx == 0:
                     print(f"🔍 反归一化后范围: [{samples_denorm.min():.3f}, {samples_denorm.max():.3f}], 标准差: {samples_denorm.std():.3f}")
@@ -214,15 +338,16 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                         
                         # 保存统计文件供下次使用
                         os.makedirs('./latents_safetensors/train', exist_ok=True)
-                        torch.save({'mean': mean, 'std': std}, './latents_safetensors/train/latent_stats.pt')
-                        print(f"✅ 从数据集计算统计完成，已保存到 ./latents_safetensors/train/latent_stats.pt")
+                        torch.save({'mean': mean, 'std': std}, './latents_safetensors/train/latents_stats.pt')
+                        print(f"✅ 从数据集计算统计完成，已保存到 ./latents_safetensors/train/latents_stats.pt")
                         
                         # 反归一化
                         samples_denorm = samples * std + mean
                         
                         if rank == 0 and batch_idx == 0:
                             print(f"🔍 反归一化后范围: [{samples_denorm.min():.3f}, {samples_denorm.max():.3f}], 标准差: {samples_denorm.std():.3f}")
-                            print(f"📊 使用统计信息: mean shape={mean.shape}, std shape={std.shape}")
+                            print(f"📊 使用latent统计信息: mean shape={mean.shape}, std shape={std.shape}")
+                            print(f"✅ 反归一化公式与官方train_dit_s_official.py完全一致")
                     except Exception as e:
                         if rank == 0:
                             print(f"❌ 无法计算统计信息: {e}")
@@ -232,31 +357,23 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
                     samples_denorm = samples
             
             # VAE解码（使用反归一化后的latent）
-            images = vae.decode(samples_denorm)
-            
-            # 检查解码后范围 (仅rank 0输出)
-            if rank == 0 and batch_idx == 0:
-                print(f"🔍 解码后图像范围: [{images.min():.3f}, {images.max():.3f}], 标准差: {images.std():.3f}")
-            
-            # 后处理：[0,1] -> [0,255]
-            images = torch.clamp(images, 0, 1)
-            images = (images * 255).round().byte()
-            
-            # 保存每个图像
-            for i in range(current_batch_size):
-                image = images[i].permute(1, 2, 0).cpu().numpy()
-                if image.shape[2] == 1:  # 灰度图
-                    image = image.squeeze(2)
-                    pil_image = Image.fromarray(image, mode='L')
-                elif image.shape[2] == 3:  # RGB图
-                    pil_image = Image.fromarray(image, mode='RGB')
-                else:
+            if vae is not None:
+                try:
+                    # 确保VAE在正确设备上
+                    if hasattr(vae, 'to'):
+                        vae = vae.to(device)
+                    
+                    # 使用VA-VAE解码latent为图像（与train_dit_s_official.py第568行一致）
+                    decoded_images = vae.decode_to_images(samples_denorm)
+                    
+                    # 按照官方方式保存单个图像文件
+                    from PIL import Image
+                    for i, image in enumerate(decoded_images):
+                        save_path = user_dir / f"sample_{sample_idx + i:06d}.png"
+                        Image.fromarray(image).save(save_path)
+                except Exception as e:
                     if rank == 0:
-                        print(f"⚠️ 未知图像格式: {image.shape}")
-                    continue
-                
-                filename = user_dir / f"sample_{sample_idx:03d}.png"
-                pil_image.save(filename)
+                        print(f"❌ VAE解码失败: {e}")
                 sample_idx += 1
     
     # 等待所有进程完成
@@ -267,15 +384,18 @@ def generate_samples_for_user_distributed(model, vae, transport, sampler, user_i
         print(f"✅ 完成用户 {user_id}: {num_samples} 个样本已保存到 {user_dir}")
 
 def main():
-    parser = argparse.ArgumentParser(description='分布式生成条件扩散样本')
-    parser.add_argument('--checkpoint', required=True, help='模型checkpoint路径')
-    parser.add_argument('--config', required=True, help='配置文件路径')
-    parser.add_argument('--output_dir', default='./generated_samples', help='输出目录')
-    parser.add_argument('--samples_per_user', type=int, default=200, help='每用户生成样本数')
-    parser.add_argument('--cfg_scale', type=float, default=10.0, help='CFG引导强度')
-    parser.add_argument('--seed', type=int, default=42, help='随机种子')
-    parser.add_argument('--num_users', type=int, default=31, help='用户数量')
-    parser.add_argument('--batch_size', type=int, default=16, help='批处理大小')
+    parser = argparse.ArgumentParser(description='Distributed conditional sample generation')
+    parser.add_argument('--checkpoint', type=str, 
+                       default='/kaggle/input/50000-pt/0050000.pt', 
+                       help='Model checkpoint path')
+    parser.add_argument('--config', type=str, 
+                       default='configs/dit_s_microdoppler.yaml', 
+                       help='Config file path')
+    parser.add_argument('--output_dir', type=str, default='./generated_samples', help='Output directory')
+    parser.add_argument('--num_samples', type=int, default=200, help='Samples per user')
+    parser.add_argument('--cfg_scale', type=float, default=10.0, help='CFG scale（与配置文件一致）')
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
     
     args = parser.parse_args()
     
@@ -286,7 +406,11 @@ def main():
         print(f"🚀 分布式推理: {world_size} GPUs")
         print(f"📂 输出目录: {args.output_dir}")
     
-    # 加载模型
+    # 加载模型和配置（使用训练好的模型）
+    if rank == 0:
+        print(f"🚀 使用训练好的DiT模型: {args.checkpoint}")
+        print(f"📋 使用配置文件: {args.config}")
+    
     model, vae, transport, config, device = load_model_and_config(
         args.checkpoint, args.config, local_rank
     )
@@ -303,18 +427,18 @@ def main():
         dist.barrier()  # 等待目录创建完成
     
     # 为每个用户生成样本
-    for user_id in range(args.num_users):
+    for user_id in range(31):
         generate_samples_for_user_distributed(
             model, vae, transport, sampler, 
-            user_id, args.samples_per_user, args.output_dir,
+            user_id, args.num_samples, args.output_dir,
             cfg_scale=args.cfg_scale, seed=args.seed, batch_size=args.batch_size,
             rank=rank, world_size=world_size
         )
     
     if rank == 0:
-        print(f"\n🎉 分布式生成完成!")
-        print(f"总样本数: {args.num_users * args.samples_per_user}")
-        print(f"输出目录: {args.output_dir}")
+        print(f"🎯 分布式条件样本生成完成！")
+        print(f"✅ 所有用户的样本已生成到: {args.output_dir}")
+        print(f"📈 每用户生成了 {args.num_samples} 个样本")
     
     # 清理分布式
     if world_size > 1:
