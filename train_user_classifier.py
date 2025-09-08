@@ -134,12 +134,63 @@ def validate_epoch(model, dataloader, criterion, device):
     
     return total_loss / len(dataloader), 100. * correct / total, all_preds, all_labels
 
-def split_dataset(dataset, train_ratio=0.8):
-    """划分训练和验证集"""
-    total_size = len(dataset)
-    train_size = int(train_ratio * total_size)
-    val_size = total_size - train_size
+def load_dataset_split(dataset, split_file):
+    """使用prepare_dataset_split.py生成的划分文件"""
+    if not os.path.exists(split_file):
+        print(f"⚠️ 划分文件不存在: {split_file}")
+        print("⚠️ 使用内置随机划分")
+        return split_dataset_random(dataset)
     
+    print(f"📋 使用预设划分文件: {split_file}")
+    with open(split_file, 'r', encoding='utf-8') as f:
+        split_data = json.load(f)
+    
+    # 创建路径到索引的映射
+    path_to_idx = {}
+    for idx, (img_path, label) in enumerate(dataset.samples):
+        # 标准化路径格式
+        img_path_norm = Path(img_path).as_posix()
+        path_to_idx[img_path_norm] = idx
+    
+    train_indices = []
+    val_indices = []
+    
+    # 处理训练集
+    for file_path in split_data['train']:
+        file_path_norm = Path(file_path).as_posix()
+        if file_path_norm in path_to_idx:
+            train_indices.append(path_to_idx[file_path_norm])
+        else:
+            # 尝试匹配文件名
+            filename = Path(file_path).name
+            for path, idx in path_to_idx.items():
+                if Path(path).name == filename:
+                    train_indices.append(idx)
+                    break
+    
+    # 处理验证集
+    for file_path in split_data['validation']:
+        file_path_norm = Path(file_path).as_posix()
+        if file_path_norm in path_to_idx:
+            val_indices.append(path_to_idx[file_path_norm])
+        else:
+            # 尝试匹配文件名
+            filename = Path(file_path).name
+            for path, idx in path_to_idx.items():
+                if Path(path).name == filename:
+                    val_indices.append(idx)
+                    break
+    
+    train_dataset = torch.utils.data.Subset(dataset, train_indices)
+    val_dataset = torch.utils.data.Subset(dataset, val_indices)
+    
+    print(f"✅ 训练集: {len(train_dataset)} 样本")
+    print(f"✅ 验证集: {len(val_dataset)} 样本")
+    
+    return train_dataset, val_dataset
+
+def split_dataset_random(dataset, train_ratio=0.8):
+    """备用的随机划分方法"""
     # 确保每个用户在训练和验证集中都有样本
     user_samples = {}
     for idx, (_, label) in enumerate(dataset.samples):
@@ -152,7 +203,7 @@ def split_dataset(dataset, train_ratio=0.8):
     
     for user_id, indices in user_samples.items():
         np.random.shuffle(indices)
-        split_point = max(1, int(len(indices) * train_ratio))  # 至少保证每个用户有1个验证样本
+        split_point = max(1, int(len(indices) * train_ratio))
         train_indices.extend(indices[:split_point])
         val_indices.extend(indices[split_point:])
     
@@ -191,9 +242,9 @@ def main():
     print("Loading dataset...")
     full_dataset = MicroDopplerDataset(args.data_dir, transform=transform)
     
-    # 划分训练和验证集
-    np.random.seed(42)  # 固定随机种子
-    train_dataset, val_dataset = split_dataset(full_dataset, args.train_ratio)
+    # 使用预设划分文件（如果存在）
+    split_file = '/kaggle/working/dataset_split.json'
+    train_dataset, val_dataset = load_dataset_split(full_dataset, split_file)
     
     # 创建数据加载器
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
@@ -219,8 +270,10 @@ def main():
     
     best_val_acc = 0
     best_model_state = None
+    early_stop_patience = 10  # 10个epoch早停
+    early_stop_counter = 0
     
-    print(f"\nStarting training for {args.epochs} epochs...")
+    print(f"\nStarting training for {args.epochs} epochs (Early stopping: {early_stop_patience} epochs)...")
     for epoch in range(args.epochs):
         print(f"\nEpoch {epoch+1}/{args.epochs}")
         
@@ -242,11 +295,21 @@ def main():
         print(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
         print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
         
-        # 保存最佳模型
+        # 保存最佳模型和早停检查
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             best_model_state = model.state_dict().copy()
-            print(f"New best validation accuracy: {best_val_acc:.2f}%")
+            early_stop_counter = 0  # 重置早停计数器
+            print(f"🎯 New best validation accuracy: {best_val_acc:.2f}%")
+        else:
+            early_stop_counter += 1
+            print(f"📈 Early stopping counter: {early_stop_counter}/{early_stop_patience}")
+            
+            # 早停检查
+            if early_stop_counter >= early_stop_patience:
+                print(f"🛑 Early stopping triggered! No improvement for {early_stop_patience} epochs")
+                print(f"🏆 Best validation accuracy: {best_val_acc:.2f}%")
+                break
     
     # 保存最佳模型
     model_path = output_dir / 'best_classifier.pth'
