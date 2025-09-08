@@ -47,7 +47,7 @@ class MicroDopplerDataset(Dataset):
         print(f"Found {len(self.samples)} samples from {len(unique_users)} users")
         print(f"User ID range: {min(unique_users)} to {max(unique_users)}")
         print(f"Directory mapping: {user_mapping}")
-        print(f"Expected classes for model: 0-30 + null(31) = 32 total")
+        print(f"Expected classes for model: 0-30 = 31 total")
     
     def __len__(self):
         return len(self.samples)
