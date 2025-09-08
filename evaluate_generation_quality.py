@@ -149,50 +149,69 @@ def evaluate_samples(model, dataloader, device, confidence_threshold=0.9):
     return results, user_stats
 
 def save_high_confidence_samples(results, output_dir, confidence_threshold=0.9):
-    """保存高置信度样本"""
+    """只保存高置信度且正确识别的样本，按用户ID分类"""
     output_dir = Path(output_dir)
     
-    # 创建总目录
-    high_conf_dir = output_dir / f"high_confidence_samples_threshold_{confidence_threshold}"
-    high_conf_dir.mkdir(parents=True, exist_ok=True)
+    # 创建成功识别样本目录
+    success_dir = output_dir / f"successful_samples_conf_{confidence_threshold}"
+    success_dir.mkdir(parents=True, exist_ok=True)
     
     # 为每个用户创建目录
-    for user_id in range(31):  # 假设有31个用户
-        user_dir = high_conf_dir / f"user_{user_id:02d}"
+    for user_id in range(31):
+        user_dir = success_dir / f"user_{user_id:02d}"
         user_dir.mkdir(exist_ok=True)
     
     saved_count = 0
-    saved_correct = 0
+    per_user_stats = {i: {'total': 0, 'success': 0, 'high_conf_correct': 0} for i in range(31)}
     
-    for i, (is_high_conf, is_correct, img_path, true_label, pred) in enumerate(
+    for i, (is_high_conf, is_correct, img_path, true_label, pred, confidence) in enumerate(
         zip(results['high_confidence'], results['correct'], results['image_paths'], 
-            results['true_labels'], results['predictions'])
+            results['true_labels'], results['predictions'], results['confidences'])
     ):
-        if is_high_conf:
+        # 统计每个用户的样本
+        per_user_stats[true_label]['total'] += 1
+        
+        # 只保存高置信度且正确识别的样本
+        if is_high_conf and is_correct:
+            per_user_stats[true_label]['success'] += 1
+            per_user_stats[true_label]['high_conf_correct'] += 1
+            
             # 确定保存路径
-            user_dir = high_conf_dir / f"user_{true_label:02d}"
+            user_dir = success_dir / f"user_{true_label:02d}"
             original_filename = Path(img_path).name
-            
-            # 添加预测信息到文件名
             name_parts = original_filename.split('.')
-            if is_correct:
-                new_filename = f"{name_parts[0]}_CORRECT_pred{pred}.{name_parts[1]}"
-                saved_correct += 1
-            else:
-                new_filename = f"{name_parts[0]}_WRONG_pred{pred}.{name_parts[1]}"
             
+            # 简化文件名，只包含置信度信息
+            new_filename = f"{name_parts[0]}_conf{confidence:.3f}.{name_parts[1]}"
             new_path = user_dir / new_filename
             
             # 复制文件
             shutil.copy2(img_path, new_path)
             saved_count += 1
+        elif is_correct:
+            # 统计正确但低置信度的
+            per_user_stats[true_label]['success'] += 1
     
-    print(f"\nSaved {saved_count} high-confidence samples")
-    print(f"  - Correct predictions: {saved_correct}")
-    print(f"  - Wrong predictions: {saved_count - saved_correct}")
-    print(f"  - Accuracy among high-confidence samples: {saved_correct/saved_count*100:.1f}%")
+    # 打印每用户成功识别统计
+    print(f"\n📊 每用户成功识别统计 (置信度>{confidence_threshold}):")
+    print("-" * 60)
+    total_samples = 0
+    total_success = 0
+    for user_id in range(31):
+        stats = per_user_stats[user_id]
+        if stats['total'] > 0:
+            success_rate = stats['high_conf_correct'] / stats['total'] * 100
+            total_samples += stats['total']
+            total_success += stats['high_conf_correct']
+            print(f"User_{user_id:02d}: {stats['high_conf_correct']}/{stats['total']} "
+                  f"({success_rate:.1f}%)")
     
-    return saved_count, saved_correct
+    overall_rate = total_success / total_samples * 100 if total_samples > 0 else 0
+    print(f"\n📈 总体成功识别率: {total_success}/{total_samples} ({overall_rate:.1f}%)")
+    print(f"💾 成功识别样本保存到: {success_dir}")
+    print(f"✅ 共保存 {saved_count} 个成功识别的样本")
+    
+    return saved_count, saved_count  # 返回保存数和成功数（相同）
 
 def generate_evaluation_report(results, user_stats, output_dir, confidence_threshold=0.9):
     """生成评估报告"""
