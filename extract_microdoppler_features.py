@@ -308,6 +308,14 @@ def main(args):
     print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
     print(f'✅ 当前进程数据集包含 {len(dataset)} 个样本')
     
+    # 保存统计信息到文件（与生成脚本期望的路径一致）
+    stats_file = Path(output_dir) / 'latent_stats.pt'
+    torch.save({
+        'mean': mean_tensor,  # shape: [32, 1, 1]
+        'std': std_tensor     # shape: [32, 1, 1]
+    }, stats_file)
+    print(f"💾 统计信息已保存到: {stats_file}")
+    
     # 🔍 添加总样本数统计（避免分布式处理的误解）
     if torch.distributed.is_initialized():
         torch.distributed.barrier()  # 等待所有进程完成
@@ -325,9 +333,8 @@ def main(args):
             for file_path in safetensors_files:
                 try:
                     with safe_open(file_path, framework="pt", device="cpu") as f:
-                        # 修复：需要获取tensor而不是slice对象
-                        latents_tensor = f.get_tensor('latents')
-                        file_samples = latents_tensor.shape[0]
+                        latents_shape = f.get_slice('latents').shape
+                        file_samples = latents_shape[0]
                         total_samples += file_samples
                         print(f"   📄 {file_path.name}: {file_samples} 样本")
                 except Exception as e:
