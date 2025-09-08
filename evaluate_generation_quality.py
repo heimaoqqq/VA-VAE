@@ -182,7 +182,8 @@ def save_high_confidence_samples(results, output_dir, confidence_threshold=0.9):
             name_parts = original_filename.split('.')
             
             # 简化文件名，只包含置信度信息
-            new_filename = f"{name_parts[0]}_conf{confidence:.3f}.{name_parts[1]}"
+            conf_value = confidence.item() if hasattr(confidence, 'item') else confidence
+            new_filename = f"{name_parts[0]}_conf{conf_value:.3f}.{name_parts[1]}"
             new_path = user_dir / new_filename
             
             # 复制文件
