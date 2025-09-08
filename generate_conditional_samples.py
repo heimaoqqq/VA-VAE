@@ -139,7 +139,7 @@ def generate_samples_for_user(model, vae, transport, sampler, user_id, num_sampl
                     def model_fn(x, t):
                         return model.forward_with_cfg(x, t, y=y_cfg, cfg_scale=cfg_scale)
                 
-                samples = sample_fn(z_cfg, model_fn)
+                samples = sampler.sample_ode(z_cfg, model_fn)
                 samples = samples[-1]
                 samples, _ = samples.chunk(2, dim=0)
             else:
@@ -151,7 +151,7 @@ def generate_samples_for_user(model, vae, transport, sampler, user_id, num_sampl
                     def model_fn(x, t):
                         return model(x, t, y=y)
                 
-                samples = sample_fn(z, model_fn)
+                samples = sampler.sample_ode(z, model_fn)
                 samples = samples[-1]
             
             # 解码为图像
