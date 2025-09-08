@@ -172,50 +172,69 @@ def load_dataset_split(dataset, split_file):
         path_obj = Path(file_path)
         filename = path_obj.name
         
-        # 方法1: 直接文件名匹配（精确匹配）
+        print(f"      正在匹配路径: {file_path}")
+        print(f"      提取文件名: {filename}")
+        
+        # 方法1: 直接绝对路径匹配（最精确）
+        for idx, (sample_path, label) in enumerate(dataset.samples):
+            if str(sample_path) == str(file_path):
+                print(f"      ✅ 绝对路径精确匹配: 索引 {idx}")
+                return idx
+        
+        # 方法2: 用户目录+文件名匹配
+        # 从prepare_dataset_split.py的路径中提取用户目录
+        user_dir = None
+        for part in path_obj.parts:
+            if part.startswith('ID_'):
+                user_dir = part
+                break
+        
+        if user_dir:
+            user_filename_key = f"{user_dir}/{filename}"
+            if user_filename_key in user_filename_to_idx:
+                print(f"      ✅ 用户目录+文件名匹配: {user_filename_key} -> 索引 {user_filename_to_idx[user_filename_key]}")
+                return user_filename_to_idx[user_filename_key]
+        
+        # 方法3: 仅文件名匹配（如果唯一）
         if filename in filename_to_indices:
             indices = filename_to_indices[filename]
             if len(indices) == 1:
+                print(f"      ✅ 唯一文件名匹配: {filename} -> 索引 {indices[0]}")
                 return indices[0]
             else:
-                # 多个同名文件，使用用户目录区分
-                # 从路径中提取用户目录 (如 ID_1, ID_2, etc.)
-                for part in path_obj.parts:
-                    if part.startswith('ID_'):
-                        user_filename_key = f"{part}/{filename}"
-                        if user_filename_key in user_filename_to_idx:
-                            return user_filename_to_idx[user_filename_key]
-                        break
+                print(f"      ⚠️ 文件名不唯一: {filename} 有 {len(indices)} 个匹配")
         
-        # 方法2: 如果直接匹配失败，尝试模糊匹配
-        for key, idx in user_filename_to_idx.items():
-            if filename == key.split('/')[-1]:  # 精确文件名匹配
-                return idx
-        
+        print(f"      ❌ 路径匹配失败: {file_path}")
         return None
     
-    # 处理训练集
+    # 处理训练集 - 适配prepare_dataset_split.py的嵌套结构
     matched_train = 0
-    for file_path in split_data['train']:
-        idx = find_matching_index(file_path)
-        if idx is not None:
-            train_indices.append(idx)
-            matched_train += 1
+    total_train_files = 0
+    for user_id, file_paths in split_data['train'].items():
+        total_train_files += len(file_paths)
+        for file_path in file_paths:
+            idx = find_matching_index(file_path)
+            if idx is not None:
+                train_indices.append(idx)
+                matched_train += 1
     
     # 处理验证集
     matched_val = 0
-    for file_path in split_data['val']:
-        idx = find_matching_index(file_path)
-        if idx is not None:
-            val_indices.append(idx)
-            matched_val += 1
+    total_val_files = 0
+    for user_id, file_paths in split_data['val'].items():
+        total_val_files += len(file_paths)
+        for file_path in file_paths:
+            idx = find_matching_index(file_path)
+            if idx is not None:
+                val_indices.append(idx)
+                matched_val += 1
     
     print(f"🔍 路径匹配结果:")
-    print(f"  训练集: {matched_train}/{len(split_data['train'])} 匹配成功")
-    print(f"  验证集: {matched_val}/{len(split_data['val'])} 匹配成功")
+    print(f"  训练集: {matched_train}/{total_train_files} 匹配成功")
+    print(f"  验证集: {matched_val}/{total_val_files} 匹配成功")
     
     # 如果匹配率太低，回退到随机划分
-    total_expected = len(split_data['train']) + len(split_data['val'])
+    total_expected = total_train_files + total_val_files
     total_matched = matched_train + matched_val
     match_rate = total_matched / total_expected if total_expected > 0 else 0
     
