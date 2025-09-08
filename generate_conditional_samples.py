@@ -101,7 +101,14 @@ def load_model_and_config(checkpoint_path, config_path):
 def generate_samples_for_user(model, vae, transport, sampler, user_id, num_samples, output_dir, cfg_scale=10.0, seed=42):
     """为指定用户生成条件样本"""
     # 创建采样函数
-    sample_fn = sampler.sample_ode
+    sample_fn = sampler.sample_ode(
+        sampling_method="dopri5",
+        num_steps=300,
+        atol=1e-6,
+        rtol=1e-3,
+        reverse=False,
+        timestep_shift=0.0,
+    )
     torch.manual_seed(seed + user_id)  # 每个用户使用不同种子
     np.random.seed(seed + user_id)
     
@@ -139,7 +146,7 @@ def generate_samples_for_user(model, vae, transport, sampler, user_id, num_sampl
                     def model_fn(x, t):
                         return model.forward_with_cfg(x, t, y=y_cfg, cfg_scale=cfg_scale)
                 
-                samples = sampler.sample_ode(z=z_cfg, model_fn=model_fn)
+                samples = sample_fn(z_cfg, model_fn)
                 samples = samples[-1]
                 samples, _ = samples.chunk(2, dim=0)
             else:
@@ -151,7 +158,7 @@ def generate_samples_for_user(model, vae, transport, sampler, user_id, num_sampl
                     def model_fn(x, t):
                         return model(x, t, y=y)
                 
-                samples = sampler.sample_ode(z=z, model_fn=model_fn)
+                samples = sample_fn(z, model_fn)
                 samples = samples[-1]
             
             # 解码为图像
