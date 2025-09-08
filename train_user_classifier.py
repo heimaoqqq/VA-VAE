@@ -169,7 +169,7 @@ def load_dataset_split(dataset, split_file):
                     break
     
     # 处理验证集
-    for file_path in split_data['validation']:
+    for file_path in split_data['val']:
         file_path_norm = Path(file_path).as_posix()
         if file_path_norm in path_to_idx:
             val_indices.append(path_to_idx[file_path_norm])
