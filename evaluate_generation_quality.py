@@ -240,10 +240,27 @@ def generate_evaluation_report(results, user_stats, output_dir, confidence_thres
             'high_confidence_accuracy': user_high_conf_accuracy
         }
     
-    # 保存JSON报告
+    # 转换numpy类型为Python原生类型（用于JSON序列化）
+    def convert_numpy_types(obj):
+        if isinstance(obj, dict):
+            return {k: convert_numpy_types(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy_types(v) for v in obj]
+        elif hasattr(obj, 'item'):  # numpy标量
+            return obj.item()
+        elif isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        else:
+            return obj
+    
+    # 保存JSON报告  
     report_path = output_dir / 'evaluation_report.json'
     with open(report_path, 'w') as f:
-        json.dump(report, f, indent=2)
+        # 转换numpy类型为Python原生类型，然后保存
+        converted_report = convert_numpy_types(report)
+        json.dump(converted_report, f, indent=2)
     
     # 生成文本报告
     text_report_path = output_dir / 'evaluation_report.txt'
