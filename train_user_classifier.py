@@ -172,17 +172,12 @@ def load_dataset_split(dataset, split_file):
         path_obj = Path(file_path)
         filename = path_obj.name
         
-        print(f"      正在匹配路径: {file_path}")
-        print(f"      提取文件名: {filename}")
-        
         # 方法1: 直接绝对路径匹配（最精确）
         for idx, (sample_path, label) in enumerate(dataset.samples):
             if str(sample_path) == str(file_path):
-                print(f"      ✅ 绝对路径精确匹配: 索引 {idx}")
                 return idx
         
         # 方法2: 用户目录+文件名匹配
-        # 从prepare_dataset_split.py的路径中提取用户目录
         user_dir = None
         for part in path_obj.parts:
             if part.startswith('ID_'):
@@ -192,56 +187,48 @@ def load_dataset_split(dataset, split_file):
         if user_dir:
             user_filename_key = f"{user_dir}/{filename}"
             if user_filename_key in user_filename_to_idx:
-                print(f"      ✅ 用户目录+文件名匹配: {user_filename_key} -> 索引 {user_filename_to_idx[user_filename_key]}")
                 return user_filename_to_idx[user_filename_key]
         
         # 方法3: 仅文件名匹配（如果唯一）
         if filename in filename_to_indices:
             indices = filename_to_indices[filename]
             if len(indices) == 1:
-                print(f"      ✅ 唯一文件名匹配: {filename} -> 索引 {indices[0]}")
                 return indices[0]
-            else:
-                print(f"      ⚠️ 文件名不唯一: {filename} 有 {len(indices)} 个匹配")
         
-        print(f"      ❌ 路径匹配失败: {file_path}")
         return None
     
-    # 处理训练集 - 适配prepare_dataset_split.py的嵌套结构
-    matched_train = 0
-    total_train_files = 0
+    # 处理训练集和验证集 - 适配prepare_dataset_split.py的嵌套结构
+    user_train_counts = {}
+    user_val_counts = {}
+    
+    # 处理训练集
     for user_id, file_paths in split_data['train'].items():
-        total_train_files += len(file_paths)
+        user_train_counts[user_id] = len(file_paths)
         for file_path in file_paths:
             idx = find_matching_index(file_path)
             if idx is not None:
                 train_indices.append(idx)
-                matched_train += 1
     
     # 处理验证集
-    matched_val = 0
-    total_val_files = 0
     for user_id, file_paths in split_data['val'].items():
-        total_val_files += len(file_paths)
+        user_val_counts[user_id] = len(file_paths)
         for file_path in file_paths:
             idx = find_matching_index(file_path)
             if idx is not None:
                 val_indices.append(idx)
-                matched_val += 1
     
-    print(f"🔍 路径匹配结果:")
-    print(f"  训练集: {matched_train}/{total_train_files} 匹配成功")
-    print(f"  验证集: {matched_val}/{total_val_files} 匹配成功")
+    # 输出每个用户的划分统计
+    print(f"📊 数据集划分统计:")
+    for user_id in sorted(user_train_counts.keys(), key=lambda x: int(x.split('_')[1])):
+        train_count = user_train_counts.get(user_id, 0)
+        val_count = user_val_counts.get(user_id, 0)
+        print(f"   {user_id}: 训练集 {train_count} 张, 验证集 {val_count} 张")
     
-    # 如果匹配率太低，回退到随机划分
-    total_expected = total_train_files + total_val_files
-    total_matched = matched_train + matched_val
-    match_rate = total_matched / total_expected if total_expected > 0 else 0
+    total_train = len(train_indices)
+    total_val = len(val_indices)
+    print(f"\n📋 总计: 训练集 {total_train} 样本, 验证集 {total_val} 样本")
     
-    if match_rate < 0.5:
-        print(f"⚠️ 路径匹配率过低 ({match_rate:.1%})，回退到随机划分")
-        return split_dataset_random(dataset)
-    
+    # 创建数据集子集
     train_dataset = torch.utils.data.Subset(dataset, train_indices)
     val_dataset = torch.utils.data.Subset(dataset, val_indices)
     
@@ -250,36 +237,10 @@ def load_dataset_split(dataset, split_file):
     
     return train_dataset, val_dataset
 
-def split_dataset_random(dataset, train_ratio=0.8):
-    """备用的随机划分方法"""
-    # 确保每个用户在训练和验证集中都有样本
-    user_samples = {}
-    for idx, (_, label) in enumerate(dataset.samples):
-        if label not in user_samples:
-            user_samples[label] = []
-        user_samples[label].append(idx)
-    
-    train_indices = []
-    val_indices = []
-    
-    for user_id, indices in user_samples.items():
-        np.random.shuffle(indices)
-        split_point = max(1, int(len(indices) * train_ratio))
-        train_indices.extend(indices[:split_point])
-        val_indices.extend(indices[split_point:])
-    
-    train_dataset = torch.utils.data.Subset(dataset, train_indices)
-    val_dataset = torch.utils.data.Subset(dataset, val_indices)
-    
-    print(f"Training set: {len(train_dataset)} samples")
-    print(f"Validation set: {len(val_dataset)} samples")
-    
-    return train_dataset, val_dataset
-
 def main():
     parser = argparse.ArgumentParser(description='Train user classifier')
     parser.add_argument('--data_dir', type=str, required=True, help='Path to original image dataset')
-    parser.add_argument('--output_dir', type=str, default='./classifier_output', help='Output directory')
+    parser.add_argument('--output_dir', type=str, default='./classifier_output', help='Output directory for model and logs')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
     parser.add_argument('--epochs', type=int, default=100, help='Number of epochs')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
