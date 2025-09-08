@@ -374,13 +374,7 @@ def do_train(train_config, accelerator):
                 log_steps = 0
                 start_time = time()
 
-            # Generate samples periodically (every 1000 steps)
-            if train_steps % 1000 == 0 and train_steps > 0:
-                if accelerator.is_main_process:
-                    print(f"[SAMPLING] Generating samples at step {train_steps}...")
-                    generate_samples(ema, vae, transport, device, train_steps, experiment_dir)
-            
-            # Save checkpoint:
+            # Save checkpoint and generate samples (every ckpt_every steps)
             if train_steps % train_config['train']['ckpt_every'] == 0 and train_steps > 0:
                 if accelerator.is_main_process:
                     checkpoint = {
