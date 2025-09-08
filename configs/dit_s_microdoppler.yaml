@@ -28,7 +28,7 @@ model:
   wo_shift: false                 # 不使用shift
   in_chans: 32                    # VA-VAE的32个通道
   use_checkpoint: false           # 小模型不需要梯度检查点
-  class_dropout_prob: 0.15        # 增强CFG正则化（默认0.1→0.15）
+  class_dropout_prob: 0.20        # 进一步增强CFG正则化以防过拟合
 
 # Training configuration
 train:
@@ -41,7 +41,7 @@ train:
   log_every: 1000                 # 日志频率
   ckpt_every: 2000               # 每2000步评估和保存
   resume: false                   # 不恢复训练
-  early_stopping_patience: 10     # 增加耐心，验证损失仍在缓慢下降
+  early_stopping_patience: 12     # 增加耐心，验证损失仍在缓慢下降
   ema_decay: 0.999               # 小数据集优化的EMA衰减率
 
 # Optimizer configuration (小批次优化配置)
@@ -49,7 +49,7 @@ optimizer:
   lr: 0.0001                      # 小批次适用的学习率
   beta2: 0.99                     # 提高beta2适应更noisy的梯度
   max_grad_norm: 0.5              # 更严格梯度裁剪适应小批次噪声
-  weight_decay: 0.005             # 减少权重衰减（小批次已提供正则化）
+  weight_decay: 0.01              # 增加权重衰减以防过拟合
 
 # Transport configuration (Rectified Flow官方优化)
 transport:
