@@ -234,6 +234,8 @@ def do_train(train_config, accelerator):
     )
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
     global_batch_size = batch_size_per_gpu * accelerator.num_processes
+    
+    # 标准随机采样（DiT/ImageNet标准做法）
     loader = DataLoader(
         train_dataset,
         batch_size=batch_size_per_gpu,
