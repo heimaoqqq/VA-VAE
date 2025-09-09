@@ -1,6 +1,6 @@
 """
 条件生成质量评估脚本
-使用训练好的分类器评估生成样本，筛选置信度>90%的样本
+使用训练好的分类器评估生成样本，筛选置信度>95%的样本
 """
 import torch
 import torch.nn.functional as F
@@ -164,9 +164,9 @@ def save_high_confidence_samples(results, output_dir, confidence_threshold=0.9):
     saved_count = 0
     per_user_stats = {i: {'total': 0, 'success': 0, 'high_conf_correct': 0} for i in range(31)}
     
-    for i, (is_high_conf, is_correct, img_path, true_label, pred, confidence) in enumerate(
+    for i, (is_high_conf, is_correct, img_path, true_label, pred, max_prob) in enumerate(
         zip(results['high_confidence'], results['correct'], results['image_paths'], 
-            results['true_labels'], results['predictions'], results['confidences'])
+            results['true_labels'], results['predictions'], results['max_probs'])
     ):
         # 统计每个用户的样本
         per_user_stats[true_label]['total'] += 1
@@ -181,15 +181,8 @@ def save_high_confidence_samples(results, output_dir, confidence_threshold=0.9):
             original_filename = Path(img_path).name
             name_parts = original_filename.split('.')
             
-            # 简化文件名，只包含置信度信息
-            if hasattr(confidence, 'item'):
-                try:
-                    conf_value = confidence.item()
-                except ValueError:
-                    # 如果是多元素数组，取第一个元素
-                    conf_value = float(confidence.flatten()[0])
-            else:
-                conf_value = float(confidence)
+            # 使用正确的置信度值（max_prob）
+            conf_value = float(max_prob)
             new_filename = f"{name_parts[0]}_conf{conf_value:.3f}.{name_parts[1]}"
             new_path = user_dir / new_filename
             
