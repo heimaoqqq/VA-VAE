@@ -55,15 +55,21 @@ def collect_images_from_directory(directory, extensions=('.png', '.jpg', '.jpeg'
 def collect_real_images_for_user(dataset_dir, user_id, extensions=('.png', '.jpg', '.jpeg')):
     """
     Collect real images for a specific user from the dataset
-    Assumes dataset structure: dataset_dir/user_X/ or similar
+    Assumes dataset structure: dataset_dir/ID_X/ (where X = user_id + 1)
     """
+    # 微多普勒数据集的ID映射：user_id -> ID_(user_id+1)
+    # 例如：user_id=23 -> ID_24
+    mapped_id = user_id + 1
+    
     # Try different possible directory naming patterns
     possible_patterns = [
-        f"user_{user_id}",
-        f"user{user_id}",
-        f"{user_id}",
-        f"User_{user_id}",
-        f"User{user_id}"
+        f"ID_{mapped_id}",        # 主要模式：ID_24
+        f"ID{mapped_id}",         # 备选：ID24
+        f"user_{user_id}",        # 备选：user_23
+        f"user{user_id}",         # 备选：user23
+        f"{user_id}",             # 备选：23
+        f"User_{user_id}",        # 备选：User_23
+        f"User{user_id}"          # 备选：User23
     ]
     
     for pattern in possible_patterns:
