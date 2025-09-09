@@ -400,6 +400,7 @@ def main():
     parser.add_argument('--cfg_scale', type=float, default=10.0, help='CFG scale（与配置文件一致）')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--user_id', type=int, default=None, help='Specific user ID to generate samples for (if not specified, generates for all users)')
     
     args = parser.parse_args()
     
@@ -430,14 +431,28 @@ def main():
     if world_size > 1:
         dist.barrier()  # 等待目录创建完成
     
-    # 为每个用户生成样本
-    for user_id in range(31):
+    # 根据参数决定为哪些用户生成样本
+    if args.user_id is not None:
+        # 为指定用户生成样本
+        if rank == 0:
+            print(f"🎯 为用户 {args.user_id} 生成 {args.num_samples} 个样本")
         generate_samples_for_user_distributed(
             model, vae, transport, sampler, 
-            user_id, args.num_samples, args.output_dir,
+            args.user_id, args.num_samples, args.output_dir,
             cfg_scale=args.cfg_scale, seed=args.seed, batch_size=args.batch_size,
             rank=rank, world_size=world_size
         )
+    else:
+        # 为所有用户生成样本
+        if rank == 0:
+            print(f"🎯 为所有用户 (0-30) 生成样本")
+        for user_id in range(31):
+            generate_samples_for_user_distributed(
+                model, vae, transport, sampler, 
+                user_id, args.num_samples, args.output_dir,
+                cfg_scale=args.cfg_scale, seed=args.seed, batch_size=args.batch_size,
+                rank=rank, world_size=world_size
+            )
     
     if rank == 0:
         print(f"🎯 分布式条件样本生成完成！")
