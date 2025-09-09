@@ -4,16 +4,39 @@ Compares generated samples against real user dataset images
 """
 
 import os
+import sys
 import torch
 import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
-from torchmetrics.image.fid import FrechetInceptionDistance
 import argparse
 from pathlib import Path
 import json
 from tqdm import tqdm
+
+# 检查并尝试安装torch-fidelity依赖
+def check_and_install_dependencies():
+    """检查FID计算所需的依赖"""
+    try:
+        from torchmetrics.image.fid import FrechetInceptionDistance
+        return True
+    except ImportError as e:
+        if "torch-fidelity" in str(e):
+            print("⚠️ 缺少torch-fidelity依赖，正在尝试安装...")
+            try:
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "torch-fidelity"])
+                print("✅ torch-fidelity安装成功")
+                from torchmetrics.image.fid import FrechetInceptionDistance
+                return True
+            except Exception as install_error:
+                print(f"❌ 自动安装失败: {install_error}")
+                print("💡 请手动运行: pip install torch-fidelity")
+                return False
+        else:
+            print(f"❌ 导入错误: {e}")
+            return False
 
 
 class ImageDataset(Dataset):
