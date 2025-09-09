@@ -66,7 +66,7 @@ class MicroDopplerDataset(Dataset):
 def create_transforms():
     """创建数据变换（无数据增强）"""
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),  # ResNet标准输入尺寸
+        transforms.Resize((256, 256)),  # 修改为256x256输入尺寸
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                            std=[0.229, 0.224, 0.225])  # ImageNet标准化
@@ -292,7 +292,7 @@ def main():
     
     best_val_acc = 0
     best_model_state = None
-    early_stop_patience = 10  # 10个epoch早停
+    early_stop_patience = 6  # 6个epoch早停
     early_stop_counter = 0
     
     print(f"\nStarting training for {args.epochs} epochs (Early stopping: {early_stop_patience} epochs)...")
