@@ -119,6 +119,12 @@ def compute_fid_score(real_images_dir, generated_images_dir, batch_size=32, devi
     """
     print("Initializing FID computation...")
     
+    # 检查依赖
+    if not check_and_install_dependencies():
+        raise ImportError("无法导入FID计算所需的依赖。请在Kaggle环境中运行: !pip install torch-fidelity")
+    
+    from torchmetrics.image.fid import FrechetInceptionDistance
+    
     # Collect image paths
     real_image_paths = collect_images_from_directory(real_images_dir)
     generated_image_paths = collect_images_from_directory(generated_images_dir)
