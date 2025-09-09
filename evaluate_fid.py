@@ -1,54 +1,56 @@
 """
-FID Evaluation Script for Per-User Generated Samples
-Compares generated samples against real user dataset images
+FID Evaluation Script - Unified Version
+Uses PyTorch and scipy to compute FID score directly
+No external dependencies like torch-fidelity needed
 """
 
 import os
-import sys
 import torch
+import torch.nn as nn
 import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
+from torchvision.models import inception_v3
 import argparse
 from pathlib import Path
 import json
 from tqdm import tqdm
+from scipy.linalg import sqrtm
 
-# 检查并尝试安装torch-fidelity依赖
-def check_and_install_dependencies():
-    """检查FID计算所需的依赖"""
-    try:
-        from torchmetrics.image.fid import FrechetInceptionDistance
-        return True
-    except ImportError as e:
-        if "torch-fidelity" in str(e):
-            print("⚠️ 缺少torch-fidelity依赖，正在尝试安装...")
-            try:
-                import subprocess
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "torch-fidelity"])
-                print("✅ torch-fidelity安装成功")
-                from torchmetrics.image.fid import FrechetInceptionDistance
-                return True
-            except Exception as install_error:
-                print(f"❌ 自动安装失败: {install_error}")
-                print("💡 请手动运行: pip install torch-fidelity")
-                return False
-        else:
-            print(f"❌ 导入错误: {e}")
-            return False
+
+class InceptionV3FeatureExtractor(nn.Module):
+    """Extract features from InceptionV3 for FID calculation"""
+    
+    def __init__(self, device='cuda'):
+        super().__init__()
+        # Load pre-trained InceptionV3
+        self.inception = inception_v3(pretrained=True, transform_input=False)
+        # Remove the final classifier to get 2048-dim features
+        self.inception.fc = nn.Identity()
+        self.inception.eval()
+        self.inception.to(device)
+        self.device = device
+        
+    def forward(self, x):
+        # x should be [0,1] range tensor of shape (B,3,299,299)
+        # InceptionV3 expects input in range [-1, 1]
+        x = 2 * x - 1  # Convert [0,1] to [-1,1]
+        
+        with torch.no_grad():
+            # Get pool3 features (2048-dim)
+            features = self.inception(x)
+            return features
 
 
 class ImageDataset(Dataset):
-    """Simple dataset for loading images from a directory"""
+    """Simple dataset for loading images"""
     
     def __init__(self, image_paths, transform=None):
         self.image_paths = image_paths
         self.transform = transform or transforms.Compose([
-            transforms.Resize((299, 299)),  # InceptionV3 input size
+            transforms.Resize((299, 299)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                               std=[0.229, 0.224, 0.225])
         ])
     
     def __len__(self):
@@ -63,7 +65,6 @@ class ImageDataset(Dataset):
             return image
         except Exception as e:
             print(f"Error loading image {image_path}: {e}")
-            # Return a dummy image in case of error
             return torch.zeros(3, 299, 299)
 
 
@@ -81,18 +82,17 @@ def collect_real_images_for_user(dataset_dir, user_id, extensions=('.png', '.jpg
     Assumes dataset structure: dataset_dir/ID_X/ (where X = user_id + 1)
     """
     # 微多普勒数据集的ID映射：user_id -> ID_(user_id+1)
-    # 例如：user_id=23 -> ID_24
     mapped_id = user_id + 1
     
     # Try different possible directory naming patterns
     possible_patterns = [
-        f"ID_{mapped_id}",        # 主要模式：ID_24
-        f"ID{mapped_id}",         # 备选：ID24
-        f"user_{user_id}",        # 备选：user_23
-        f"user{user_id}",         # 备选：user23
-        f"{user_id}",             # 备选：23
-        f"User_{user_id}",        # 备选：User_23
-        f"User{user_id}"          # 备选：User23
+        f"ID_{mapped_id}",
+        f"ID{mapped_id}",
+        f"user_{user_id}",
+        f"user{user_id}",
+        f"{user_id}",
+        f"User_{user_id}",
+        f"User{user_id}"
     ]
     
     for pattern in possible_patterns:
@@ -113,17 +113,70 @@ def collect_real_images_for_user(dataset_dir, user_id, extensions=('.png', '.jpg
         return []
 
 
-def compute_fid_score(real_images_dir, generated_images_dir, batch_size=32, device='cuda'):
-    """
-    Compute FID score between real and generated images
-    """
-    print("Initializing FID computation...")
+def extract_features_from_images(image_paths, feature_extractor, batch_size=32, device='cuda'):
+    """Extract InceptionV3 features from a list of image paths"""
     
-    # 检查依赖
-    if not check_and_install_dependencies():
-        raise ImportError("无法导入FID计算所需的依赖。请在Kaggle环境中运行: !pip install torch-fidelity")
+    transform = transforms.Compose([
+        transforms.Resize((299, 299)),
+        transforms.ToTensor(),
+    ])
     
-    from torchmetrics.image.fid import FrechetInceptionDistance
+    dataset = ImageDataset(image_paths, transform)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    
+    features = []
+    
+    for batch in tqdm(dataloader, desc="Extracting features"):
+        batch = batch.to(device)
+        with torch.no_grad():
+            batch_features = feature_extractor(batch)
+            features.append(batch_features.cpu().numpy())
+    
+    return np.concatenate(features, axis=0)
+
+
+def calculate_fid_score(real_features, generated_features):
+    """
+    Calculate FID score from feature vectors
+    FID = ||mu1 - mu2||^2 + Tr(C1 + C2 - 2*sqrt(C1*C2))
+    """
+    
+    # Calculate statistics
+    mu1 = np.mean(real_features, axis=0)
+    mu2 = np.mean(generated_features, axis=0)
+    
+    sigma1 = np.cov(real_features, rowvar=False)
+    sigma2 = np.cov(generated_features, rowvar=False)
+    
+    # Add small epsilon for numerical stability
+    eps = 1e-6
+    sigma1 = sigma1 + eps * np.eye(sigma1.shape[0])
+    sigma2 = sigma2 + eps * np.eye(sigma2.shape[0])
+    
+    # Calculate FID
+    diff = mu1 - mu2
+    
+    # Product of covariance matrices
+    covmean, _ = sqrtm(sigma1.dot(sigma2), disp=False)
+    if np.iscomplexobj(covmean):
+        if not np.allclose(np.diagonal(covmean).imag, 0, atol=1e-3):
+            m = np.max(np.abs(covmean.imag))
+            raise ValueError(f'Imaginary component {m}')
+        covmean = covmean.real
+    
+    # Numerical stability
+    tr_covmean = np.trace(covmean)
+    
+    fid = (diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean)
+    
+    return fid
+
+
+def compute_fid_score_standalone(real_images_dir, generated_images_dir, batch_size=32, device='cuda'):
+    """
+    Compute FID score using standalone implementation
+    """
+    print("Initializing standalone FID computation...")
     
     # Collect image paths
     real_image_paths = collect_images_from_directory(real_images_dir)
@@ -135,46 +188,30 @@ def compute_fid_score(real_images_dir, generated_images_dir, batch_size=32, devi
     if len(real_image_paths) == 0 or len(generated_image_paths) == 0:
         raise ValueError("Need at least one image in both real and generated directories")
     
-    # Initialize FID metric
-    fid = FrechetInceptionDistance(feature=2048, normalize=True).to(device)
+    # Initialize feature extractor
+    print("Loading InceptionV3 feature extractor...")
+    feature_extractor = InceptionV3FeatureExtractor(device)
     
-    # Create data loaders
-    transform = transforms.Compose([
-        transforms.Resize((299, 299)),
-        transforms.ToTensor(),
-    ])
+    # Extract features
+    print("Extracting features from real images...")
+    real_features = extract_features_from_images(real_image_paths, feature_extractor, batch_size, device)
     
-    real_dataset = ImageDataset(real_image_paths, transform)
-    generated_dataset = ImageDataset(generated_image_paths, transform)
+    print("Extracting features from generated images...")  
+    generated_features = extract_features_from_images(generated_image_paths, feature_extractor, batch_size, device)
     
-    real_loader = DataLoader(real_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
-    generated_loader = DataLoader(generated_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    # Calculate FID score
+    print("Computing FID score...")
+    fid_score = calculate_fid_score(real_features, generated_features)
     
-    # Process real images
-    print("Processing real images...")
-    for batch in tqdm(real_loader, desc="Real images"):
-        # Convert to uint8 format expected by FID
-        batch_uint8 = (batch * 255).clamp(0, 255).to(torch.uint8)
-        fid.update(batch_uint8.to(device), real=True)
-    
-    # Process generated images
-    print("Processing generated images...")
-    for batch in tqdm(generated_loader, desc="Generated images"):
-        # Convert to uint8 format expected by FID
-        batch_uint8 = (batch * 255).clamp(0, 255).to(torch.uint8)
-        fid.update(batch_uint8.to(device), real=False)
-    
-    # Compute FID score
-    fid_score = fid.compute()
-    return fid_score.item()
+    return fid_score
 
 
-def evaluate_fid_for_user(user_id, real_dataset_dir, generated_samples_dir, 
-                         output_file=None, batch_size=32, device='cuda'):
+def evaluate_fid_for_user_standalone(user_id, real_dataset_dir, generated_samples_dir, 
+                                   output_file=None, batch_size=32, device='cuda'):
     """
-    Evaluate FID score for a specific user
+    Evaluate FID score for a specific user using standalone implementation
     """
-    print(f"Evaluating FID for user_id: {user_id}")
+    print(f"Evaluating FID for user_id: {user_id} (Standalone)")
     
     # Collect real images for this user
     real_images = collect_real_images_for_user(real_dataset_dir, user_id)
@@ -200,15 +237,16 @@ def evaluate_fid_for_user(user_id, real_dataset_dir, generated_samples_dir,
         
         try:
             # Compute FID
-            fid_score = compute_fid_score(temp_real_dir, generated_dir, batch_size, device)
+            fid_score = compute_fid_score_standalone(temp_real_dir, generated_dir, batch_size, device)
             
             result = {
                 'user_id': user_id,
-                'fid_score': fid_score,
+                'fid_score': float(fid_score),
                 'num_real_images': len(real_images),
                 'num_generated_images': len(collect_images_from_directory(generated_dir)),
                 'real_dataset_dir': str(real_dataset_dir),
-                'generated_samples_dir': str(generated_dir)
+                'generated_samples_dir': str(generated_dir),
+                'method': 'standalone'
             }
             
             print(f"FID Score for User {user_id}: {fid_score:.4f}")
@@ -228,7 +266,7 @@ def evaluate_fid_for_user(user_id, real_dataset_dir, generated_samples_dir,
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Evaluate FID score for per-user generated samples')
+    parser = argparse.ArgumentParser(description='Evaluate FID score using standalone implementation')
     parser.add_argument('--user_id', type=int, required=True, help='User ID to evaluate')
     parser.add_argument('--real_dataset_dir', type=str, required=True, 
                        help='Directory containing real dataset images')
@@ -241,14 +279,18 @@ def main():
     
     args = parser.parse_args()
     
+    # Set device
+    device = args.device if torch.cuda.is_available() else 'cpu'
+    print(f"Using device: {device}")
+    
     # Evaluate FID
-    result = evaluate_fid_for_user(
+    result = evaluate_fid_for_user_standalone(
         user_id=args.user_id,
         real_dataset_dir=args.real_dataset_dir,
         generated_samples_dir=args.generated_samples_dir,
         output_file=args.output_file,
         batch_size=args.batch_size,
-        device=args.device
+        device=device
     )
     
     if result is None:
