@@ -259,12 +259,39 @@ class ImprovedMicroDopplerDataset(Dataset):
         
         # 收集所有样本
         user_samples = defaultdict(list)
-        for user_dir in sorted(self.data_dir.glob("ID_*")):
+        print(f"🔍 扫描数据目录: {self.data_dir}")
+        
+        # 检查数据目录是否存在
+        if not self.data_dir.exists():
+            raise FileNotFoundError(f"数据目录不存在: {self.data_dir}")
+        
+        # 查找ID_*目录
+        id_dirs = list(self.data_dir.glob("ID_*"))
+        print(f"找到 {len(id_dirs)} 个ID目录")
+        
+        if len(id_dirs) == 0:
+            print("❌ 未找到ID_*目录，检查以下可能的目录:")
+            for item in self.data_dir.iterdir():
+                if item.is_dir():
+                    print(f"  - {item.name}")
+            raise ValueError(f"在 {self.data_dir} 中未找到ID_*格式的用户目录")
+        
+        for user_dir in sorted(id_dirs):
             if user_dir.is_dir():
-                user_id = int(user_dir.name.split('_')[1]) - 1
+                user_id = int(user_dir.name.split('_')[1])  # 保持原始ID编号
+                total_files = 0
                 for ext in ['*.png', '*.jpg', '*.jpeg']:
-                    for img_path in user_dir.glob(ext):
+                    files = list(user_dir.glob(ext))
+                    total_files += len(files)
+                    for img_path in files:
                         user_samples[user_id].append(str(img_path))
+                print(f"  ID_{user_id}: {total_files} 个文件")
+        
+        if not user_samples:
+            raise ValueError("未找到任何图像文件")
+        
+        total_samples = sum(len(paths) for paths in user_samples.values())
+        print(f"总共收集到 {total_samples} 个样本，来自 {len(user_samples)} 个用户")
         
         # 划分训练/验证集
         for user_id, paths in user_samples.items():
@@ -413,12 +440,29 @@ class LabelSmoothingLoss(nn.Module):
         confidence = 1.0 - self.smoothing
         smooth_target = torch.full_like(pred, self.smoothing / (self.num_classes - 1))
         smooth_target.scatter_(1, target.unsqueeze(1), confidence)
-        
         return F.kl_div(F.log_softmax(pred, dim=1), smooth_target, reduction='batchmean')
 
 
 def train_with_contrastive_learning(model, train_loader, val_loader, device, args, rank=0):
-    """使用对比学习训练分类器"""
+    """改进的训练函数，集成对比学习"""
+    
+    # 分布式训练设置
+    def is_main_process():
+        return rank == 0
+    
+    # 验证数据集是否为空
+    if len(train_loader.dataset) == 0:
+        if is_main_process():
+            print("❌ 训练数据集为空，无法开始训练")
+        return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
+    
+    if len(val_loader.dataset) == 0:
+        if is_main_process():
+            print("❌ 验证数据集为空，无法开始训练")
+        return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
+    
+    if is_main_process():
+        print(f"✅ 数据集验证通过: 训练集 {len(train_loader.dataset)} 样本, 验证集 {len(val_loader.dataset)} 样本")
     
     # 损失函数
     if args.use_focal_loss:
@@ -588,11 +632,20 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         # 更新学习率
         scheduler.step()
         
+        # 防止除零错误
+        if len(train_loader) == 0:
+            print("❌ 训练数据集为空，请检查数据路径和格式")
+            return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
+        
+        if len(val_loader) == 0:
+            print("❌ 验证数据集为空，请检查数据路径和格式")
+            return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
+        
         # 统计
-        train_acc = 100. * train_correct / train_total
-        val_acc = 100. * val_correct / val_total
         avg_train_loss = train_loss / len(train_loader)
         avg_val_loss = val_loss / len(val_loader)
+        train_acc = 100. * train_correct / train_total if train_total > 0 else 0.0
+        val_acc = 100. * val_correct / val_total if val_total > 0 else 0.0
         
         history['train_loss'].append(avg_train_loss)
         history['train_acc'].append(train_acc)
