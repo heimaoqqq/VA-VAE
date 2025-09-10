@@ -169,34 +169,43 @@ class InterUserContrastiveLoss(nn.Module):
         features_norm = F.normalize(features, dim=1)
         
         # 计算相似度矩阵
-        sim_matrix = torch.div(torch.matmul(features_norm, features_norm.T), self.temperature)
+        sim_matrix = torch.matmul(features_norm, features_norm.T) / self.temperature
         
         # 创建标签mask
         labels_expanded = labels.view(-1, 1)
-        mask = torch.eq(labels_expanded, labels_expanded.T)
+        pos_mask = torch.eq(labels_expanded, labels_expanded.T).float()
         
-        # 正样本：同标签但不是自己
+        # 移除对角线（自己和自己的相似度）
         eye_mask = torch.eye(batch_size, device=features.device)
-        pos_mask = torch.mul(mask.float(), (1.0 - eye_mask))
+        pos_mask = pos_mask * (1.0 - eye_mask)
+        neg_mask = (1.0 - torch.eq(labels_expanded, labels_expanded.T).float()) * (1.0 - eye_mask)
         
-        # 负样本：不同标签
-        neg_mask = (~mask).float()
+        # 数值稳定性：减去最大值
+        sim_max, _ = torch.max(sim_matrix, dim=1, keepdim=True)
+        sim_matrix_stable = sim_matrix - sim_max.detach()
         
-        # 计算损失
-        if pos_mask.sum() > 0:
-            pos_sim = sim_matrix * pos_mask
-            pos_loss = -torch.sum(pos_sim) / torch.sum(pos_mask)
+        # 计算InfoNCE风格的对比损失
+        exp_sim = torch.exp(sim_matrix_stable)
+        
+        # 计算每个anchor的损失
+        pos_sum = torch.sum(exp_sim * pos_mask, dim=1, keepdim=True)
+        neg_sum = torch.sum(exp_sim * neg_mask, dim=1, keepdim=True)
+        
+        # 避免除零
+        pos_sum = torch.clamp(pos_sum, min=1e-8)
+        total_sum = pos_sum + neg_sum + 1e-8
+        
+        # InfoNCE损失：-log(pos_sum / total_sum)
+        loss_per_sample = -torch.log(pos_sum / total_sum)
+        
+        # 只对有正样本的anchor计算损失
+        has_pos = (torch.sum(pos_mask, dim=1) > 0).float()
+        valid_loss = loss_per_sample.squeeze() * has_pos
+        
+        if has_pos.sum() > 0:
+            return valid_loss.sum() / has_pos.sum()
         else:
-            pos_loss = torch.tensor(0.0, device=features.device)
-        
-        if neg_mask.sum() > 0:
-            neg_sim = sim_matrix * neg_mask
-            # 简化的负样本损失，不使用hard negative mining
-            neg_loss = torch.sum(neg_sim) / torch.sum(neg_mask)
-        else:
-            neg_loss = torch.tensor(0.0, device=features.device)
-        
-        return pos_loss + neg_loss
+            return torch.tensor(0.0, device=features.device, requires_grad=True)
     
 
 class SupConLoss(nn.Module):
