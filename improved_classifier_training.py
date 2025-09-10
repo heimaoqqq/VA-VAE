@@ -7,7 +7,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 import torchvision.transforms as transforms
 import timm
 import numpy as np
@@ -19,6 +22,128 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from collections import defaultdict
 import random
+import os
+
+
+def setup_distributed():
+    """初始化分布式训练"""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        
+        # 初始化进程组
+        dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+        torch.cuda.set_device(local_rank)
+        
+        return rank, world_size, local_rank
+    else:
+        return 0, 1, 0
+
+
+def cleanup_distributed():
+    """清理分布式训练"""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def is_main_process():
+    """判断是否为主进程"""
+    return not dist.is_initialized() or dist.get_rank() == 0
+
+
+class GlobalNegativeContrastiveLoss(nn.Module):
+    """全局负样本对比损失 - 每个用户与所有其他用户对比"""
+    
+    def __init__(self, num_classes, temperature=0.07, margin=0.5, memory_size=1000):
+        super().__init__()
+        self.num_classes = num_classes
+        self.temperature = temperature
+        self.margin = margin
+        self.memory_size = memory_size
+        
+        # 为每个类别维护特征memory bank
+        self.register_buffer('memory_bank', torch.randn(num_classes, memory_size, 512))
+        self.register_buffer('memory_ptr', torch.zeros(num_classes, dtype=torch.long))
+        self.memory_bank = F.normalize(self.memory_bank, dim=2)
+    
+    def update_memory_bank(self, features, labels):
+        """更新memory bank"""
+        features = F.normalize(features, dim=1)
+        
+        for i, label in enumerate(labels):
+            label = label.item()
+            ptr = self.memory_ptr[label].item()
+            
+            # 循环覆盖更新
+            self.memory_bank[label, ptr] = features[i].detach()
+            self.memory_ptr[label] = (ptr + 1) % self.memory_size
+    
+    def forward(self, features, labels):
+        """
+        features: [batch_size, feature_dim]
+        labels: [batch_size] 用户ID
+        """
+        batch_size = features.size(0)
+        features = F.normalize(features, dim=1)
+        
+        # 更新memory bank
+        self.update_memory_bank(features, labels)
+        
+        total_loss = 0
+        num_pairs = 0
+        
+        # 对batch中每个样本计算与全局负样本的对比损失
+        for i, anchor_label in enumerate(labels):
+            anchor_feature = features[i].unsqueeze(0)  # [1, feature_dim]
+            
+            # 正样本：同类别的其他样本（batch内 + memory bank）
+            positive_features = []
+            
+            # batch内正样本
+            batch_positives = features[labels == anchor_label]
+            if len(batch_positives) > 1:  # 除了自己还有其他同类样本
+                mask = torch.arange(len(batch_positives)) != (labels == anchor_label).nonzero()[0]
+                if mask.any():
+                    positive_features.append(batch_positives[mask])
+            
+            # memory bank中的正样本
+            memory_positives = self.memory_bank[anchor_label]  # [memory_size, feature_dim]
+            positive_features.append(memory_positives[:50])  # 取前50个避免过多
+            
+            if positive_features:
+                positive_features = torch.cat(positive_features, dim=0)
+                pos_similarity = torch.matmul(anchor_feature, positive_features.T) / self.temperature
+                pos_loss = -pos_similarity.mean()
+            else:
+                pos_loss = torch.tensor(0.0, device=features.device)
+            
+            # 负样本：所有其他类别的样本（全局）
+            negative_features = []
+            for neg_label in range(self.num_classes):
+                if neg_label != anchor_label:
+                    # 从memory bank中采样负样本
+                    neg_samples = self.memory_bank[neg_label][:20]  # 每个类别20个样本
+                    negative_features.append(neg_samples)
+            
+            if negative_features:
+                negative_features = torch.cat(negative_features, dim=0)  # [num_negatives, feature_dim]
+                neg_similarity = torch.matmul(anchor_feature, negative_features.T) / self.temperature
+                
+                # Hard negative mining
+                hard_mask = neg_similarity.squeeze() > self.margin
+                if hard_mask.any():
+                    neg_loss = neg_similarity.squeeze()[hard_mask].mean()
+                else:
+                    neg_loss = neg_similarity.mean()
+            else:
+                neg_loss = torch.tensor(0.0, device=features.device)
+            
+            # 累积损失
+            total_loss += pos_loss + neg_loss
+            num_pairs += 1
+        
+        return total_loss / num_pairs if num_pairs > 0 else torch.tensor(0.0, device=features.device)
 
 
 class InterUserContrastiveLoss(nn.Module):
@@ -292,7 +417,7 @@ class LabelSmoothingLoss(nn.Module):
         return F.kl_div(F.log_softmax(pred, dim=1), smooth_target, reduction='batchmean')
 
 
-def train_with_contrastive_learning(model, train_loader, val_loader, device, args):
+def train_with_contrastive_learning(model, train_loader, val_loader, device, args, rank=0):
     """使用对比学习训练分类器"""
     
     # 损失函数
@@ -304,7 +429,14 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         classification_criterion = nn.CrossEntropyLoss()
     
     # 选择对比损失类型
-    if args.contrastive_type == 'interuser':
+    if args.contrastive_type == 'global':
+        contrastive_criterion = GlobalNegativeContrastiveLoss(
+            num_classes=args.num_classes,
+            temperature=args.contrastive_temperature,
+            margin=args.contrastive_margin,
+            memory_size=200  # 每类存储200个特征向量
+        )
+    elif args.contrastive_type == 'interuser':
         contrastive_criterion = InterUserContrastiveLoss(
             temperature=args.contrastive_temperature,
             margin=args.contrastive_margin
@@ -344,7 +476,12 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         contrastive_losses = []
         classification_losses = []
         
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
+        # 只在主进程显示进度条
+        if is_main_process():
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
+        else:
+            pbar = train_loader
+        
         for batch_idx, batch_data in enumerate(pbar):
             data, target = batch_data
             target = target.to(device)
@@ -423,10 +560,12 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
             contrastive_losses.append(contrastive_loss.item())
             classification_losses.append(classification_loss.item())
             
-            pbar.set_postfix({
-                'Loss': f'{total_loss.item():.4f}',
-                'Acc': f'{100.*train_correct/train_total:.1f}%'
-            })
+            # 只在主进程更新进度条
+            if is_main_process() and isinstance(pbar, tqdm):
+                pbar.set_postfix({
+                    'Loss': f'{total_loss.item():.4f}',
+                    'Acc': f'{100.*train_correct/train_total:.1f}%'
+                })
         
         # 验证
         model.eval()
@@ -462,46 +601,49 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         history['contrastive_loss'].append(np.mean(contrastive_losses))
         history['classification_loss'].append(np.mean(classification_losses))
         
-        print(f"Epoch {epoch+1}/{args.epochs}")
-        print(f"Train: Loss={avg_train_loss:.4f}, Acc={train_acc:.2f}%")
-        print(f"Val: Loss={avg_val_loss:.4f}, Acc={val_acc:.2f}%")
-        print(f"LR: {optimizer.param_groups[0]['lr']:.6f}")
+        # 只在主进程打印
+        if is_main_process():
+            print(f"Epoch {epoch+1}/{args.epochs}")
+            print(f"Train: Loss={avg_train_loss:.4f}, Acc={train_acc:.2f}%")
+            print(f"Val: Loss={avg_val_loss:.4f}, Acc={val_acc:.2f}%")
+            print(f"LR: {optimizer.param_groups[0]['lr']:.6f}")
         
-        # 早停和最佳模型保存
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_model_state = model.state_dict().copy()
-            patience_counter = 0
-            print(f"🎯 New best validation accuracy: {best_val_acc:.2f}%")
-        else:
-            patience_counter += 1
-        
-        if patience_counter >= args.patience:
-            print(f"🛑 Early stopping at epoch {epoch+1}")
-            break
+        # 早停和最佳模型保存（只在主进程）
+        if is_main_process():
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                best_model_state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+                patience_counter = 0
+                print(f"🎯 New best validation accuracy: {best_val_acc:.2f}%")
+            else:
+                patience_counter += 1
+            
+            if patience_counter >= args.patience:
+                print(f"🛑 Early stopping at epoch {epoch+1}")
+                break
     
     return model, best_model_state, best_val_acc, history
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Improved classifier training')
+    parser = argparse.ArgumentParser(description='Improved classifier training with distributed support')
     parser.add_argument('--data_dir', type=str, required=True, help='Dataset directory')
     parser.add_argument('--output_dir', type=str, default='./improved_classifier', help='Output directory')
     parser.add_argument('--num_classes', type=int, default=31, help='Number of classes')
     parser.add_argument('--epochs', type=int, default=200, help='Number of epochs')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size (smaller for small dataset)')
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size per GPU')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (smaller)')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay (stronger)')
     parser.add_argument('--dropout_rate', type=float, default=0.5, help='Dropout rate')
-    parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
+    parser.add_argument('--patience', type=int, default=10, help='Early stopping patience')
     
     # 对比学习参数
     parser.add_argument('--use_contrastive', action='store_true', help='Use contrastive learning')
     parser.add_argument('--contrastive_weight', type=float, default=0.5, help='Contrastive loss weight')
     parser.add_argument('--contrastive_temperature', type=float, default=0.07, help='Contrastive temperature')
     parser.add_argument('--contrastive_type', type=str, default='supcon', 
-                       choices=['interuser', 'supcon'],
-                       help='Contrastive loss type: interuser(hard negative mining), supcon(supervised contrastive)')
+                       choices=['global', 'interuser', 'supcon'],
+                       help='Contrastive loss type: global(memory bank all users), interuser(hard negative mining), supcon(supervised contrastive)')
     parser.add_argument('--contrastive_margin', type=float, default=0.5, 
                        help='Margin for hard negative mining in interuser contrastive loss')
     
@@ -517,18 +659,29 @@ def main():
     
     args = parser.parse_args()
     
-    # 设置设备
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    # 初始化分布式训练
+    rank, world_size, local_rank = setup_distributed()
     
-    # 创建输出目录
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # 设置设备
+    if torch.cuda.is_available():
+        device = torch.device(f'cuda:{local_rank}')
+        torch.cuda.set_device(local_rank)
+    else:
+        device = torch.device('cpu')
+    
+    if is_main_process():
+        print(f"Using distributed training with {world_size} GPUs")
+        print(f"Current device: {device}")
+    
+    # 创建输出目录（只在主进程）
+    if is_main_process():
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
     
     # 设置随机种子
-    torch.manual_seed(42)
-    np.random.seed(42)
-    random.seed(42)
+    torch.manual_seed(42 + rank)  # 每个进程不同的随机种子
+    np.random.seed(42 + rank)
+    random.seed(42 + rank)
     
     # 数据集
     train_dataset = ImprovedMicroDopplerDataset(
@@ -541,17 +694,23 @@ def main():
         split='val'
     )
     
+    # 分布式采样器
+    train_sampler = DistributedSampler(train_dataset) if world_size > 1 else None
+    val_sampler = DistributedSampler(val_dataset, shuffle=False) if world_size > 1 else None
+    
     train_loader = DataLoader(
         train_dataset, 
         batch_size=args.batch_size, 
-        shuffle=True, 
+        shuffle=(train_sampler is None), 
+        sampler=train_sampler,
         num_workers=4,
         pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset, 
         batch_size=args.batch_size * 2, 
-        shuffle=False, 
+        shuffle=False,
+        sampler=val_sampler,
         num_workers=4,
         pin_memory=True
     )
@@ -564,31 +723,44 @@ def main():
         freeze_layers=args.freeze_layers
     ).to(device)
     
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
+    # 包装为分布式模型
+    if world_size > 1:
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+    
+    if is_main_process():
+        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Model parameters: {total_params:,}")
     
     # 训练
     model, best_state, best_acc, history = train_with_contrastive_learning(
-        model, train_loader, val_loader, device, args
+        model, train_loader, val_loader, device, args, rank
     )
     
-    # 保存最佳模型
-    model_path = output_dir / 'best_improved_classifier.pth'
-    torch.save({
-        'model_state_dict': best_state,
-        'best_val_acc': best_acc,
-        'num_classes': args.num_classes,
-        'model_name': args.backbone,
-        'args': vars(args)
-    }, model_path)
+    # 只在主进程保存模型
+    if is_main_process():
+        output_dir = Path(args.output_dir)
+        
+        # 保存最佳模型
+        model_path = output_dir / 'best_improved_classifier.pth'
+        torch.save({
+            'model_state_dict': best_state,
+            'best_val_acc': best_acc,
+            'num_classes': args.num_classes,
+            'model_name': args.backbone,
+            'args': vars(args)
+        }, model_path)
+        
+        # 保存训练历史
+        history_path = output_dir / 'training_history.json'
+        with open(history_path, 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        print(f"\n✅ Training completed!")
+        print(f"Best validation accuracy: {best_acc:.2f}%")
+        print(f"Model saved to: {model_path}")
     
-    # 保存训练历史
-    history_path = output_dir / 'training_history.json'
-    with open(history_path, 'w') as f:
-        json.dump(history, f, indent=2)
-    
-    print(f"\n✅ Training completed!")
-    print(f"Best validation accuracy: {best_acc:.2f}%")
-    print(f"Model saved to: {model_path}")
+    # 清理分布式训练
+    cleanup_distributed()
 
 
 if __name__ == "__main__":
