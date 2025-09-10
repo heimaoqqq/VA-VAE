@@ -488,10 +488,13 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
     else:
         classification_criterion = nn.CrossEntropyLoss()
     
-    # 暂时完全禁用对比学习，先确保基础训练正常
-    if is_main_process():
-        print("🔧 暂时禁用对比学习，调试基础训练流程")
-    contrastive_criterion = None
+    # 重新启用对比学习 - 现在基础训练已验证正常
+    if args.use_contrastive:
+        if is_main_process():
+            print("✅ 启用SupConLoss对比学习 - 优化用户间细微差异识别")
+        contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
+    else:
+        contrastive_criterion = None
     
     # 优化器 - 使用更小的学习率和更强的weight decay
     optimizer = optim.AdamW(
@@ -536,19 +539,55 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
             data, target = batch_data
             target = target.to(device)
             
-            # 最简化的训练循环 - 纯分类训练
-            if isinstance(data, (tuple, list)):
-                data = data[0]
-            
-            data = data.to(device)
-            
-            # 纯分类训练
-            logits = model(data)
-            total_loss = classification_criterion(logits, target)
-            classification_loss = total_loss
-            contrastive_loss = torch.tensor(0.0, device=device)
-            
-            pred = logits.argmax(dim=1)
+            # 对比学习训练循环
+            if isinstance(data, (tuple, list)) and len(data) == 2:
+                # 对比学习数据对
+                data1, data2 = data[0].to(device), data[1].to(device)
+                
+                if args.use_contrastive and contrastive_criterion is not None:
+                    # 单次前向传播获取特征和投影
+                    features1, proj1 = model(data1, return_features=True)
+                    features2, proj2 = model(data2, return_features=True)
+                    
+                    # 从特征计算分类结果（避免重复前向传播）
+                    if hasattr(model, 'module'):
+                        logits1 = model.module.classifier(features1)
+                        logits2 = model.module.classifier(features2)
+                    else:
+                        logits1 = model.classifier(features1)
+                        logits2 = model.classifier(features2)
+                    
+                    # 分类损失
+                    cls_loss1 = classification_criterion(logits1, target)
+                    cls_loss2 = classification_criterion(logits2, target)
+                    classification_loss = (cls_loss1 + cls_loss2) / 2
+                    
+                    # 对比损失：使用投影特征
+                    combined_proj = torch.cat([proj1, proj2], dim=0)
+                    combined_labels = torch.cat([target, target], dim=0)
+                    contrastive_loss = contrastive_criterion(combined_proj, combined_labels)
+                    
+                    # 总损失
+                    total_loss = classification_loss + args.contrastive_weight * contrastive_loss
+                    pred = logits1.argmax(dim=1)
+                else:
+                    # 只使用第一张图进行分类
+                    logits = model(data1)
+                    total_loss = classification_criterion(logits, target)
+                    classification_loss = total_loss
+                    contrastive_loss = torch.tensor(0.0, device=device)
+                    pred = logits.argmax(dim=1)
+            else:
+                # 单张图像训练
+                if isinstance(data, (tuple, list)):
+                    data = data[0]
+                
+                data = data.to(device)
+                logits = model(data)
+                total_loss = classification_criterion(logits, target)
+                classification_loss = total_loss
+                contrastive_loss = torch.tensor(0.0, device=device)
+                pred = logits.argmax(dim=1)
             
             # 反向传播
             optimizer.zero_grad()
