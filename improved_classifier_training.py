@@ -345,10 +345,13 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         classification_losses = []
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
-        for batch_idx, (data, target) in enumerate(pbar):
+        for batch_idx, batch_data in enumerate(pbar):
+            data, target = batch_data
+            target = target.to(device)
+            
             if isinstance(data, tuple):  # 对比学习对
                 data1, data2 = data
-                data1, data2, target = data1.to(device), data2.to(device), target.to(device)
+                data1, data2 = data1.to(device), data2.to(device)
                 
                 # 前向传播
                 features1, proj1 = model(data1, return_features=True)
@@ -374,12 +377,21 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
                 pred = logits1.argmax(dim=1)
                 
             else:  # 常规训练
-                data, target = data.to(device), target.to(device)
+                data = data.to(device)
                 
-                logits = model(data)
-                classification_loss = classification_criterion(logits, target)
-                contrastive_loss = torch.tensor(0.0)
-                total_loss = classification_loss
+                if args.use_contrastive:
+                    # 即使是常规数据，也可以用对比学习
+                    features, proj = model(data, return_features=True)
+                    logits = model.classifier(features)
+                    
+                    classification_loss = classification_criterion(logits, target)
+                    contrastive_loss = contrastive_criterion(proj, target)
+                    total_loss = classification_loss + args.contrastive_weight * contrastive_loss
+                else:
+                    logits = model(data)
+                    classification_loss = classification_criterion(logits, target)
+                    contrastive_loss = torch.tensor(0.0)
+                    total_loss = classification_loss
                 
                 pred = logits.argmax(dim=1)
             
