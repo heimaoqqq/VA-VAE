@@ -84,8 +84,19 @@ def load_classifier(model_path, device):
     """加载训练好的分类器"""
     checkpoint = torch.load(model_path, map_location=device)
     
-    # 创建模型
-    model = timm.create_model('resnet18', pretrained=False, num_classes=checkpoint['num_classes'])
+    # 导入ImprovedClassifier类
+    import sys
+    import os
+    sys.path.append(os.path.dirname(__file__))
+    from improved_classifier_training import ImprovedClassifier
+    
+    # 创建ImprovedClassifier模型 - 匹配训练时的架构
+    model = ImprovedClassifier(
+        num_classes=checkpoint['num_classes'],
+        backbone='resnet18',
+        dropout_rate=0.5,
+        freeze_layers='minimal'
+    )
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     model.eval()
