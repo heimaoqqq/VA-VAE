@@ -69,14 +69,14 @@ class GlobalNegativeContrastiveLoss(nn.Module):
     
     def update_memory_bank(self, features, labels):
         """更新memory bank"""
-        features = F.normalize(features, dim=1)
+        features_normalized = F.normalize(features.detach().clone(), dim=1)
         
         for i, label in enumerate(labels):
             label = label.item()
             ptr = self.memory_ptr[label].item()
             
             # 循环覆盖更新
-            self.memory_bank[label, ptr] = features[i].detach()
+            self.memory_bank[label, ptr] = features_normalized[i]
             self.memory_ptr[label] = (ptr + 1) % self.memory_size
     
     def forward(self, features, labels):
@@ -172,8 +172,8 @@ class InterUserContrastiveLoss(nn.Module):
         
         # 移除对角线（自己和自己）
         eye_mask = torch.eye(batch_size).to(features.device)
-        positive_mask = positive_mask - eye_mask
-        negative_mask = negative_mask - eye_mask
+        positive_mask = positive_mask.clone() - eye_mask
+        negative_mask = negative_mask.clone() - eye_mask
         
         # 计算正样本损失（同用户样本应该相似）
         pos_sim = similarity_matrix * positive_mask
