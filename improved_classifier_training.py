@@ -272,7 +272,7 @@ class ImprovedMicroDopplerDataset(Dataset):
         
         for user_dir in sorted(id_dirs):
             if user_dir.is_dir():
-                user_id = int(user_dir.name.split('_')[1])  # 保持原始ID编号
+                user_id = int(user_dir.name.split('_')[1]) - 1  # 转换为0-based索引
                 for ext in ['*.png', '*.jpg', '*.jpeg']:
                     for img_path in user_dir.glob(ext):
                         user_samples[user_id].append(str(img_path))
