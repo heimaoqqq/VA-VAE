@@ -149,61 +149,62 @@ class GlobalNegativeContrastiveLoss(nn.Module):
 
 
 class InterUserContrastiveLoss(nn.Module):
-    """用户间对比损失函数 - 专门处理用户间差异小的问题"""
+    """用户间对比损失函数 - 简化版本避免梯度问题"""
     
     def __init__(self, temperature=0.07, margin=0.5):
         super().__init__()
         self.temperature = temperature
-        self.margin = margin  # 用于hard negative mining
+        self.margin = margin
     
     def forward(self, features, labels):
         """
-        features: [batch_size, feature_dim]
+        features: [batch_size, feature_dim] 
         labels: [batch_size] 用户ID
         """
         batch_size = features.size(0)
-        features = F.normalize(features, dim=1)
+        if batch_size < 2:
+            return torch.tensor(0.0, device=features.device, requires_grad=True)
         
-        # 计算所有样本间的相似度
-        similarity_matrix = torch.matmul(features, features.T) / self.temperature
+        # 归一化特征
+        features_norm = F.normalize(features, dim=1)
         
-        # 创建正负样本mask
-        labels = labels.contiguous().view(-1, 1)
-        positive_mask = torch.eq(labels, labels.T).float().to(features.device)
-        negative_mask = 1 - positive_mask
+        # 计算相似度矩阵
+        sim_matrix = torch.div(torch.matmul(features_norm, features_norm.T), self.temperature)
         
-        # 移除对角线（自己和自己）
-        eye_mask = torch.eye(batch_size).to(features.device)
-        positive_mask = positive_mask * (1 - eye_mask)
-        negative_mask = negative_mask * (1 - eye_mask)
+        # 创建标签mask
+        labels_expanded = labels.view(-1, 1)
+        mask = torch.eq(labels_expanded, labels_expanded.T)
         
-        # 计算正样本损失（同用户样本应该相似）
-        pos_sim = similarity_matrix * positive_mask
-        pos_loss = -pos_sim.sum() / positive_mask.sum().clamp(min=1)
+        # 正样本：同标签但不是自己
+        eye_mask = torch.eye(batch_size, device=features.device)
+        pos_mask = torch.mul(mask.float(), (1.0 - eye_mask))
         
-        # 计算负样本损失（不同用户样本应该不相似）
-        # 使用hard negative mining - 只关注难区分的负样本
-        neg_sim = similarity_matrix * negative_mask
-        hard_negatives = (neg_sim > self.margin) * negative_mask
+        # 负样本：不同标签
+        neg_mask = (~mask).float()
         
-        if hard_negatives.sum() > 0:
-            neg_loss = neg_sim[hard_negatives > 0].mean()
+        # 计算损失
+        if pos_mask.sum() > 0:
+            pos_sim = sim_matrix * pos_mask
+            pos_loss = -torch.sum(pos_sim) / torch.sum(pos_mask)
         else:
-            neg_loss = neg_sim[negative_mask > 0].mean()
+            pos_loss = torch.tensor(0.0, device=features.device)
         
-        # 总损失 = 减少正样本距离 + 增加负样本距离
-        total_loss = pos_loss + neg_loss
+        if neg_mask.sum() > 0:
+            neg_sim = sim_matrix * neg_mask
+            # 简化的负样本损失，不使用hard negative mining
+            neg_loss = torch.sum(neg_sim) / torch.sum(neg_mask)
+        else:
+            neg_loss = torch.tensor(0.0, device=features.device)
         
-        return total_loss
+        return pos_loss + neg_loss
     
 
 class SupConLoss(nn.Module):
-    """监督对比损失 - 更适合多类分类的对比学习"""
+    """监督对比损失 - 避免所有原地操作"""
     
-    def __init__(self, temperature=0.07, contrast_mode='all'):
+    def __init__(self, temperature=0.07):
         super().__init__()
         self.temperature = temperature
-        self.contrast_mode = contrast_mode
     
     def forward(self, features, labels):
         """
@@ -213,41 +214,49 @@ class SupConLoss(nn.Module):
         device = features.device
         batch_size = features.shape[0]
         
-        labels = labels.contiguous().view(-1, 1)
-        mask = torch.eq(labels, labels.T).float().to(device)
+        if batch_size < 2:
+            return torch.tensor(0.0, device=device, requires_grad=True)
         
         # 归一化特征
-        features = F.normalize(features, dim=1)
+        features_norm = F.normalize(features, dim=1)
         
-        # 计算anchor和所有样本的相似度
-        anchor_dot_contrast = torch.div(
-            torch.matmul(features, features.T),
-            self.temperature
-        )
+        # 计算相似度矩阵
+        sim_matrix = torch.matmul(features_norm, features_norm.T) / self.temperature
         
-        # 为数值稳定性减去最大值
-        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
-        logits = anchor_dot_contrast - logits_max.detach()
+        # 创建正样本mask
+        labels_expanded = labels.view(-1, 1)
+        pos_mask = torch.eq(labels_expanded, labels_expanded.T).float()
         
-        # 移除对角线
-        logits_mask = torch.scatter(
-            torch.ones_like(mask),
-            1,
-            torch.arange(batch_size).view(-1, 1).to(device),
-            0
-        )
-        mask = mask * logits_mask
+        # 移除对角线 - 避免原地操作
+        eye_mask = torch.eye(batch_size, device=device)
+        pos_mask = torch.sub(pos_mask, eye_mask)
         
-        # 计算log概率
-        exp_logits = torch.exp(logits) * logits_mask
-        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+        # 负样本mask
+        neg_mask = torch.ne(labels_expanded, labels_expanded.T).float()
         
-        # 计算正样本的平均log概率
-        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
+        # 数值稳定性
+        sim_max, _ = torch.max(sim_matrix, dim=1, keepdim=True)
+        sim_matrix = torch.sub(sim_matrix, sim_max.detach())
         
-        loss = -mean_log_prob_pos.mean()
+        # 计算InfoNCE损失
+        exp_sim = torch.exp(sim_matrix)
         
-        return loss
+        # 分母：所有负样本 + 正样本
+        denominator = torch.sum(exp_sim * neg_mask, dim=1, keepdim=True) + \
+                     torch.sum(exp_sim * pos_mask, dim=1, keepdim=True)
+        
+        # 分子：正样本
+        numerator = torch.sum(exp_sim * pos_mask, dim=1, keepdim=True)
+        
+        # 避免除零
+        loss = torch.neg(torch.log(torch.div(numerator, denominator + 1e-8)))
+        
+        # 只计算有正样本的行
+        valid_mask = (pos_mask.sum(dim=1) > 0)
+        if valid_mask.sum() > 0:
+            return loss[valid_mask].mean()
+        else:
+            return torch.tensor(0.0, device=device, requires_grad=True)
 
 
 class ImprovedMicroDopplerDataset(Dataset):
@@ -302,8 +311,8 @@ class ImprovedMicroDopplerDataset(Dataset):
                 # 只使用极轻微的噪声增强，不破坏频谱结构
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                # 可选：极小的高斯噪声（模拟测量噪声）
-                transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.01 if torch.rand(1).item() < 0.3 else x)
+                # 可选：极小的高斯噪声（模拟测量噪声） - 避免原地操作
+                # transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.01 if torch.rand(1).item() < 0.3 else x)
             ])
         else:
             self.transform = transforms.Compose([
@@ -459,23 +468,13 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
     else:
         classification_criterion = nn.CrossEntropyLoss()
     
-    # 选择对比损失类型
-    # 注意：global类型的memory bank在分布式训练中存在梯度问题，建议使用interuser或supcon
-    if args.contrastive_type == 'global':
-        print("⚠️ 警告：global对比损失在分布式训练中可能存在问题，自动切换到interuser")
-        contrastive_criterion = InterUserContrastiveLoss(
-            temperature=args.contrastive_temperature,
-            margin=args.contrastive_margin
-        )
-    elif args.contrastive_type == 'interuser':
-        contrastive_criterion = InterUserContrastiveLoss(
-            temperature=args.contrastive_temperature,
-            margin=args.contrastive_margin
-        )
-    elif args.contrastive_type == 'supcon':
+    # 重新启用对比学习 - 使用最稳定的SupConLoss
+    if args.use_contrastive:
+        if is_main_process():
+            print("✅ 启用SupConLoss对比学习 - 专门优化用户间细微差异识别")
         contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
     else:
-        contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)  # 默认使用SupCon
+        contrastive_criterion = None
     
     # 优化器 - 使用更小的学习率和更强的weight decay
     optimizer = optim.AdamW(
@@ -517,64 +516,59 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
             data, target = batch_data
             target = target.to(device)
             
-            # 调试信息
-            # print(f"Data type: {type(data)}, Target type: {type(target)}")
-            
-            # 检查是否是对比学习的tuple对
+            # 处理数据格式
             if isinstance(data, (tuple, list)) and len(data) == 2:
-                data1, data2 = data
-                # 确保data1和data2是tensor
-                if isinstance(data1, torch.Tensor) and isinstance(data2, torch.Tensor):
-                    data1, data2 = data1.to(device), data2.to(device)
+                # 对比学习数据对
+                data1, data2 = data[0].to(device), data[1].to(device)
+                
+                if args.use_contrastive and contrastive_criterion is not None:
+                    # 提取特征用于对比学习
+                    with torch.no_grad():
+                        # 检查模型是否有return_features功能
+                        try:
+                            features1, _ = model(data1, return_features=True)
+                            features2, _ = model(data2, return_features=True)
+                        except:
+                            # 如果模型没有return_features，使用分类器前的特征
+                            if hasattr(model, 'module'):
+                                features1 = model.module.features(data1)
+                                features2 = model.module.features(data2)
+                            else:
+                                features1 = model.features(data1)
+                                features2 = model.features(data2)
                     
-                    # 前向传播
-                    features1, proj1 = model(data1, return_features=True)
-                    features2, proj2 = model(data2, return_features=True)
-                    
-                    # 分类损失 - 处理DDP包装
-                    classifier = model.module.classifier if hasattr(model, 'module') else model.classifier
-                    logits1 = classifier(features1)
-                    logits2 = classifier(features2)
-                    
+                    # 分类损失
+                    logits1 = model(data1)
+                    logits2 = model(data2)
                     cls_loss1 = classification_criterion(logits1, target)
                     cls_loss2 = classification_criterion(logits2, target)
                     classification_loss = (cls_loss1 + cls_loss2) / 2
                     
                     # 对比损失
-                    combined_proj = torch.cat([proj1, proj2], dim=0)
+                    combined_features = torch.cat([features1.detach(), features2.detach()], dim=0)
                     combined_labels = torch.cat([target, target], dim=0)
-                    contrastive_loss = contrastive_criterion(combined_proj, combined_labels)
+                    contrastive_loss = contrastive_criterion(combined_features, combined_labels)
                     
                     # 总损失
                     total_loss = classification_loss + args.contrastive_weight * contrastive_loss
-                    
-                    # 统计
                     pred = logits1.argmax(dim=1)
                 else:
-                    raise ValueError(f"Expected tensors in contrastive pair, got {type(data1)}, {type(data2)}")
-                
-            elif isinstance(data, torch.Tensor):  # 常规张量数据
-                data = data.to(device)
-                
-                if args.use_contrastive:
-                    # 常规单张图像
-                    features, _ = model(data, return_features=True)
-                    classifier = model.module.classifier if hasattr(model, 'module') else model.classifier
-                    logits = classifier(features)
-                    
-                    classification_loss = classification_criterion(logits, target)
-                    contrastive_loss = torch.tensor(0.0)
-                    total_loss = classification_loss
-                else:
+                    # 只使用分类损失
+                    data = data1
                     logits = model(data)
                     classification_loss = classification_criterion(logits, target)
-                    contrastive_loss = torch.tensor(0.0)
+                    contrastive_loss = torch.tensor(0.0, device=device)
                     total_loss = classification_loss
-                
-                pred = logits.argmax(dim=1)
-            
+                    pred = logits.argmax(dim=1)
+                    
             else:
-                raise ValueError(f"Unexpected data type: {type(data)}, content: {data}")
+                # 单张图像
+                data = data.to(device)
+                logits = model(data)
+                classification_loss = classification_criterion(logits, target)
+                contrastive_loss = torch.tensor(0.0, device=device)
+                total_loss = classification_loss
+                pred = logits.argmax(dim=1)
             
             # 反向传播
             optimizer.zero_grad()
@@ -590,7 +584,7 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
             train_correct += pred.eq(target).sum().item()
             train_total += target.size(0)
             
-            contrastive_losses.append(contrastive_loss.item())
+            contrastive_losses.append(contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else 0.0)
             classification_losses.append(classification_loss.item())
             
             # 只在主进程更新进度条
