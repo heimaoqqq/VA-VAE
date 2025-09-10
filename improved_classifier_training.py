@@ -53,9 +53,9 @@ def is_main_process():
 
 
 class GlobalNegativeContrastiveLoss(nn.Module):
-    """全局负样本对比损失 - 每个用户与所有其他用户对比"""
+    """全局负样本对比损失函数"""
     
-    def __init__(self, num_classes, temperature=0.07, margin=0.5, memory_size=1000):
+    def __init__(self, num_classes, temperature=0.07, margin=0.5, memory_size=200):
         super().__init__()
         self.num_classes = num_classes
         self.temperature = temperature
@@ -67,16 +67,17 @@ class GlobalNegativeContrastiveLoss(nn.Module):
         self.register_buffer('memory_ptr', torch.zeros(num_classes, dtype=torch.long))
         self.memory_bank = F.normalize(self.memory_bank, dim=2)
     
+    @torch.no_grad()
     def update_memory_bank(self, features, labels):
         """更新memory bank"""
-        features_normalized = F.normalize(features.detach().clone(), dim=1)
+        features_normalized = F.normalize(features, dim=1)
         
         for i, label in enumerate(labels):
             label = label.item()
             ptr = self.memory_ptr[label].item()
             
-            # 循环覆盖更新
-            self.memory_bank[label, ptr] = features_normalized[i]
+            # 直接更新，因为已经在no_grad上下文中
+            self.memory_bank[label, ptr] = features_normalized[i].detach()
             self.memory_ptr[label] = (ptr + 1) % self.memory_size
     
     def forward(self, features, labels):
@@ -87,8 +88,9 @@ class GlobalNegativeContrastiveLoss(nn.Module):
         batch_size = features.size(0)
         features = F.normalize(features, dim=1)
         
-        # 更新memory bank
-        self.update_memory_bank(features, labels)
+        # 更新memory bank - 使用detached features避免梯度问题
+        with torch.no_grad():
+            self.update_memory_bank(features.detach(), labels)
         
         total_loss = 0
         num_pairs = 0
@@ -172,8 +174,8 @@ class InterUserContrastiveLoss(nn.Module):
         
         # 移除对角线（自己和自己）
         eye_mask = torch.eye(batch_size).to(features.device)
-        positive_mask = positive_mask.clone() - eye_mask
-        negative_mask = negative_mask.clone() - eye_mask
+        positive_mask = positive_mask * (1 - eye_mask)
+        negative_mask = negative_mask * (1 - eye_mask)
         
         # 计算正样本损失（同用户样本应该相似）
         pos_sim = similarity_matrix * positive_mask
@@ -301,7 +303,7 @@ class ImprovedMicroDopplerDataset(Dataset):
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
                 # 可选：极小的高斯噪声（模拟测量噪声）
-                transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.01 if torch.rand(1) < 0.3 else x)
+                transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.01 if torch.rand(1).item() < 0.3 else x)
             ])
         else:
             self.transform = transforms.Compose([
@@ -458,12 +460,12 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         classification_criterion = nn.CrossEntropyLoss()
     
     # 选择对比损失类型
+    # 注意：global类型的memory bank在分布式训练中存在梯度问题，建议使用interuser或supcon
     if args.contrastive_type == 'global':
-        contrastive_criterion = GlobalNegativeContrastiveLoss(
-            num_classes=args.num_classes,
+        print("⚠️ 警告：global对比损失在分布式训练中可能存在问题，自动切换到interuser")
+        contrastive_criterion = InterUserContrastiveLoss(
             temperature=args.contrastive_temperature,
-            margin=args.contrastive_margin,
-            memory_size=200  # 每类存储200个特征向量
+            margin=args.contrastive_margin
         )
     elif args.contrastive_type == 'interuser':
         contrastive_criterion = InterUserContrastiveLoss(
