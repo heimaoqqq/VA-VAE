@@ -27,14 +27,32 @@ class RealMicroDopplerDataset(Dataset):
         self.samples = []
         
         # 扫描所有ID_*目录
-        for user_dir in sorted(self.data_dir.glob("ID_*")):
+        print(f"Scanning directory: {self.data_dir}")
+        all_dirs = list(self.data_dir.glob("ID_*"))
+        print(f"Found directories: {[d.name for d in all_dirs]}")
+        
+        for user_dir in sorted(all_dirs):
             if user_dir.is_dir():
                 # ID_1 -> user_id 0, ID_2 -> user_id 1, etc.
                 user_id = int(user_dir.name.split('_')[1]) - 1
+                print(f"Processing {user_dir.name} -> user_id {user_id}")
                 
-                # 扫描该用户的所有图像
-                for img_path in sorted(user_dir.glob("*.png")):
+                # 扫描该用户的所有图像（支持多种格式）
+                found_files = []
+                for ext in ['*.png', '*.jpg', '*.jpeg']:
+                    files = list(user_dir.glob(ext))
+                    found_files.extend(files)
+                    if files:
+                        print(f"  Found {len(files)} {ext} files")
+                
+                for img_path in sorted(found_files):
                     self.samples.append((str(img_path), user_id))
+                    
+                if not found_files:
+                    print(f"  WARNING: No image files found in {user_dir}")
+                    # List all files to debug
+                    all_files = list(user_dir.iterdir())
+                    print(f"  Available files: {[f.name for f in all_files[:5]]}...")  # Show first 5
         
         print(f"Found {len(self.samples)} real samples from {len(set([s[1] for s in self.samples]))} users")
         
@@ -140,6 +158,12 @@ def analyze_results(predictions, labels, confidences, user_stats):
     # 总体准确率
     correct = sum([1 for p, l in zip(predictions, labels) if p == l])
     total = len(predictions)
+    
+    if total == 0:
+        print("❌ ERROR: No samples found for testing!")
+        print("Please check the dataset path and file formats.")
+        return None
+        
     overall_accuracy = correct / total
     
     # 置信度分析
