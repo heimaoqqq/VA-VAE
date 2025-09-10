@@ -352,14 +352,20 @@ class ImprovedMicroDopplerDataset(Dataset):
 
 
 class ImprovedClassifier(nn.Module):
-    """改进的分类器，专为微多普勒信号优化"""
+    """改进的分类器，专为微多普勒信号优化 - 完全避免inplace操作"""
     
     def __init__(self, num_classes, backbone='resnet18', dropout_rate=0.3, freeze_layers=True):
         super().__init__()
         
-        # ResNet18是微多普勒分类的经典选择
-        self.backbone = timm.create_model('resnet18', pretrained=True, num_classes=0, global_pool='avg')
+        # 使用标准ResNet18避免TIMM的潜在inplace问题
+        import torchvision.models as models
+        self.backbone = models.resnet18(pretrained=True)
+        # 移除最后的分类层
+        self.backbone.fc = nn.Identity()
         feature_dim = 512
+        
+        # 递归禁用所有ReLU的inplace操作
+        self._disable_inplace_operations(self.backbone)
         
         # 灵活的层冻结策略
         if freeze_layers == 'minimal':
@@ -381,12 +387,12 @@ class ImprovedClassifier(nn.Module):
             # 不冻结任何层（风险更高但可能效果更好）
             pass
         
-        # 分类头
+        # 分类头 - 确保所有激活函数都不是inplace
         self.classifier = nn.Sequential(
             nn.Dropout(dropout_rate),
             nn.Linear(feature_dim, 256),
             nn.BatchNorm1d(256),
-            nn.ReLU(),
+            nn.ReLU(inplace=False),  # 明确禁用inplace
             nn.Dropout(dropout_rate * 0.5),
             nn.Linear(256, num_classes)
         )
@@ -394,9 +400,23 @@ class ImprovedClassifier(nn.Module):
         # 对比学习投影头
         self.projection_head = nn.Sequential(
             nn.Linear(feature_dim, 128),
-            nn.ReLU(),
+            nn.ReLU(inplace=False),  # 明确禁用inplace
             nn.Linear(128, 64)
         )
+    
+    def _disable_inplace_operations(self, module):
+        """递归禁用模块中所有的inplace操作"""
+        for child_name, child in module.named_children():
+            if isinstance(child, nn.ReLU):
+                # 替换inplace=True的ReLU
+                setattr(module, child_name, nn.ReLU(inplace=False))
+            elif isinstance(child, nn.ReLU6):
+                setattr(module, child_name, nn.ReLU6(inplace=False))
+            elif isinstance(child, nn.LeakyReLU):
+                setattr(module, child_name, nn.LeakyReLU(child.negative_slope, inplace=False))
+            else:
+                # 递归处理子模块
+                self._disable_inplace_operations(child)
     
     def forward(self, x, return_features=False):
         features = self.backbone(x)
@@ -468,13 +488,10 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
     else:
         classification_criterion = nn.CrossEntropyLoss()
     
-    # 重新启用对比学习 - 使用最稳定的SupConLoss
-    if args.use_contrastive:
-        if is_main_process():
-            print("✅ 启用SupConLoss对比学习 - 专门优化用户间细微差异识别")
-        contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
-    else:
-        contrastive_criterion = None
+    # 暂时完全禁用对比学习，先确保基础训练正常
+    if is_main_process():
+        print("🔧 暂时禁用对比学习，调试基础训练流程")
+    contrastive_criterion = None
     
     # 优化器 - 使用更小的学习率和更强的weight decay
     optimizer = optim.AdamW(
@@ -497,6 +514,9 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         'contrastive_loss': [], 'classification_loss': []
     }
     
+    # 禁用异常检测，避免额外开销
+    torch.autograd.set_detect_anomaly(False)
+    
     for epoch in range(args.epochs):
         # 训练
         model.train()
@@ -516,59 +536,19 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
             data, target = batch_data
             target = target.to(device)
             
-            # 处理数据格式
-            if isinstance(data, (tuple, list)) and len(data) == 2:
-                # 对比学习数据对
-                data1, data2 = data[0].to(device), data[1].to(device)
-                
-                if args.use_contrastive and contrastive_criterion is not None:
-                    # 提取特征用于对比学习
-                    with torch.no_grad():
-                        # 检查模型是否有return_features功能
-                        try:
-                            features1, _ = model(data1, return_features=True)
-                            features2, _ = model(data2, return_features=True)
-                        except:
-                            # 如果模型没有return_features，使用分类器前的特征
-                            if hasattr(model, 'module'):
-                                features1 = model.module.features(data1)
-                                features2 = model.module.features(data2)
-                            else:
-                                features1 = model.features(data1)
-                                features2 = model.features(data2)
-                    
-                    # 分类损失
-                    logits1 = model(data1)
-                    logits2 = model(data2)
-                    cls_loss1 = classification_criterion(logits1, target)
-                    cls_loss2 = classification_criterion(logits2, target)
-                    classification_loss = (cls_loss1 + cls_loss2) / 2
-                    
-                    # 对比损失
-                    combined_features = torch.cat([features1.detach(), features2.detach()], dim=0)
-                    combined_labels = torch.cat([target, target], dim=0)
-                    contrastive_loss = contrastive_criterion(combined_features, combined_labels)
-                    
-                    # 总损失
-                    total_loss = classification_loss + args.contrastive_weight * contrastive_loss
-                    pred = logits1.argmax(dim=1)
-                else:
-                    # 只使用分类损失
-                    data = data1
-                    logits = model(data)
-                    classification_loss = classification_criterion(logits, target)
-                    contrastive_loss = torch.tensor(0.0, device=device)
-                    total_loss = classification_loss
-                    pred = logits.argmax(dim=1)
-                    
-            else:
-                # 单张图像
-                data = data.to(device)
-                logits = model(data)
-                classification_loss = classification_criterion(logits, target)
-                contrastive_loss = torch.tensor(0.0, device=device)
-                total_loss = classification_loss
-                pred = logits.argmax(dim=1)
+            # 最简化的训练循环 - 纯分类训练
+            if isinstance(data, (tuple, list)):
+                data = data[0]
+            
+            data = data.to(device)
+            
+            # 纯分类训练
+            logits = model(data)
+            total_loss = classification_criterion(logits, target)
+            classification_loss = total_loss
+            contrastive_loss = torch.tensor(0.0, device=device)
+            
+            pred = logits.argmax(dim=1)
             
             # 反向传播
             optimizer.zero_grad()
