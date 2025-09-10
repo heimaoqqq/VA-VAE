@@ -488,11 +488,30 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
     else:
         classification_criterion = nn.CrossEntropyLoss()
     
-    # 重新启用对比学习 - 现在基础训练已验证正常
+    # 重新启用对比学习 - 根据类型选择损失函数
     if args.use_contrastive:
-        if is_main_process():
-            print("✅ 启用SupConLoss对比学习 - 优化用户间细微差异识别")
-        contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
+        if args.contrastive_type == 'interuser':
+            if is_main_process():
+                print("✅ 启用InterUserContrastiveLoss对比学习 - 优化用户间差异")
+            contrastive_criterion = InterUserContrastiveLoss(
+                temperature=args.contrastive_temperature,
+                margin=args.contrastive_margin
+            )
+        elif args.contrastive_type == 'supcon':
+            if is_main_process():
+                print("✅ 启用SupConLoss对比学习 - 监督对比学习")
+            contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
+        elif args.contrastive_type == 'global':
+            if is_main_process():
+                print("✅ 启用GlobalNegativeContrastiveLoss - 全局负样本对比")
+            contrastive_criterion = GlobalNegativeContrastiveLoss(
+                memory_size=64,
+                temperature=args.contrastive_temperature
+            )
+        else:
+            if is_main_process():
+                print(f"⚠️ 未知对比学习类型: {args.contrastive_type}，使用SupConLoss")
+            contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
     else:
         contrastive_criterion = None
     
