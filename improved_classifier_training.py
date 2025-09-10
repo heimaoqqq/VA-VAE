@@ -739,9 +739,9 @@ def main():
         freeze_layers=args.freeze_layers
     ).to(device)
     
-    # 包装为分布式模型
-    if world_size > 1:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+    # 分布式训练设置 - 添加find_unused_parameters处理projection_head
+    if dist.is_initialized():
+        model = DDP(model, device_ids=[device], find_unused_parameters=True)
     
     if is_main_process():
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
