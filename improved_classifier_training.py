@@ -259,7 +259,6 @@ class ImprovedMicroDopplerDataset(Dataset):
         
         # 收集所有样本
         user_samples = defaultdict(list)
-        print(f"🔍 扫描数据目录: {self.data_dir}")
         
         # 检查数据目录是否存在
         if not self.data_dir.exists():
@@ -267,31 +266,19 @@ class ImprovedMicroDopplerDataset(Dataset):
         
         # 查找ID_*目录
         id_dirs = list(self.data_dir.glob("ID_*"))
-        print(f"找到 {len(id_dirs)} 个ID目录")
         
         if len(id_dirs) == 0:
-            print("❌ 未找到ID_*目录，检查以下可能的目录:")
-            for item in self.data_dir.iterdir():
-                if item.is_dir():
-                    print(f"  - {item.name}")
             raise ValueError(f"在 {self.data_dir} 中未找到ID_*格式的用户目录")
         
         for user_dir in sorted(id_dirs):
             if user_dir.is_dir():
                 user_id = int(user_dir.name.split('_')[1])  # 保持原始ID编号
-                total_files = 0
                 for ext in ['*.png', '*.jpg', '*.jpeg']:
-                    files = list(user_dir.glob(ext))
-                    total_files += len(files)
-                    for img_path in files:
+                    for img_path in user_dir.glob(ext):
                         user_samples[user_id].append(str(img_path))
-                print(f"  ID_{user_id}: {total_files} 个文件")
         
         if not user_samples:
             raise ValueError("未找到任何图像文件")
-        
-        total_samples = sum(len(paths) for paths in user_samples.values())
-        print(f"总共收集到 {total_samples} 个样本，来自 {len(user_samples)} 个用户")
         
         # 划分训练/验证集
         for user_id, paths in user_samples.items():
@@ -305,8 +292,6 @@ class ImprovedMicroDopplerDataset(Dataset):
             
             for path in selected_paths:
                 self.samples.append((path, user_id))
-        
-        print(f"{split.capitalize()} set: {len(self.samples)} samples")
         
         # 微多普勒图像专用变换（最小增强，保持频谱结构）
         if split == 'train':
@@ -462,7 +447,7 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
     
     if is_main_process():
-        print(f"✅ 数据集验证通过: 训练集 {len(train_loader.dataset)} 样本, 验证集 {len(val_loader.dataset)} 样本")
+        print(f"训练集: {len(train_loader.dataset)} 样本, 验证集: {len(val_loader.dataset)} 样本")
     
     # 损失函数
     if args.use_focal_loss:
@@ -544,9 +529,10 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
                     features1, proj1 = model(data1, return_features=True)
                     features2, proj2 = model(data2, return_features=True)
                     
-                    # 分类损失
-                    logits1 = model.classifier(features1)
-                    logits2 = model.classifier(features2)
+                    # 分类损失 - 处理DDP包装
+                    classifier = model.module.classifier if hasattr(model, 'module') else model.classifier
+                    logits1 = classifier(features1)
+                    logits2 = classifier(features2)
                     
                     cls_loss1 = classification_criterion(logits1, target)
                     cls_loss2 = classification_criterion(logits2, target)
@@ -569,13 +555,14 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
                 data = data.to(device)
                 
                 if args.use_contrastive:
-                    # 即使是常规数据，也可以用对比学习
-                    features, proj = model(data, return_features=True)
-                    logits = model.classifier(features)
+                    # 常规单张图像
+                    features, _ = model(data, return_features=True)
+                    classifier = model.module.classifier if hasattr(model, 'module') else model.classifier
+                    logits = classifier(features)
                     
                     classification_loss = classification_criterion(logits, target)
-                    contrastive_loss = contrastive_criterion(proj, target)
-                    total_loss = classification_loss + args.contrastive_weight * contrastive_loss
+                    contrastive_loss = torch.tensor(0.0)
+                    total_loss = classification_loss
                 else:
                     logits = model(data)
                     classification_loss = classification_criterion(logits, target)
