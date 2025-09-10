@@ -349,34 +349,42 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
             data, target = batch_data
             target = target.to(device)
             
-            if isinstance(data, tuple):  # 对比学习对
+            # 调试信息
+            # print(f"Data type: {type(data)}, Target type: {type(target)}")
+            
+            # 检查是否是对比学习的tuple对
+            if isinstance(data, (tuple, list)) and len(data) == 2:
                 data1, data2 = data
-                data1, data2 = data1.to(device), data2.to(device)
+                # 确保data1和data2是tensor
+                if isinstance(data1, torch.Tensor) and isinstance(data2, torch.Tensor):
+                    data1, data2 = data1.to(device), data2.to(device)
+                    
+                    # 前向传播
+                    features1, proj1 = model(data1, return_features=True)
+                    features2, proj2 = model(data2, return_features=True)
+                    
+                    # 分类损失
+                    logits1 = model.classifier(features1)
+                    logits2 = model.classifier(features2)
+                    
+                    cls_loss1 = classification_criterion(logits1, target)
+                    cls_loss2 = classification_criterion(logits2, target)
+                    classification_loss = (cls_loss1 + cls_loss2) / 2
+                    
+                    # 对比损失
+                    combined_proj = torch.cat([proj1, proj2], dim=0)
+                    combined_labels = torch.cat([target, target], dim=0)
+                    contrastive_loss = contrastive_criterion(combined_proj, combined_labels)
+                    
+                    # 总损失
+                    total_loss = classification_loss + args.contrastive_weight * contrastive_loss
+                    
+                    # 统计
+                    pred = logits1.argmax(dim=1)
+                else:
+                    raise ValueError(f"Expected tensors in contrastive pair, got {type(data1)}, {type(data2)}")
                 
-                # 前向传播
-                features1, proj1 = model(data1, return_features=True)
-                features2, proj2 = model(data2, return_features=True)
-                
-                # 分类损失
-                logits1 = model.classifier(features1)
-                logits2 = model.classifier(features2)
-                
-                cls_loss1 = classification_criterion(logits1, target)
-                cls_loss2 = classification_criterion(logits2, target)
-                classification_loss = (cls_loss1 + cls_loss2) / 2
-                
-                # 对比损失
-                combined_proj = torch.cat([proj1, proj2], dim=0)
-                combined_labels = torch.cat([target, target], dim=0)
-                contrastive_loss = contrastive_criterion(combined_proj, combined_labels)
-                
-                # 总损失
-                total_loss = classification_loss + args.contrastive_weight * contrastive_loss
-                
-                # 统计
-                pred = logits1.argmax(dim=1)
-                
-            else:  # 常规训练
+            elif isinstance(data, torch.Tensor):  # 常规张量数据
                 data = data.to(device)
                 
                 if args.use_contrastive:
@@ -394,6 +402,9 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
                     total_loss = classification_loss
                 
                 pred = logits.argmax(dim=1)
+            
+            else:
+                raise ValueError(f"Unexpected data type: {type(data)}, content: {data}")
             
             # 反向传播
             optimizer.zero_grad()
