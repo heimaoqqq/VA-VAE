@@ -21,37 +21,102 @@ from collections import defaultdict
 import random
 
 
-class ContrastiveLoss(nn.Module):
-    """对比损失函数"""
+class InterUserContrastiveLoss(nn.Module):
+    """用户间对比损失函数 - 专门处理用户间差异小的问题"""
     
-    def __init__(self, temperature=0.07):
+    def __init__(self, temperature=0.07, margin=0.5):
         super().__init__()
         self.temperature = temperature
+        self.margin = margin  # 用于hard negative mining
+    
+    def forward(self, features, labels):
+        """
+        features: [batch_size, feature_dim]
+        labels: [batch_size] 用户ID
+        """
+        batch_size = features.size(0)
+        features = F.normalize(features, dim=1)
+        
+        # 计算所有样本间的相似度
+        similarity_matrix = torch.matmul(features, features.T) / self.temperature
+        
+        # 创建正负样本mask
+        labels = labels.contiguous().view(-1, 1)
+        positive_mask = torch.eq(labels, labels.T).float().to(features.device)
+        negative_mask = 1 - positive_mask
+        
+        # 移除对角线（自己和自己）
+        eye_mask = torch.eye(batch_size).to(features.device)
+        positive_mask = positive_mask - eye_mask
+        negative_mask = negative_mask - eye_mask
+        
+        # 计算正样本损失（同用户样本应该相似）
+        pos_sim = similarity_matrix * positive_mask
+        pos_loss = -pos_sim.sum() / positive_mask.sum().clamp(min=1)
+        
+        # 计算负样本损失（不同用户样本应该不相似）
+        # 使用hard negative mining - 只关注难区分的负样本
+        neg_sim = similarity_matrix * negative_mask
+        hard_negatives = (neg_sim > self.margin) * negative_mask
+        
+        if hard_negatives.sum() > 0:
+            neg_loss = neg_sim[hard_negatives > 0].mean()
+        else:
+            neg_loss = neg_sim[negative_mask > 0].mean()
+        
+        # 总损失 = 减少正样本距离 + 增加负样本距离
+        total_loss = pos_loss + neg_loss
+        
+        return total_loss
+    
+
+class SupConLoss(nn.Module):
+    """监督对比损失 - 更适合多类分类的对比学习"""
+    
+    def __init__(self, temperature=0.07, contrast_mode='all'):
+        super().__init__()
+        self.temperature = temperature
+        self.contrast_mode = contrast_mode
     
     def forward(self, features, labels):
         """
         features: [batch_size, feature_dim]
         labels: [batch_size]
         """
+        device = features.device
+        batch_size = features.shape[0]
+        
+        labels = labels.contiguous().view(-1, 1)
+        mask = torch.eq(labels, labels.T).float().to(device)
+        
         # 归一化特征
         features = F.normalize(features, dim=1)
         
-        # 计算相似度矩阵
-        similarity_matrix = torch.matmul(features, features.T) / self.temperature
+        # 计算anchor和所有样本的相似度
+        anchor_dot_contrast = torch.div(
+            torch.matmul(features, features.T),
+            self.temperature
+        )
         
-        # 创建正样本mask
-        labels = labels.contiguous().view(-1, 1)
-        mask = torch.eq(labels, labels.T).float().to(features.device)
+        # 为数值稳定性减去最大值
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
         
-        # 移除对角线元素
-        mask = mask - torch.eye(mask.size(0)).to(features.device)
+        # 移除对角线
+        logits_mask = torch.scatter(
+            torch.ones_like(mask),
+            1,
+            torch.arange(batch_size).view(-1, 1).to(device),
+            0
+        )
+        mask = mask * logits_mask
         
-        # 计算对比损失
-        exp_sim = torch.exp(similarity_matrix)
-        log_prob = similarity_matrix - torch.log(exp_sim.sum(dim=1, keepdim=True))
+        # 计算log概率
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
         
-        # 只考虑正样本对
-        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1).clamp(min=1)
+        # 计算正样本的平均log概率
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
         
         loss = -mean_log_prob_pos.mean()
         
@@ -148,12 +213,25 @@ class ImprovedClassifier(nn.Module):
         self.backbone = timm.create_model('resnet18', pretrained=True, num_classes=0, global_pool='avg')
         feature_dim = 512
         
-        # 渐进式解冻：只冻结早期卷积层，保留后期特征学习能力
-        if freeze_layers:
+        # 灵活的层冻结策略
+        if freeze_layers == 'minimal':
+            # 最小冻结：只冻结最早的卷积层
             for name, param in self.backbone.named_parameters():
-                # 冻结conv1, bn1, layer1, layer2的前半部分
-                if any(x in name for x in ['conv1', 'bn1', 'layer1', 'layer2.0']):
+                if any(x in name for x in ['conv1', 'bn1']):
                     param.requires_grad = False
+        elif freeze_layers == 'moderate':
+            # 中等冻结：冻结早期层，保留适应性
+            for name, param in self.backbone.named_parameters():
+                if any(x in name for x in ['conv1', 'bn1', 'layer1']):
+                    param.requires_grad = False
+        elif freeze_layers == 'aggressive':
+            # 激进冻结：冻结更多层（小数据集）
+            for name, param in self.backbone.named_parameters():
+                if any(x in name for x in ['conv1', 'bn1', 'layer1', 'layer2']):
+                    param.requires_grad = False
+        elif freeze_layers == 'none':
+            # 不冻结任何层（风险更高但可能效果更好）
+            pass
         
         # 分类头
         self.classifier = nn.Sequential(
@@ -225,7 +303,16 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
     else:
         classification_criterion = nn.CrossEntropyLoss()
     
-    contrastive_criterion = ContrastiveLoss(temperature=args.contrastive_temperature)
+    # 选择对比损失类型
+    if args.contrastive_type == 'interuser':
+        contrastive_criterion = InterUserContrastiveLoss(
+            temperature=args.contrastive_temperature,
+            margin=args.contrastive_margin
+        )
+    elif args.contrastive_type == 'supcon':
+        contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
+    else:
+        contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)  # 默认使用SupCon
     
     # 优化器 - 使用更小的学习率和更强的weight decay
     optimizer = optim.AdamW(
@@ -389,6 +476,11 @@ def main():
     parser.add_argument('--use_contrastive', action='store_true', help='Use contrastive learning')
     parser.add_argument('--contrastive_weight', type=float, default=0.5, help='Contrastive loss weight')
     parser.add_argument('--contrastive_temperature', type=float, default=0.07, help='Contrastive temperature')
+    parser.add_argument('--contrastive_type', type=str, default='supcon', 
+                       choices=['interuser', 'supcon'],
+                       help='Contrastive loss type: interuser(hard negative mining), supcon(supervised contrastive)')
+    parser.add_argument('--contrastive_margin', type=float, default=0.5, 
+                       help='Margin for hard negative mining in interuser contrastive loss')
     
     # 损失函数选择
     parser.add_argument('--use_focal_loss', action='store_true', help='Use focal loss')
@@ -396,7 +488,9 @@ def main():
     
     # 模型选择 - ResNet18专为微多普勒优化
     parser.add_argument('--backbone', type=str, default='resnet18', help='Backbone architecture')
-    parser.add_argument('--freeze_layers', action='store_true', default=True, help='Freeze early layers')
+    parser.add_argument('--freeze_layers', type=str, default='moderate', 
+                       choices=['none', 'minimal', 'moderate', 'aggressive'],
+                       help='Layer freezing strategy: none(risk overfitting), minimal(conv1+bn1), moderate(+layer1), aggressive(+layer2)')
     
     args = parser.parse_args()
     
