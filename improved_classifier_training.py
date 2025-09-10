@@ -564,21 +564,25 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
                 data1, data2 = data[0].to(device), data[1].to(device)
                 
                 if args.use_contrastive and contrastive_criterion is not None:
-                    # 单次前向传播获取特征和投影
-                    features1, proj1 = model(data1, return_features=True)
-                    features2, proj2 = model(data2, return_features=True)
+                    # 完全合并输入，单次模型前向传播避免任何参数重复使用
+                    combined_data = torch.cat([data1, data2], dim=0)
+                    batch_size = data1.size(0)
+                    combined_target = torch.cat([target, target], dim=0)
                     
-                    # 合并特征，单次分类器调用避免DDP参数重复标记
-                    combined_features = torch.cat([features1, features2], dim=0)
+                    # 单次完整前向传播获取特征和投影
+                    combined_features, combined_proj = model(combined_data, return_features=True)
+                    
+                    # 单次分类器调用
                     if hasattr(model, 'module'):
                         combined_logits = model.module.classifier(combined_features)
                     else:
                         combined_logits = model.classifier(combined_features)
                     
-                    # 分割logits
-                    batch_size = features1.size(0)
+                    # 分割结果
                     logits1 = combined_logits[:batch_size]
                     logits2 = combined_logits[batch_size:]
+                    proj1 = combined_proj[:batch_size] 
+                    proj2 = combined_proj[batch_size:]
                     
                     # 分类损失
                     cls_loss1 = classification_criterion(logits1, target)
@@ -586,9 +590,7 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
                     classification_loss = (cls_loss1 + cls_loss2) / 2
                     
                     # 对比损失：使用投影特征
-                    combined_proj = torch.cat([proj1, proj2], dim=0)
-                    combined_labels = torch.cat([target, target], dim=0)
-                    contrastive_loss = contrastive_criterion(combined_proj, combined_labels)
+                    contrastive_loss = contrastive_criterion(combined_proj, combined_target)
                     
                     # 总损失
                     total_loss = classification_loss + args.contrastive_weight * contrastive_loss
@@ -801,9 +803,11 @@ def main():
         freeze_layers=args.freeze_layers
     ).to(device)
     
-    # 分布式训练设置 - 添加find_unused_parameters处理projection_head
+    # 分布式训练设置 - 使用static_graph解决参数重复使用问题
     if dist.is_initialized():
         model = DDP(model, device_ids=[device], find_unused_parameters=True)
+        # 设置静态图模式，允许参数在同一次反向传播中多次使用
+        model._set_static_graph()
     
     if is_main_process():
         total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
