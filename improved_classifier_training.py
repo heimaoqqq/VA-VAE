@@ -568,13 +568,17 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
                     features1, proj1 = model(data1, return_features=True)
                     features2, proj2 = model(data2, return_features=True)
                     
-                    # 从特征计算分类结果（避免重复前向传播）
+                    # 合并特征，单次分类器调用避免DDP参数重复标记
+                    combined_features = torch.cat([features1, features2], dim=0)
                     if hasattr(model, 'module'):
-                        logits1 = model.module.classifier(features1)
-                        logits2 = model.module.classifier(features2)
+                        combined_logits = model.module.classifier(combined_features)
                     else:
-                        logits1 = model.classifier(features1)
-                        logits2 = model.classifier(features2)
+                        combined_logits = model.classifier(combined_features)
+                    
+                    # 分割logits
+                    batch_size = features1.size(0)
+                    logits1 = combined_logits[:batch_size]
+                    logits2 = combined_logits[batch_size:]
                     
                     # 分类损失
                     cls_loss1 = classification_criterion(logits1, target)
