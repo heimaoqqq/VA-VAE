@@ -168,7 +168,14 @@ class AutomatedGenerationPipeline:
         self.logger.info("加载分类器...")
         self.classifier = ImprovedClassifier(num_classes=self.args.num_users)
         classifier_checkpoint = torch.load(self.args.classifier_path, map_location='cpu')
-        self.classifier.load_state_dict(classifier_checkpoint)
+        
+        # 处理checkpoint格式
+        if 'model_state_dict' in classifier_checkpoint:
+            state_dict = classifier_checkpoint['model_state_dict']
+        else:
+            state_dict = classifier_checkpoint
+            
+        self.classifier.load_state_dict(state_dict)
         self.classifier = self.classifier.to(self.device)
         self.classifier.eval()
         
