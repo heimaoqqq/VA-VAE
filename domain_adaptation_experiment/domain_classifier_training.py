@@ -309,6 +309,26 @@ class DomainAdaptationDataset(Dataset):
         total_real = sum(len([p for p in paths if p[1] == "real"]) for paths in user_samples.values())
         total_generated = sum(len([p for p in paths if p[1] == "generated"]) for paths in user_samples.values())
         print(f"Loaded data: {total_real} real samples, {total_generated} generated samples")
+        
+        # 微多普勒图像专用变换（最小增强，保持频谱结构）
+        if split == 'train':
+            self.transform = transforms.Compose([
+                transforms.Resize((256, 256)),
+                # 只使用极轻微的噪声增强，不破坏频谱结构
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                # 可选：极小的高斯噪声（模拟测量噪声） - 避免原地操作
+                # transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.01 if torch.rand(1).item() < 0.3 else x)
+            ])
+        else:
+            self.transform = transforms.Compose([
+                transforms.Resize((256, 256)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+        
+        if transform:
+            self.transform = transform
     
     def _load_data_from_dir(self, data_dir, user_samples, data_type, split):
         """从指定目录加载数据"""
@@ -346,26 +366,6 @@ class DomainAdaptationDataset(Dataset):
             for path_info in selected_paths:
                 path, data_type = path_info
                 self.samples.append((path, user_id, data_type))
-        
-        # 微多普勒图像专用变换（最小增强，保持频谱结构）
-        if split == 'train':
-            self.transform = transforms.Compose([
-                transforms.Resize((256, 256)),
-                # 只使用极轻微的噪声增强，不破坏频谱结构
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-                # 可选：极小的高斯噪声（模拟测量噪声） - 避免原地操作
-                # transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.01 if torch.rand(1).item() < 0.3 else x)
-            ])
-        else:
-            self.transform = transforms.Compose([
-                transforms.Resize((256, 256)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-        
-        if transform:
-            self.transform = transform
     
     def __len__(self):
         return len(self.samples)
