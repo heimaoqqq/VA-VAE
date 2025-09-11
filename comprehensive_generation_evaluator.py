@@ -146,7 +146,7 @@ class ComprehensiveGenerationEvaluator:
             'diversity_score': np.mean(lpips_distances) if lpips_distances else 0
         }
     
-    def compute_feature_coverage(self, generated_samples, real_user_samples, k=5, threshold=0.1):
+    def compute_feature_coverage(self, generated_samples, real_user_samples, k=5, threshold=0.5):
         """
         3. 特征空间覆盖度
         基于改进的Precision & Recall思想
