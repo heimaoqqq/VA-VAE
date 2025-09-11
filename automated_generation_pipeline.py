@@ -484,11 +484,22 @@ class AutomatedGenerationPipeline:
         
     def run(self):
         """运行自动化管道"""
+        print(f"🚀 启动自动化生成-筛选管道 (Rank {self.rank}/{self.world_size})", flush=True)
         self.logger.info("🚀 启动自动化生成-筛选管道")
         
         total_generated = 0
         total_accepted = 0
         batch_count = 0
+        
+        # 计算总目标数量
+        total_target = self.args.num_users * self.args.target_per_user
+        
+        # 创建进度条（只在主进程显示）
+        if self.rank == 0:
+            pbar = tqdm(total=total_target, desc="总体进度", unit="样本")
+            print(f"\n📋 目标: 为 {self.args.num_users} 个用户各生成 {self.args.target_per_user} 个高质量样本", flush=True)
+            print(f"🎯 置信度阈值: {self.args.confidence_threshold}", flush=True)
+            print(f"📊 批次大小: {self.args.batch_size}\n", flush=True)
         
         try:
             while not self.check_completion():
@@ -511,42 +522,61 @@ class AutomatedGenerationPipeline:
                 if len(current_batch_ids) > self.args.batch_size:
                     current_batch_ids = current_batch_ids[:self.args.batch_size]
                 
-                self.logger.info(f"批次 {batch_count}: 生成 {len(current_batch_ids)} 个样本...")
+                # 实时显示批次信息
+                print(f"\n🔄 批次 {batch_count}: 生成 {len(current_batch_ids)} 个样本...", flush=True)
                 
                 # 生成样本
                 samples = self.generate_batch(current_batch_ids, len(current_batch_ids))
                 total_generated += len(samples)
                 
                 # 评估样本
+                print(f"🔍 评估生成的样本...", flush=True)
                 results = self.evaluate_samples(samples, current_batch_ids)
                 
                 # 保存通过筛选的样本
                 saved_count = self.save_accepted_samples(results)
                 total_accepted += saved_count
                 
+                # 更新进度条
+                if self.rank == 0:
+                    pbar.update(saved_count)
+                    pbar.set_postfix({
+                        '接受率': f'{total_accepted/max(1,total_generated):.1%}',
+                        '已生成': total_generated,
+                        '已接受': total_accepted
+                    })
+                
                 # 计算批次统计
                 batch_accuracy = sum(1 for r in results if r['is_correct']) / len(results)
                 batch_acceptance = saved_count / len(results)
                 
-                self.logger.info(
-                    f"批次 {batch_count} 完成: "
+                print(
+                    f"✅ 批次 {batch_count} 完成: "
                     f"准确率 {batch_accuracy:.1%}, "
                     f"接受率 {batch_acceptance:.1%}, "
-                    f"保存 {saved_count} 个样本"
+                    f"保存 {saved_count} 个样本",
+                    flush=True
                 )
                 
-                # 每10个批次打印一次进度
-                if batch_count % 10 == 0:
+                # 每5个批次打印一次详细进度
+                if batch_count % 5 == 0:
                     self.print_progress()
                     
         except KeyboardInterrupt:
             self.logger.info("用户中断生成过程")
+            if self.rank == 0:
+                pbar.close()
+                
+        # 关闭进度条
+        if self.rank == 0:
+            pbar.close()
             
         # 最终统计
         self.print_progress()
-        self.logger.info(f"🎉 生成完成!")
-        self.logger.info(f"📊 总统计: 生成 {total_generated} 个样本, 接受 {total_accepted} 个样本")
-        self.logger.info(f"📊 总体接受率: {total_accepted/total_generated:.1%}")
+        print(f"\n🎉 生成完成!", flush=True)
+        print(f"📊 总统计: 生成 {total_generated} 个样本, 接受 {total_accepted} 个样本", flush=True)
+        if total_generated > 0:
+            print(f"📊 总体接受率: {total_accepted/total_generated:.1%}", flush=True)
         
         # 保存统计信息
         stats = {
