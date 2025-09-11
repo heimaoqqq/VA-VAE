@@ -293,13 +293,15 @@ class DomainAdaptationDataset(Dataset):
         
         # 加载真实数据
         if self.real_data_dir and self.real_data_dir.exists():
-            print(f"Loading real data from: {self.real_data_dir}")
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                print(f"Loading real data from: {self.real_data_dir}")
             self._load_data_from_dir(self.real_data_dir, user_samples, "real", split)
         
         # 加载生成数据（仅在训练时且启用时）
         if (self.use_generated and split == 'train' and 
             self.generated_data_dir and self.generated_data_dir.exists()):
-            print(f"Loading generated data from: {self.generated_data_dir}")
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                print(f"Loading generated data from: {self.generated_data_dir}")
             self._load_data_from_dir(self.generated_data_dir, user_samples, "generated", split)
         
         if not user_samples:
@@ -308,7 +310,8 @@ class DomainAdaptationDataset(Dataset):
         # 报告数据统计
         total_real = sum(len([p for p in paths if p[1] == "real"]) for paths in user_samples.values())
         total_generated = sum(len([p for p in paths if p[1] == "generated"]) for paths in user_samples.values())
-        print(f"Loaded data: {total_real} real samples, {total_generated} generated samples")
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            print(f"Loaded data: {total_real} real samples, {total_generated} generated samples")
         
         # 微多普勒图像专用变换（最小增强，保持频谱结构）
         if split == 'train':
