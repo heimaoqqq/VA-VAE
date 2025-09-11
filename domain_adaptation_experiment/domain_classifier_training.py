@@ -294,16 +294,13 @@ class DomainAdaptationDataset(Dataset):
         # 加载真实数据
         if self.real_data_dir and self.real_data_dir.exists():
             print(f"Loading real data from: {self.real_data_dir}")
-            self._load_data_from_dir(self.real_data_dir, user_samples, "real")
+            self._load_data_from_dir(self.real_data_dir, user_samples, "real", split)
         
         # 加载生成数据（仅在训练时且启用时）
         if (self.use_generated and split == 'train' and 
             self.generated_data_dir and self.generated_data_dir.exists()):
             print(f"Loading generated data from: {self.generated_data_dir}")
-            self._load_data_from_dir(self.generated_data_dir, user_samples, "generated")
-        
-        if not user_samples:
-            raise ValueError("未找到任何图像文件")
+            self._load_data_from_dir(self.generated_data_dir, user_samples, "generated", split)
         
         if not user_samples:
             raise ValueError("未找到任何图像文件")
@@ -313,7 +310,7 @@ class DomainAdaptationDataset(Dataset):
         total_generated = sum(len([p for p in paths if p[1] == "generated"]) for paths in user_samples.values())
         print(f"Loaded data: {total_real} real samples, {total_generated} generated samples")
     
-    def _load_data_from_dir(self, data_dir, user_samples, data_type):
+    def _load_data_from_dir(self, data_dir, user_samples, data_type, split):
         """从指定目录加载数据"""
         # 查找ID_*或User_*目录
         id_dirs = list(data_dir.glob("ID_*")) + list(data_dir.glob("User_*"))
