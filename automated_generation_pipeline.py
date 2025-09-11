@@ -142,16 +142,16 @@ class AutomatedGenerationPipeline:
         
         # 初始化transport和sampler
         self.transport = create_transport(
-            config['transport']['path_type'],
-            config['transport']['prediction'],
-            config['transport']['loss_weight'],
-            config['transport']['train_eps'],
-            config['transport']['sample_eps'],
-            use_cosine_loss=config['transport'].get('use_cosine_loss', False),
-            use_lognorm=config['transport'].get('use_lognorm', False),
-            partitial_train=config['transport'].get('partitial_train', None),
-            partial_ratio=config['transport'].get('partial_ratio', 1.0),
-            shift_lg=config['transport'].get('shift_lg', False),
+            self.config['transport']['path_type'],
+            self.config['transport']['prediction'],
+            self.config['transport']['loss_weight'],
+            self.config['transport']['train_eps'],
+            self.config['transport']['sample_eps'],
+            use_cosine_loss=self.config['transport'].get('use_cosine_loss', False),
+            use_lognorm=self.config['transport'].get('use_lognorm', False),
+            partitial_train=self.config['transport'].get('partitial_train', None),
+            partial_ratio=self.config['transport'].get('partial_ratio', 1.0),
+            shift_lg=self.config['transport'].get('shift_lg', False),
         )
         self.sampler = Sampler(self.transport)
         
