@@ -37,7 +37,7 @@ class DiversityAnalyzer:
         """加载训练好的分类器作为特征提取器"""
         from improved_classifier_training import ImprovedClassifier
         
-        model = ImprovedClassifier(num_classes=31, use_projection_head=True)
+        model = ImprovedClassifier(num_classes=31)
         checkpoint = torch.load(model_path, map_location=self.device)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.to(self.device)
