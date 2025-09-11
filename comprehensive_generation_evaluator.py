@@ -199,7 +199,7 @@ class ComprehensiveGenerationEvaluator:
     
     
     def comprehensive_evaluate(self, generated_dir, real_user_dir, target_user_id, 
-                              max_samples=200):
+                              max_samples=2000):
         """
         综合评估主函数
         """
@@ -345,7 +345,7 @@ def main():
     parser.add_argument('--generated_dir', required=True, help='Generated samples directory')
     parser.add_argument('--real_user_dir', required=True, help='Real user samples directory')  
     parser.add_argument('--user_id', type=int, required=True, help='Target user ID (0-30)')
-    parser.add_argument('--max_samples', type=int, default=200, help='Maximum samples to evaluate')
+    parser.add_argument('--max_samples', type=int, default=2000, help='Maximum samples to evaluate')
     
     args = parser.parse_args()
     
