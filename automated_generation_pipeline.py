@@ -62,6 +62,8 @@ class AutomatedGenerationPipeline:
         
     def setup_logging(self):
         """设置日志"""
+        # 确保输出目录存在
+        Path(self.args.output_dir).mkdir(parents=True, exist_ok=True)
         log_file = Path(self.args.output_dir) / 'generation_log.txt'
         logging.basicConfig(
             level=logging.INFO,
@@ -208,7 +210,7 @@ class AutomatedGenerationPipeline:
             # 创建随机噪声 (VA-VAE使用32通道，16x16空间分辨率)
             z = torch.randn(current_batch_size, 32, 16, 16, device=self.device)
             
-            # 创建采样函数
+            # 创建采样函数 (完全按照generate_conditional_samples_distributed.py的实现)
             sample_fn = self.sampler.sample_ode(
                 sampling_method="dopri5",
                 num_steps=300,
@@ -218,22 +220,23 @@ class AutomatedGenerationPipeline:
                 timestep_shift=0.1
             )
             
-            # CFG采样
+            # CFG采样 - 完全按照generate_conditional_samples_distributed.py实现
             if self.args.cfg_scale > 1.0:
                 # 构建CFG batch
                 z_cfg = torch.cat([z, z], 0)
                 y_null = torch.tensor([31] * current_batch_size, device=self.device)  # null class
                 y_cfg = torch.cat([y, y_null], 0)
                 
-                # CFG配置
+                # 使用官方CFG配置
                 cfg_interval_start = 0.11
                 model_kwargs = dict(y=y_cfg, cfg_scale=self.args.cfg_scale, 
                                   cfg_interval=True, cfg_interval_start=cfg_interval_start)
                 
-                # 使用CFG采样
+                # 使用CFG前向传播（与官方完全一致）
                 if hasattr(self.model, 'forward_with_cfg'):
                     samples = sample_fn(z_cfg, self.model.forward_with_cfg, **model_kwargs)
                 else:
+                    # 如果模型没有forward_with_cfg方法，使用手动CFG
                     def model_fn_cfg(x, t, **kwargs):
                         pred = self.model(x, t, **kwargs)
                         pred_cond, pred_uncond = pred.chunk(2, dim=0)
@@ -247,19 +250,19 @@ class AutomatedGenerationPipeline:
                 samples = sample_fn(z, self.model, **dict(y=y))
                 samples = samples[-1]
             
-            # 反归一化处理
+            # 反归一化处理 (完全按照generate_conditional_samples_distributed.py实现)
             if self.latent_stats is not None:
                 mean = self.latent_stats['mean'].to(self.device)
                 std = self.latent_stats['std'].to(self.device)
-                latent_multiplier = 1.0  # VA-VAE使用1.0
+                latent_multiplier = 1.0  # VA-VAE使用1.0，不是0.18215
                 
-                # 反归一化公式
+                # 官方反归一化公式（与train_dit_s_official.py第549行完全一致）
                 samples_denorm = (samples * std) / latent_multiplier + mean
             else:
                 print("⚠️ 无latent统计信息，跳过反归一化")
                 samples_denorm = samples
             
-            # VAE解码
+            # VAE解码 (使用VA-VAE解码latent为图像)
             decoded_images = self.vae.decode_to_images(samples_denorm)
             
             return decoded_images
