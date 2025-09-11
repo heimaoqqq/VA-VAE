@@ -28,6 +28,27 @@ from omegaconf import OmegaConf
 import torchvision.transforms as transforms
 from improved_classifier_training import ImprovedClassifier
 
+# 导入LightningDiT相关模块
+from models.lightningdit import LightningDiT_models
+from transport import create_transport, Sampler
+from simplified_vavae import SimplifiedVAVAE
+
+# 添加VA-VAE相关导入
+try:
+    from simplified_vavae import VA_VAE
+except ImportError:
+    print("⚠️ 无法导入VA_VAE，将使用SimplifiedVAVAE作为备用")
+    VA_VAE = None
+
+import tempfile
+
+def set_seed(seed):
+    """设置随机种子"""
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    import random
+    random.seed(seed)
 
 class AutomatedGenerationPipeline:
     def __init__(self, args):
