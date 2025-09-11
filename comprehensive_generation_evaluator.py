@@ -58,6 +58,10 @@ class ComprehensiveGenerationEvaluator:
         images = []
         valid_paths = []
         
+        if not image_paths:
+            print("Warning: No image paths provided")
+            return torch.empty(0, 3, 224, 224).to(self.device), []
+        
         for img_path in tqdm(image_paths, desc="Loading images"):
             try:
                 img = Image.open(img_path).convert('RGB')
@@ -66,6 +70,10 @@ class ComprehensiveGenerationEvaluator:
                 valid_paths.append(img_path)
             except Exception as e:
                 print(f"Error loading {img_path}: {e}")
+        
+        if not images:
+            print("Warning: No images successfully loaded")
+            return torch.empty(0, 3, 224, 224).to(self.device), []
         
         return torch.stack(images).to(self.device), valid_paths
     
@@ -202,6 +210,17 @@ class ComprehensiveGenerationEvaluator:
         real_user_samples, _ = self.load_images(real_paths)
         
         print(f"Loaded {len(generated_samples)} generated samples and {len(real_user_samples)} real samples")
+        
+        # 检查是否有足够的样本进行评估
+        if len(generated_samples) == 0:
+            print("❌ No generated samples found or loaded successfully")
+            print("Please check the generated_dir path and image files")
+            return None
+        
+        if len(real_user_samples) == 0:
+            print("❌ No real user samples found or loaded successfully")
+            print("Please check the real_user_dir path and image files")
+            return None
         
         # 三个维度的评估
         results = {}
