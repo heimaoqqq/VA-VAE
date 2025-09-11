@@ -146,29 +146,38 @@ class ComprehensiveGenerationEvaluator:
             'diversity_score': np.mean(lpips_distances) if lpips_distances else 0
         }
     
-    def compute_feature_coverage(self, generated_samples, real_user_samples, k=5, threshold=0.5):
+    def compute_feature_coverage(self, generated_samples, real_user_samples, k=5):
         """
         3. 特征空间覆盖度
-        基于改进的Precision & Recall思想
+        基于改进的Precision & Recall思想，使用自适应阈值
         """
         with torch.no_grad():
-            # 提取特征
+            # 提取特征并归一化
             gen_features, _ = self.classifier(generated_samples, return_features=True)
             real_features, _ = self.classifier(real_user_samples, return_features=True)
             
-            gen_features_np = gen_features.cpu().numpy()
-            real_features_np = real_features.cpu().numpy()
+            # L2归一化特征
+            gen_features_norm = F.normalize(gen_features, dim=1)
+            real_features_norm = F.normalize(real_features, dim=1)
+            
+            gen_features_np = gen_features_norm.cpu().numpy()
+            real_features_np = real_features_norm.cpu().numpy()
         
-        # 构建k-NN
-        nbrs_real = NearestNeighbors(n_neighbors=min(k, len(real_features_np))).fit(real_features_np)
-        nbrs_gen = NearestNeighbors(n_neighbors=min(k, len(gen_features_np))).fit(gen_features_np)
+        # 使用余弦距离 (metric='cosine')
+        nbrs_real = NearestNeighbors(n_neighbors=min(k, len(real_features_np)), 
+                                   metric='cosine').fit(real_features_np)
+        nbrs_gen = NearestNeighbors(n_neighbors=min(k, len(gen_features_np)), 
+                                  metric='cosine').fit(gen_features_np)
         
-        # Precision: 生成样本有多少在真实数据流形附近
+        # 计算距离分布来确定自适应阈值
         if len(gen_features_np) > 0:
             distances_gen_to_real, _ = nbrs_real.kneighbors(gen_features_np)
+            # 使用第k个最近邻距离的中位数作为阈值
+            threshold = np.percentile(distances_gen_to_real[:, -1], 50)  # 中位数
             precision = (distances_gen_to_real[:, -1] < threshold).mean()
         else:
             precision = 0
+            threshold = 0.5
         
         # Recall: 真实样本有多少被生成样本覆盖
         if len(real_features_np) > 0 and len(gen_features_np) > 0:
@@ -184,7 +193,8 @@ class ComprehensiveGenerationEvaluator:
             'precision': precision,
             'recall': recall,
             'f1_score': f1_score,
-            'coverage_score': f1_score
+            'coverage_score': f1_score,
+            'adaptive_threshold': threshold
         }
     
     
@@ -299,6 +309,7 @@ class ComprehensiveGenerationEvaluator:
         print(f"   • Precision: {coverage['precision']:.3f}")
         print(f"   • Recall: {coverage['recall']:.3f}")
         print(f"   • F1-Score: {coverage['f1_score']:.3f}")
+        print(f"   • Adaptive Threshold: {coverage['adaptive_threshold']:.3f}")
         
         # 综合得分
         overall = results['overall']
