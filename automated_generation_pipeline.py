@@ -20,12 +20,13 @@ import logging
 
 # 添加路径以导入必要模块
 sys.path.append(str(Path(__file__).parent / "LightningDiT"))
+sys.path.append(str(Path(__file__).parent))
 
-from LightningDiT.sample import create_model_and_diffusion, sample_from_model
-from LightningDiT.utils import set_logger, set_seed
-from improved_classifier_training import ImprovedClassifier
-from prepare_safetensors_dataset import MicroDopplerDataset
+# 导入生成相关模块 - 使用现有的生成脚本中的函数
+import yaml
+from omegaconf import OmegaConf
 import torchvision.transforms as transforms
+from improved_classifier_training import ImprovedClassifier
 
 
 class AutomatedGenerationPipeline:
@@ -67,21 +68,78 @@ class AutomatedGenerationPipeline:
         
     def load_models(self):
         """加载扩散模型和分类器"""
+        # 加载配置
+        with open(self.args.config, 'r', encoding='utf-8') as f:
+            self.config = yaml.load(f, Loader=yaml.FullLoader)
+        
+        # 导入必要的模块
+        sys.path.append('LightningDiT')
+        from models.lightningdit import LightningDiT_models
+        from transport import create_transport, Sampler
+        from simplified_vavae import SimplifiedVAVAE
+        
         # 加载扩散模型
         self.logger.info("加载扩散模型...")
-        self.model, self.diffusion = create_model_and_diffusion(self.args.config)
+        latent_size = self.config['data']['image_size'] // self.config['vae']['downsample_ratio']
+        self.model = LightningDiT_models[self.config['model']['model_type']](
+            input_size=latent_size,
+            num_classes=self.config['data']['num_classes'],
+            class_dropout_prob=self.config['model'].get('class_dropout_prob', 0.1),
+            use_qknorm=self.config['model']['use_qknorm'],
+            use_swiglu=self.config['model'].get('use_swiglu', False),
+            use_rope=self.config['model'].get('use_rope', False),
+            use_rmsnorm=self.config['model'].get('use_rmsnorm', False),
+            wo_shift=self.config['model'].get('wo_shift', False),
+            in_channels=self.config['model'].get('in_chans', 4),
+            use_checkpoint=self.config['model'].get('use_checkpoint', False),
+        ).to(self.device)
         
         # 加载checkpoint
-        if self.args.checkpoint:
-            checkpoint = torch.load(self.args.checkpoint, map_location='cpu')
-            if 'model' in checkpoint:
-                self.model.load_state_dict(checkpoint['model'])
-            else:
-                self.model.load_state_dict(checkpoint)
+        if self.args.checkpoint and os.path.exists(self.args.checkpoint):
             self.logger.info(f"加载checkpoint: {self.args.checkpoint}")
+            checkpoint = torch.load(self.args.checkpoint, map_location='cpu')
             
-        self.model = self.model.to(self.device)
+            # 处理权重键名
+            if 'ema' in checkpoint:
+                checkpoint_weights = {'model': checkpoint['ema']}
+                self.logger.info("使用EMA权重进行推理")
+            elif 'model' in checkpoint:
+                checkpoint_weights = checkpoint
+                self.logger.info("使用模型权重进行推理")
+            else:
+                checkpoint_weights = {'model': checkpoint}
+                
+            # 清理键名
+            checkpoint_weights['model'] = {k.replace('module.', ''): v for k, v in checkpoint_weights['model'].items()}
+            
+            # 加载权重
+            self.load_weights_with_shape_check(self.model, checkpoint_weights)
+            
         self.model.eval()
+        
+        # 初始化transport和sampler
+        self.transport = create_transport(
+            config['transport']['path_type'],
+            config['transport']['prediction'],
+            config['transport']['loss_weight'],
+            config['transport']['train_eps'],
+            config['transport']['sample_eps'],
+            use_cosine_loss=config['transport'].get('use_cosine_loss', False),
+            use_lognorm=config['transport'].get('use_lognorm', False),
+            partitial_train=config['transport'].get('partitial_train', None),
+            partial_ratio=config['transport'].get('partial_ratio', 1.0),
+            shift_lg=config['transport'].get('shift_lg', False),
+        )
+        self.sampler = Sampler(self.transport)
+        
+        # 加载latent统计信息
+        self.latent_stats = None
+        latent_stats_path = 'latents_safetensors/train/latent_stats.pt'
+        if os.path.exists(latent_stats_path):
+            self.latent_stats = torch.load(latent_stats_path, map_location='cpu')
+            print(f"✅ 已加载latent统计信息: {latent_stats_path}")
+        else:
+            print(f"⚠️ 未找到latent统计文件: {latent_stats_path}")
         
         # 加载分类器
         self.logger.info("加载分类器...")
@@ -90,6 +148,24 @@ class AutomatedGenerationPipeline:
         self.classifier.load_state_dict(classifier_checkpoint)
         self.classifier = self.classifier.to(self.device)
         self.classifier.eval()
+        
+    def load_weights_with_shape_check(self, model, checkpoint):
+        """使用形状检查加载权重"""
+        model_state_dict = model.state_dict()
+        for name, param in checkpoint['model'].items():
+            if name in model_state_dict:
+                if param.shape == model_state_dict[name].shape:
+                    model_state_dict[name].copy_(param)
+                elif name == 'x_embedder.proj.weight':
+                    weight = torch.zeros_like(model_state_dict[name])
+                    weight[:, :16] = param[:, :16]
+                    model_state_dict[name] = weight
+                else:
+                    self.logger.warning(f"跳过参数 '{name}' 形状不匹配: "
+                                      f"checkpoint {param.shape}, model {model_state_dict[name].shape}")
+            else:
+                self.logger.warning(f"参数 '{name}' 在模型中未找到，跳过")
+        model.load_state_dict(model_state_dict, strict=False)
         
     def setup_transforms(self):
         """设置图像预处理"""
@@ -103,20 +179,69 @@ class AutomatedGenerationPipeline:
     def generate_batch(self, user_ids, batch_size):
         """生成一个批次的样本"""
         with torch.no_grad():
-            # 创建条件标签
-            y = torch.tensor(user_ids, device=self.device)
+            current_batch_size = len(user_ids)
             
-            # 生成样本
-            samples = sample_from_model(
-                self.model, 
-                self.diffusion,
-                batch_size=len(user_ids),
-                class_labels=y,
-                cfg_scale=self.args.cfg_scale,
-                device=self.device
+            # 创建条件标签
+            y = torch.tensor(user_ids, device=self.device, dtype=torch.long)
+            
+            # 创建随机噪声 (VA-VAE使用32通道，16x16空间分辨率)
+            z = torch.randn(current_batch_size, 32, 16, 16, device=self.device)
+            
+            # 创建采样函数
+            sample_fn = self.sampler.sample_ode(
+                sampling_method="dopri5",
+                num_steps=300,
+                atol=1e-6,
+                rtol=1e-3,
+                reverse=False,
+                timestep_shift=0.1
             )
             
-            return samples
+            # CFG采样
+            if self.args.cfg_scale > 1.0:
+                # 构建CFG batch
+                z_cfg = torch.cat([z, z], 0)
+                y_null = torch.tensor([31] * current_batch_size, device=self.device)  # null class
+                y_cfg = torch.cat([y, y_null], 0)
+                
+                # CFG配置
+                cfg_interval_start = 0.11
+                model_kwargs = dict(y=y_cfg, cfg_scale=self.args.cfg_scale, 
+                                  cfg_interval=True, cfg_interval_start=cfg_interval_start)
+                
+                # 使用CFG采样
+                if hasattr(self.model, 'forward_with_cfg'):
+                    samples = sample_fn(z_cfg, self.model.forward_with_cfg, **model_kwargs)
+                else:
+                    def model_fn_cfg(x, t, **kwargs):
+                        pred = self.model(x, t, **kwargs)
+                        pred_cond, pred_uncond = pred.chunk(2, dim=0)
+                        return pred_uncond + self.args.cfg_scale * (pred_cond - pred_uncond)
+                    samples = sample_fn(z_cfg, model_fn_cfg, **model_kwargs)
+                
+                samples = samples[-1]  # 获取最终时间步的样本
+                samples, _ = samples.chunk(2, dim=0)  # 去掉null class样本
+            else:
+                # 标准采样
+                samples = sample_fn(z, self.model, **dict(y=y))
+                samples = samples[-1]
+            
+            # 反归一化处理
+            if self.latent_stats is not None:
+                mean = self.latent_stats['mean'].to(self.device)
+                std = self.latent_stats['std'].to(self.device)
+                latent_multiplier = 1.0  # VA-VAE使用1.0
+                
+                # 反归一化公式
+                samples_denorm = (samples * std) / latent_multiplier + mean
+            else:
+                print("⚠️ 无latent统计信息，跳过反归一化")
+                samples_denorm = samples
+            
+            # VAE解码
+            decoded_images = self.vae.decode_to_images(samples_denorm)
+            
+            return decoded_images
             
     def evaluate_samples(self, samples, expected_user_ids):
         """评估生成样本的质量"""
@@ -125,20 +250,34 @@ class AutomatedGenerationPipeline:
         with torch.no_grad():
             # 转换为PIL图像并预处理
             processed_samples = []
+            pil_images = []
+            
             for sample in samples:
-                # 假设sample是CHW格式，需要转换为HWC
-                if len(sample.shape) == 3:
-                    sample = sample.permute(1, 2, 0)
+                # VAE输出的图像已经在0-1范围内，转换为0-255
+                if isinstance(sample, torch.Tensor):
+                    # 转换为numpy数组
+                    if sample.dim() == 3:  # CHW格式
+                        sample_np = sample.permute(1, 2, 0).cpu().numpy()
+                    else:  # HWC格式
+                        sample_np = sample.cpu().numpy()
+                else:
+                    sample_np = sample
                 
-                # 归一化到0-255范围
-                sample = ((sample + 1) * 127.5).clamp(0, 255).cpu().numpy().astype(np.uint8)
+                # 确保在0-1范围内，然后转换为0-255
+                sample_np = np.clip(sample_np, 0, 1)
+                sample_uint8 = (sample_np * 255).astype(np.uint8)
+                
+                # 处理灰度或单通道图像
+                if len(sample_uint8.shape) == 2:
+                    sample_uint8 = np.stack([sample_uint8] * 3, axis=2)
+                elif sample_uint8.shape[2] == 1:
+                    sample_uint8 = np.repeat(sample_uint8, 3, axis=2)
                 
                 # 转换为PIL图像
-                if sample.shape[2] == 1:
-                    sample = np.repeat(sample, 3, axis=2)  # 灰度转RGB
-                pil_image = Image.fromarray(sample)
+                pil_image = Image.fromarray(sample_uint8)
+                pil_images.append(pil_image)
                 
-                # 应用变换
+                # 应用分类器预处理
                 tensor_image = self.transform(pil_image).unsqueeze(0).to(self.device)
                 processed_samples.append(tensor_image)
             
@@ -167,10 +306,7 @@ class AutomatedGenerationPipeline:
                         'is_correct': is_correct,
                         'is_high_confidence': is_high_confidence,
                         'accept': is_correct and is_high_confidence,
-                        'pil_image': Image.fromarray(
-                            ((samples[i].permute(1, 2, 0) + 1) * 127.5)
-                            .clamp(0, 255).cpu().numpy().astype(np.uint8)
-                        )
+                        'pil_image': pil_images[i]
                     }
                     batch_results.append(result)
                     
