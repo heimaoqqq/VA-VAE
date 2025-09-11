@@ -628,7 +628,7 @@ def main():
     parser.add_argument('--num_users', type=int, default=31, help='用户数量')
     parser.add_argument('--target_per_user', type=int, default=300, 
                        help='每个用户目标样本数量')
-    parser.add_argument('--batch_size', type=int, default=64, help='批次大小')
+    parser.add_argument('--batch_size', type=int, default=56, help='批次大小')
     
     # 输出参数
     parser.add_argument('--output_dir', default='./automated_samples', 
