@@ -332,11 +332,16 @@ class DomainAdaptationDataset(Dataset):
     
     def _load_data_from_dir(self, data_dir, user_samples, data_type, split):
         """从指定目录加载数据"""
-        # 查找ID_*或User_*目录
-        id_dirs = list(data_dir.glob("ID_*")) + list(data_dir.glob("User_*"))
+        # 查找ID_*、User_*、user_*目录
+        id_dirs = (list(data_dir.glob("ID_*")) + 
+                  list(data_dir.glob("User_*")) + 
+                  list(data_dir.glob("user_*")))
         
         if len(id_dirs) == 0:
-            print(f"Warning: 在 {data_dir} 中未找到ID_*或User_*格式的用户目录")
+            print(f"Warning: 在 {data_dir} 中未找到ID_*、User_*或user_*格式的用户目录")
+            # 打印实际找到的目录结构以便调试
+            all_dirs = [d.name for d in data_dir.iterdir() if d.is_dir()]
+            print(f"实际找到的目录: {all_dirs[:10]}...")  # 只显示前10个
             return
         
         for user_dir in sorted(id_dirs):
@@ -344,7 +349,7 @@ class DomainAdaptationDataset(Dataset):
                 # 解析用户ID
                 if user_dir.name.startswith("ID_"):
                     user_id = int(user_dir.name.split('_')[1]) - 1  # 转换为0-based索引
-                elif user_dir.name.startswith("User_"):
+                elif user_dir.name.startswith(("User_", "user_")):
                     user_id = int(user_dir.name.split('_')[1])
                 else:
                     continue
