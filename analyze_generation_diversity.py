@@ -5,6 +5,7 @@
 
 import torch
 import torch.nn.functional as F
+import torchvision.transforms as transforms
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -49,20 +50,31 @@ class DiversityAnalyzer:
         """提取图像特征向量"""
         features = []
         
+        # 图像预处理transforms
+        transform = transforms.Compose([
+            transforms.Resize((256, 256)),  # ImprovedClassifier使用224x224
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
         with torch.no_grad():
             for img_path in tqdm(image_paths, desc="Extracting features"):
-                # 加载图像
-                img = Image.open(img_path).convert('RGB')
-                img = img.resize((256, 256))
-                
-                # 转换为tensor
-                img_tensor = torch.from_numpy(np.array(img)).float()
-                img_tensor = img_tensor.permute(2, 0, 1) / 255.0
-                img_tensor = img_tensor.unsqueeze(0).to(self.device)
-                
-                # 提取特征
-                feature = self.feature_extractor.extract_features(img_tensor)
-                features.append(feature.cpu().numpy().flatten())
+                try:
+                    # 加载图像
+                    img = Image.open(img_path).convert('RGB')
+                    
+                    # 应用预处理
+                    img_tensor = transform(img).unsqueeze(0).to(self.device)
+                    
+                    # 提取特征 - 使用return_features=True
+                    backbone_features, projected_features = self.feature_extractor(img_tensor, return_features=True)
+                    # 使用backbone特征进行相似度计算
+                    features.append(backbone_features.cpu().numpy().flatten())
+                    
+                except Exception as e:
+                    print(f"Error processing {img_path}: {e}")
+                    # 使用零特征作为fallback
+                    features.append(np.zeros(512))  # ResNet18的特征维度是512
         
         return np.array(features)
     
