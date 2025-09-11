@@ -277,8 +277,19 @@ class CrossDomainEvaluator:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
+        # 转换numpy int64键为Python int以支持JSON序列化
+        def convert_keys(obj):
+            if isinstance(obj, dict):
+                return {str(k) if hasattr(k, 'item') else k: convert_keys(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_keys(item) for item in obj]
+            else:
+                return obj
+        
+        serializable_results = convert_keys(results)
+        
         with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2, default=str)
+            json.dump(serializable_results, f, indent=2, default=str)
         
         print(f"📄 Detailed results saved to: {output_path}")
 
