@@ -189,13 +189,21 @@ class CrossDomainEvaluator:
                 user_accuracies[user_id] = user_acc
         
         # 置信度统计
+        correct_confidences = [conf for i, conf in enumerate(confidences) 
+                             if true_labels[i] == predictions[i]]
+        incorrect_confidences = [conf for i, conf in enumerate(confidences) 
+                               if true_labels[i] != predictions[i]]
+        
         confidence_stats = {
             'mean_confidence': np.mean(confidences),
             'std_confidence': np.std(confidences),
-            'correct_confidence': np.mean([conf for i, conf in enumerate(confidences) 
-                                         if true_labels[i] == predictions[i]]),
-            'incorrect_confidence': np.mean([conf for i, conf in enumerate(confidences) 
-                                           if true_labels[i] != predictions[i]])
+            'median_confidence': np.median(confidences),
+            'min_confidence': np.min(confidences),
+            'max_confidence': np.max(confidences),
+            'correct_confidence': np.mean(correct_confidences) if correct_confidences else 0,
+            'incorrect_confidence': np.mean(incorrect_confidences) if incorrect_confidences else 0,
+            'high_confidence_samples': np.sum(np.array(confidences) > 0.8) / len(confidences),
+            'low_confidence_samples': np.sum(np.array(confidences) < 0.5) / len(confidences)
         }
         
         return {
