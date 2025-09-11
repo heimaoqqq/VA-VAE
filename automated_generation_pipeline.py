@@ -33,12 +33,7 @@ from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from simplified_vavae import SimplifiedVAVAE
 
-# 添加VA-VAE相关导入
-try:
-    from simplified_vavae import VA_VAE
-except ImportError:
-    print("⚠️ 无法导入VA_VAE，将使用SimplifiedVAVAE作为备用")
-    VA_VAE = None
+# 注意：VA_VAE会在load_models中动态导入，这里不需要提前导入
 
 import tempfile
 
