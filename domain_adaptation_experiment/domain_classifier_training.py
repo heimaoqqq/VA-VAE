@@ -305,6 +305,9 @@ class DomainAdaptationDataset(Dataset):
         if not user_samples:
             raise ValueError("未找到任何图像文件")
         
+        if not user_samples:
+            raise ValueError("未找到任何图像文件")
+        
         # 报告数据统计
         total_real = sum(len([p for p in paths if p[1] == "real"]) for paths in user_samples.values())
         total_generated = sum(len([p for p in paths if p[1] == "generated"]) for paths in user_samples.values())
