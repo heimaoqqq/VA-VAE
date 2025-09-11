@@ -193,17 +193,19 @@ class DiversityAnalyzer:
     
     def compute_diversity_metrics(self, real_data_dir, generated_data_dir, confidence_threshold=0.95):
         """计算全面的多样性指标"""
-        print(f"Analyzing diversity for confidence threshold: {confidence_threshold}")
+        print(f"Analyzing diversity for pre-selected samples...")
         
-        # 收集图像路径
-        real_paths = list(self.real_data_dir.glob("**/*.png"))
-        gen_paths = list(self.generated_data_dir.glob(f"*_conf_{confidence_threshold}_*.png"))
+        # 收集图像路径 - 支持jpg和png格式
+        real_paths = list(self.real_data_dir.glob("**/*.jpg")) + list(self.real_data_dir.glob("**/*.png"))
+        
+        # 对于已经筛选好的样本，直接获取所有png文件
+        gen_paths = list(self.generated_data_dir.glob("**/*.png"))
         
         if len(gen_paths) == 0:
-            print(f"No generated samples found for confidence {confidence_threshold}")
+            print(f"No generated samples found in {generated_data_dir}")
             return None
             
-        print(f"Found {len(real_paths)} real samples and {len(gen_paths)} generated samples")
+        print(f"Found {len(real_paths)} real samples and {len(gen_paths)} pre-selected generated samples")
         
         # 提取特征
         print("Extracting features from real data...")
@@ -239,12 +241,45 @@ class DiversityAnalyzer:
     
     def extract_user_id_from_path(self, path):
         """从文件路径提取用户ID"""
-        # 假设文件名格式包含用户ID信息
+        # 对于已保存的样本结构: /user_XX/sample_XXXXXX_confX.XXX.png
+        path_parts = Path(path).parts
+        
+        # 查找包含user_的部分
+        for part in path_parts:
+            if 'user_' in part:
+                try:
+                    return int(part.split('user_')[1])
+                except:
+                    continue
+        
+        # 对于原始数据格式: ID1_case1_1_Doppler1.jpg
         stem = Path(path).stem
-        # 根据实际文件命名格式调整
+        if stem.startswith('ID'):
+            try:
+                # 提取ID后面的数字，映射到0-30范围
+                id_num = int(stem.split('_')[0][2:])  # ID1 -> 1, ID10 -> 10
+                return id_num - 1  # 转换为0-based索引
+            except:
+                pass
+        
+        # 如果路径中有user_，尝试提取
         if 'user_' in stem:
-            return int(stem.split('user_')[1].split('_')[0])
+            try:
+                return int(stem.split('user_')[1].split('_')[0])
+            except:
+                pass
+        
         return 0
+    
+    def analyze_single_threshold(self, threshold=0.95):
+        """分析单个置信度阈值的多样性"""
+        print(f"Analyzing diversity for confidence threshold: {threshold}")
+        
+        result = self.compute_diversity_metrics(
+            self.real_data_dir, self.generated_data_dir, threshold
+        )
+        
+        return result
     
     def compare_multiple_thresholds(self, thresholds=[0.99, 0.95, 0.9, 0.8, 0.7]):
         """比较不同置信度阈值下的多样性"""
@@ -299,44 +334,90 @@ class DiversityAnalyzer:
 
 def main():
     parser = argparse.ArgumentParser(description='Analyze generation diversity')
-    parser.add_argument('--model_path', required=True, help='Path to trained classifier')
-    parser.add_argument('--real_data_dir', required=True, help='Real data directory')
-    parser.add_argument('--generated_data_dir', required=True, help='Generated data directory')
+    parser.add_argument('--model_path', required=True, 
+                       help='Path to trained classifier (e.g., best_classifier_model.pth)')
+    parser.add_argument('--real_data_dir', required=True, 
+                       help='Real data directory (original dataset)')
+    parser.add_argument('--generated_data_dir', required=True, 
+                       help='Generated data directory (where high-confidence samples are saved)')
+    parser.add_argument('--threshold', type=float, default=0.95,
+                       help='Single confidence threshold to analyze (default: 0.95)')
+    parser.add_argument('--compare_multiple', action='store_true',
+                       help='Compare multiple thresholds instead of single')
     parser.add_argument('--thresholds', nargs='+', type=float, 
                        default=[0.99, 0.95, 0.9, 0.8, 0.7],
-                       help='Confidence thresholds to analyze')
+                       help='Multiple confidence thresholds to compare')
     
     args = parser.parse_args()
     
     analyzer = DiversityAnalyzer(args.model_path, args.real_data_dir, args.generated_data_dir)
     
-    print("Starting diversity analysis...")
-    results = analyzer.compare_multiple_thresholds(args.thresholds)
-    
-    # 输出总结
-    print("\n" + "="*50)
-    print("DIVERSITY ANALYSIS SUMMARY")
-    print("="*50)
-    
-    for result in results:
-        conf = result['confidence_threshold']
-        mean_dist = result['mean_distance_to_real']
-        novel_ratio = result['novel_ratio']
-        recon_ratio = result['reconstruction_ratio']
+    if args.compare_multiple:
+        print("Starting multi-threshold diversity analysis...")
+        results = analyzer.compare_multiple_thresholds(args.thresholds)
         
-        print(f"\nConfidence {conf}:")
-        print(f"  Samples: {result['num_generated_samples']}")
-        print(f"  Mean distance to real: {mean_dist:.3f}")
-        print(f"  Novel samples (>0.3 dist): {novel_ratio:.1%}")
-        print(f"  Reconstruction samples (<0.1 dist): {recon_ratio:.1%}")
+        # 输出总结
+        print("\n" + "="*50)
+        print("MULTI-THRESHOLD DIVERSITY SUMMARY")
+        print("="*50)
         
-        # 判断质量
-        if recon_ratio > 0.5:
-            print("  ❌ HIGH RECONSTRUCTION - mostly memorizing training data")
-        elif novel_ratio > 0.3:
-            print("  ✅ GOOD DIVERSITY - generating novel samples")
+        for result in results:
+            conf = result['confidence_threshold']
+            mean_dist = result['mean_distance_to_real']
+            novel_ratio = result['novel_ratio']
+            recon_ratio = result['reconstruction_ratio']
+            
+            print(f"\nConfidence {conf}:")
+            print(f"  Samples: {result['num_generated_samples']}")
+            print(f"  Mean distance to real: {mean_dist:.3f}")
+            print(f"  Novel samples (>0.3 dist): {novel_ratio:.1%}")
+            print(f"  Reconstruction samples (<0.1 dist): {recon_ratio:.1%}")
+            
+            # 判断质量
+            if recon_ratio > 0.5:
+                print("  ❌ HIGH RECONSTRUCTION - mostly memorizing training data")
+            elif novel_ratio > 0.3:
+                print("  ✅ GOOD DIVERSITY - generating novel samples")
+            else:
+                print("  🟡 MODERATE DIVERSITY - balanced but could be better")
+    else:
+        print(f"Starting single-threshold diversity analysis for confidence {args.threshold}...")
+        result = analyzer.analyze_single_threshold(args.threshold)
+        
+        if result:
+            print("\n" + "="*50)
+            print(f"DIVERSITY ANALYSIS FOR CONFIDENCE {args.threshold}")
+            print("="*50)
+            
+            mean_dist = result['mean_distance_to_real']
+            novel_ratio = result['novel_ratio']
+            recon_ratio = result['reconstruction_ratio']
+            
+            print(f"Total samples analyzed: {result['num_generated_samples']}")
+            print(f"Mean distance to real data: {mean_dist:.3f}")
+            print(f"Novel samples (distance >0.3): {novel_ratio:.1%}")
+            print(f"Reconstruction samples (distance <0.1): {recon_ratio:.1%}")
+            print(f"Standard deviation: {result['std_distance_to_real']:.3f}")
+            
+            # 详细判断
+            print(f"\n📊 QUALITY ASSESSMENT:")
+            if recon_ratio > 0.6:
+                print("❌ POOR DIVERSITY: Mostly reconstructing training data")
+                print("   Recommendation: Lower confidence threshold or use balanced selection")
+            elif recon_ratio > 0.3:
+                print("🟡 MODERATE DIVERSITY: Some reconstruction, some novelty")
+                print("   Recommendation: Consider balanced selection to improve novelty")
+            else:
+                print("✅ GOOD DIVERSITY: Low reconstruction, good novelty")
+                
+            if novel_ratio > 0.4:
+                print("✅ EXCELLENT NOVELTY: Many truly new samples")
+            elif novel_ratio > 0.2:
+                print("🟡 MODERATE NOVELTY: Some new samples")
+            else:
+                print("❌ LOW NOVELTY: Few truly new samples")
         else:
-            print("  🟡 MODERATE DIVERSITY - balanced but could be better")
+            print("❌ No samples found for analysis. Check your paths and confidence threshold.")
 
 if __name__ == "__main__":
     main()
