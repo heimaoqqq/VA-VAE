@@ -49,6 +49,9 @@ class AutomatedGenerationPipeline:
     def __init__(self, args):
         self.args = args
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.rank = 0
+        self.local_rank = 0
+        self.world_size = 1
         self.setup_logging()
         self.setup_directories()
         self.load_models()
@@ -211,6 +214,7 @@ class AutomatedGenerationPipeline:
                 if hasattr(self.vae, 'eval'):
                     self.vae.eval()
                 self.logger.info(f"✅ VAE加载完成: {custom_vae_checkpoint}")
+                print(f"✅ VAE加载成功: 使用VA-VAE {custom_vae_checkpoint}")
             finally:
                 # 清理临时文件
                 os.unlink(temp_config_path)
@@ -560,7 +564,24 @@ class AutomatedGenerationPipeline:
         self.logger.info(f"📄 统计信息保存到: {stats_file}")
 
 
+def setup_distributed():
+    """初始化分布式训练"""
+    if 'RANK' in os.environ:
+        rank = int(os.environ['RANK'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        
+        torch.cuda.set_device(local_rank)
+        dist.init_process_group(backend='nccl')
+        
+        return rank, local_rank, world_size
+    else:
+        return 0, 0, 1
+
 def main():
+    # 初始化分布式环境
+    rank, local_rank, world_size = setup_distributed()
+    
     parser = argparse.ArgumentParser(description='自动化条件生成-筛选管道')
     
     # 扩散模型参数
@@ -588,12 +609,28 @@ def main():
     
     args = parser.parse_args()
     
-    # 设置随机种子
-    set_seed(args.seed)
+    # 设置随机种子（每个进程使用不同的种子）
+    set_seed(args.seed + rank * 1000)
     
-    # 创建并运行管道
+    # 在所有进程上创建和运行管道
+    if rank == 0 and world_size > 1:
+        print(f"🚀 使用 {world_size} 个GPU进行分布式生成")
+    
+    # 创建并运行管道（所有进程都运行）
     pipeline = AutomatedGenerationPipeline(args)
+    pipeline.rank = rank
+    pipeline.local_rank = local_rank 
+    pipeline.world_size = world_size
+    
+    # 设置正确的设备
+    if world_size > 1:
+        pipeline.device = torch.device(f'cuda:{local_rank}')
+    
     pipeline.run()
+    
+    # 清理分布式环境
+    if world_size > 1:
+        dist.destroy_process_group()
 
 
 if __name__ == '__main__':
