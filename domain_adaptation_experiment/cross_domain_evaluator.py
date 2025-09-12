@@ -631,103 +631,77 @@ class CrossDomainEvaluator:
     def _print_comprehensive_summary(self, report):
         """打印详细综合摘要"""
         print("\n" + "="*100)
-        print("🎯 COMPREHENSIVE DOMAIN ADAPTATION ANALYSIS REPORT")
+        print("🎯 跨域适应综合分析报告")
         print("="*100)
         
         # 实验概述
         summary = report['experiment_summary']
-        print(f"\n📋 RESEARCH QUESTION:")
-        print(f"   {summary['research_question']}")
-        print(f"   Domain Transfer: {summary['domain_adaptation']}")
+        print(f"\n📋 研究问题:")
+        print(f"   能否通过生成的正常步态数据提升背包步态识别效果?")
+        print(f"   域迁移: 正常步态(源域) → 背包步态(目标域)")
         
         # 性能结果
         metrics = report['performance_metrics']
-        print(f"\n📊 OVERALL PERFORMANCE RESULTS:")
-        print(f"   • Baseline Model (Real Data Only):     {metrics['baseline_accuracy']:.1%}")
-        print(f"   • Enhanced Model (Real + Generated):   {metrics['enhanced_accuracy']:.1%}")
-        print(f"   • Absolute Improvement:                {metrics['absolute_improvement']:+.1%}")
-        print(f"   • Relative Improvement:                {metrics['relative_improvement_percent']:+.1f}%")
+        print(f"\n📊 整体性能对比:")
+        print(f"   • 基线模型 (仅真实数据):             {metrics['baseline_accuracy']:.1%}")
+        print(f"   • 增强模型 (真实+生成数据):          {metrics['enhanced_accuracy']:.1%}")
+        print(f"   • 绝对改进幅度:                     {metrics['absolute_improvement']:+.1%}")
+        print(f"   • 相对改进百分比:                   {metrics['relative_improvement_percent']:+.1f}%")
         
         # 用户级别分析
         if 'user_level_analysis' in report:
             user_analysis = report['user_level_analysis']
-            print(f"\n👤 USER-LEVEL DETAILED ANALYSIS:")
-            print(f"   • Total Users Evaluated:               {user_analysis['total_users']}")
-            print(f"   • Users with Improvement:              {user_analysis['users_improved']}/{user_analysis['total_users']} ({user_analysis['improvement_ratio']:.1%})")
-            print(f"   • Mean User-Level Improvement:         {user_analysis['mean_improvement']:+.1%}")
-            print(f"   • Std User-Level Improvement:          {user_analysis['std_improvement']:.1%}")
-            print(f"   • Best Individual Improvement:         {user_analysis['max_improvement']:+.1%}")
-            print(f"   • Worst Individual Change:             {user_analysis['min_improvement']:+.1%}")
+            print(f"\n👤 用户级别详细分析:")
+            print(f"   • 评估用户总数:                     {user_analysis['total_users']}")
+            print(f"   • 改进用户数量:                     {user_analysis['users_improved']}/{user_analysis['total_users']} ({user_analysis['improvement_ratio']:.1%})")
+            print(f"   • 用户级平均改进:                   {user_analysis['mean_improvement']:+.1%}")
+            print(f"   • 用户级改进标准差:                 {user_analysis['std_improvement']:.1%}")
+            print(f"   • 最大个体改进:                     {user_analysis['max_improvement']:+.1%}")
+            print(f"   • 最小个体变化:                     {user_analysis['min_improvement']:+.1%}")
         
         # 置信度分析
         if 'confidence_analysis' in report:
             conf_analysis = report['confidence_analysis']
-            print(f"\n🎯 CONFIDENCE & PREDICTION QUALITY:")
-            print(f"   • Baseline Mean Confidence:            {conf_analysis['baseline_mean_confidence']:.3f}")
-            print(f"   • Enhanced Mean Confidence:            {conf_analysis['enhanced_mean_confidence']:.3f}")
-            print(f"   • Confidence Improvement:              {conf_analysis['confidence_improvement']:+.3f}")
-            print(f"   • Baseline Correct Predictions Confidence: {conf_analysis['baseline_correct_conf']:.3f}")
-            print(f"   • Enhanced Correct Predictions Confidence: {conf_analysis['enhanced_correct_conf']:.3f}")
-            print(f"   • Calibration Improvement:             {conf_analysis['calibration_improvement']}")
+            print(f"\n🎯 置信度和预测质量分析:")
+            print(f"   • 基线模型平均置信度:               {conf_analysis['baseline_mean_confidence']:.3f}")
+            print(f"   • 增强模型平均置信度:               {conf_analysis['enhanced_mean_confidence']:.3f}")
+            print(f"   • 置信度改进:                       {conf_analysis['confidence_improvement']:+.3f}")
+            print(f"   • 基线正确预测置信度:               {conf_analysis['baseline_correct_conf']:.3f}")
+            print(f"   • 增强正确预测置信度:               {conf_analysis['enhanced_correct_conf']:.3f}")
+            print(f"   • 校准改进情况:                     {conf_analysis['calibration_improvement']}")
         
         # 统计验证
         stats = report['statistical_validation']
-        print(f"\n📈 STATISTICAL SIGNIFICANCE TESTING:")
-        print(f"   • Paired t-test Statistic:             {stats['t_statistic']:.4f}")
-        print(f"   • P-value:                             {stats['p_value']:.4f}")
-        print(f"   • Significance Level (α=0.05):         {'✅ SIGNIFICANT' if stats['statistically_significant'] else '❌ NOT SIGNIFICANT'}")
-        print(f"   • Effect Size:                         {'Medium' if abs(stats['t_statistic']) > 2 else 'Small'}")
+        print(f"\n📈 统计显著性检验:")
+        print(f"   • 配对t检验统计量:                  {stats['t_statistic']:.4f}")
+        print(f"   • P值:                             {stats['p_value']:.4f}")
+        print(f"   • 显著性水平 (α=0.05):              {'✅ 显著' if stats['statistically_significant'] else '❌ 不显著'}")
+        print(f"   • 效应量:                           {'中等' if abs(stats['t_statistic']) > 2 else '较小'}")
         
         # 错误分析
         if 'error_analysis' in report:
             error_analysis = report['error_analysis']
-            print(f"\n🔍 ERROR PATTERN ANALYSIS:")
-            print(f"   • Most Confused User Pairs:            {', '.join(map(str, error_analysis['most_confused_pairs'][:3]))}")
-            print(f"   • Hardest Users to Classify:           {', '.join(map(str, error_analysis['hardest_users'][:5]))}")
-            print(f"   • Improvement in Hard Cases:           {error_analysis['hard_case_improvement']:+.1%}")
+            print(f"\n🔍 错误模式分析:")
+            print(f"   • 最易混淆用户对:                   {', '.join(map(str, error_analysis['most_confused_pairs'][:3]))}")
+            print(f"   • 最难分类用户:                     {', '.join(map(str, error_analysis['hardest_users'][:5]))}")
+            print(f"   • 困难案例改进:                     {error_analysis['hard_case_improvement']:+.1%}")
         
         # 成功评估
         assessment = report['assessment']
-        print(f"\n🏆 DOMAIN ADAPTATION ASSESSMENT: {assessment['emoji']} {assessment['level']}")
-        print(f"   {assessment.get('description', 'Domain adaptation analysis completed')}")
-        
-        # 实际意义解读
-        print(f"\n💡 PRACTICAL INTERPRETATION:")
-        if metrics['absolute_improvement'] > 0.05:
-            print(f"   ✅ Strong evidence that synthetic normal gait data improves backpack gait recognition")
-            print(f"   ✅ Significant cost savings potential - focus collection on normal gait only")
-        elif metrics['absolute_improvement'] > 0.02:
-            print(f"   ⚠️  Moderate evidence of improvement - worth pursuing with optimizations")
-            print(f"   ⚠️  May need larger synthetic datasets or better generation quality")
-        else:
-            print(f"   ❌ Limited evidence of improvement - current approach may not be sufficient")
-            print(f"   ❌ Consider alternative domain adaptation strategies")
+        print(f"\n🏆 域适应评估结果: {assessment['emoji']} {assessment['level']}")
         
         # 详细建议
-        print(f"\n🚀 DETAILED RECOMMENDATIONS:")
+        print(f"\n🚀 优化建议:")
         for i, rec in enumerate(report['recommendations'], 1):
             print(f"   {i}. {rec}")
         
-        # 下一步行动
-        print(f"\n📋 NEXT STEPS:")
-        if metrics['absolute_improvement'] > 0.02 and stats['statistically_significant']:
-            print(f"   1. 🎯 Deploy synthetic data augmentation for normal gait collection")
-            print(f"   2. 📊 Scale up: Generate larger synthetic datasets (10x current size)")
-            print(f"   3. 🧪 Test on additional gait variations (running, limping, etc.)")
-            print(f"   4. 💰 Calculate ROI: Compare synthetic vs. real data collection costs")
-        else:
-            print(f"   1. 🔧 Improve generation quality (better CFG, sampling steps)")
-            print(f"   2. 🎨 Try advanced domain adaptation (adversarial training)")
-            print(f"   3. 📈 Collect more diverse real training data")
-            print(f"   4. 🔬 Analyze failure cases and generation gaps")
-        
         print("\n" + "="*100)
-        print("📄 Detailed analysis files generated:")
-        print("   • comprehensive_domain_analysis.json - Complete numerical results")
-        print("   • confidence_analysis.png - Confidence distribution plots") 
-        print("   • confusion_matrices.png - Error pattern visualization")
+        print("📄 详细分析文件:")
+        print("   • comprehensive_domain_analysis.json - 完整数值结果")
+        print("   • confidence_analysis.png - 置信度分布对比图") 
+        print("   • confusion_matrices.png - 混淆矩阵可视化")
         if 'user_level_analysis' in report:
-            print("   • per_user_analysis.png - Individual user improvement plots")
+            print("   • per_user_analysis.png - 逐用户改进对比图")
         print("="*100)
 
     def save_detailed_results(self, results, output_path):
