@@ -633,19 +633,42 @@ def main():
     # 创建评估器
     evaluator = CrossDomainEvaluator()
     
-    # 完整的域适应对比分析
-    evaluator.compare_models(args.baseline_model, args.enhanced_model, args.backpack_data_dir, output_dir=args.output_dir)
+    # 加载并评估基线模型
+    print("📊 Loading and evaluating baseline model...")
+    baseline_model, _ = evaluator.load_classifier(args.baseline_model)
+    baseline_results = evaluator.evaluate_on_target_domain(baseline_model, args.backpack_data_dir)
+    
+    # 加载并评估增强模型
+    print("📊 Loading and evaluating enhanced model...")
+    enhanced_model, _ = evaluator.load_classifier(args.enhanced_model)
+    enhanced_results = evaluator.evaluate_on_target_domain(enhanced_model, args.backpack_data_dir)
+    
+    if baseline_results is None or enhanced_results is None:
+        print("❌ Evaluation failed")
+        return
+    
+    # 高级分析
+    output_path = Path(args.output_dir)
+    output_path.mkdir(exist_ok=True)
+    
+    evaluator._advanced_domain_analysis(baseline_model, enhanced_model, 
+                                       args.backpack_data_dir, None, output_path)
+    
+    # 生成综合报告
+    report = evaluator._generate_comprehensive_report(baseline_results, enhanced_results, output_path)
+    
+    # 保存详细结果
     all_results = {
         'baseline_results': baseline_results,
         'enhanced_results': enhanced_results,
-        'comparison': comparison,
+        'comprehensive_report': report,
         'evaluation_config': vars(args)
     }
     
-    evaluator.save_detailed_results(all_results, output_dir / 'cross_domain_evaluation.json')
+    evaluator.save_detailed_results(all_results, output_path / 'cross_domain_evaluation.json')
     
     print(f"\n✅ Cross-domain evaluation completed!")
-    print(f"📁 Results saved to: {output_dir}")
+    print(f"📁 Results saved to: {args.output_dir}")
 
 
 if __name__ == '__main__':
