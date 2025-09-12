@@ -395,11 +395,11 @@ class DomainAdaptationDataset(Dataset):
                 
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
-            # 返回零张量
+            # 返回零张量 - 尺寸与实际图像一致
             if self.contrastive_pairs:
-                return (torch.zeros(3, 224, 224), torch.zeros(3, 224, 224)), label
+                return (torch.zeros(3, 256, 256), torch.zeros(3, 256, 256)), label
             else:
-                return torch.zeros(3, 224, 224), label
+                return torch.zeros(3, 256, 256), label
 
 
 class ImprovedClassifier(nn.Module):
