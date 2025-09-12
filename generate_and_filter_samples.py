@@ -223,13 +223,41 @@ def load_model_and_config(checkpoint_path, config_path, local_rank):
 
 def load_classifier(checkpoint_path, device):
     """加载预训练的分类器"""
-    # 创建分类器模型
-    model = resnet50(pretrained=False)
-    num_classes = 31
-    model.fc = nn.Sequential(
-        nn.Dropout(0.5),
-        nn.Linear(model.fc.in_features, num_classes)
-    )
+    import torchvision.models as models
+    
+    # 创建与improved_classifier_training.py完全一致的模型结构
+    class MicroDopplerModel(nn.Module):
+        def __init__(self, num_classes=31, dropout_rate=0.3):
+            super().__init__()
+            
+            # 使用ResNet18作为backbone
+            self.backbone = models.resnet18(pretrained=False)
+            self.backbone.fc = nn.Identity()
+            feature_dim = 512
+            
+            # 分类头
+            self.classifier = nn.Sequential(
+                nn.Dropout(dropout_rate),
+                nn.Linear(feature_dim, 256),
+                nn.BatchNorm1d(256),
+                nn.ReLU(inplace=False),
+                nn.Dropout(dropout_rate * 0.5),
+                nn.Linear(256, num_classes)
+            )
+            
+            # 对比学习投影头
+            self.projection_head = nn.Sequential(
+                nn.Linear(feature_dim, 128),
+                nn.ReLU(inplace=False),
+                nn.Linear(128, 64)
+            )
+        
+        def forward(self, x):
+            features = self.backbone(x)
+            return self.classifier(features)
+    
+    # 创建模型
+    model = MicroDopplerModel(num_classes=31)
     
     # 加载权重
     checkpoint = torch.load(checkpoint_path, map_location=device)
