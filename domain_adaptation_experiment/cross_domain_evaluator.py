@@ -1,790 +1,927 @@
-#!/usr/bin/env python3
 """
-综合域适应分析工具
-集成了基本评估和高级分析功能
-研究问题：正常步态(源域) → 背包步态(目标域) 的域适应效果
+域适应分类器训练方案
+支持选择原始数据集和生成数据集进行训练
+用于评估生成数据对跨域泛化性能的提升效果
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from torch.nn.parallel import DistributedDataParallel as DDP
 import torchvision.transforms as transforms
-from torch.utils.data import Dataset, DataLoader
-from pathlib import Path
-from PIL import Image
+import timm
 import numpy as np
+from PIL import Image
+from pathlib import Path
 import argparse
 import json
 from tqdm import tqdm
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
-from sklearn.manifold import TSNE
-from scipy.stats import ttest_rel, mannwhitneyu
 import matplotlib.pyplot as plt
-import seaborn as sns
-import pandas as pd
 from collections import defaultdict
-
-# 添加父目录到路径以导入分类器
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
-from improved_classifier_training import ImprovedClassifier
+import random
+import os
 
 
-class BackpackWalkingDataset(Dataset):
-    """背包行走数据集（目标域）"""
+def setup_distributed():
+    """初始化分布式训练"""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+        
+        # 初始化进程组
+        dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+        torch.cuda.set_device(local_rank)
+        
+        return rank, world_size, local_rank
+    else:
+        return 0, 1, 0
+
+
+def cleanup_distributed():
+    """清理分布式训练"""
+    if dist.is_initialized():
+        try:
+            # 添加超时保护
+            import time
+            start_time = time.time()
+            dist.destroy_process_group()
+            print(f"✅ 分布式清理完成，耗时 {time.time() - start_time:.2f}s")
+        except Exception as e:
+            print(f"⚠️ 分布式清理失败: {e}")
+
+
+def is_main_process():
+    """判断是否为主进程"""
+    return not dist.is_initialized() or dist.get_rank() == 0
+
+
+class GlobalNegativeContrastiveLoss(nn.Module):
+    """全局负样本对比损失函数"""
     
-    def __init__(self, data_dir, transform=None):
-        self.data_dir = Path(data_dir)
-        self.transform = transform
+    def __init__(self, num_classes, temperature=0.07, margin=0.5, memory_size=200):
+        super().__init__()
+        self.num_classes = num_classes
+        self.temperature = temperature
+        self.margin = margin
+        self.memory_size = memory_size
+        
+        # 为每个类别维护特征memory bank
+        self.register_buffer('memory_bank', torch.randn(num_classes, memory_size, 512))
+        self.register_buffer('memory_ptr', torch.zeros(num_classes, dtype=torch.long))
+        self.memory_bank = F.normalize(self.memory_bank, dim=2)
+    
+    @torch.no_grad()
+    def update_memory_bank(self, features, labels):
+        """更新memory bank"""
+        features_normalized = F.normalize(features, dim=1)
+        
+        for i, label in enumerate(labels):
+            label = label.item()
+            ptr = self.memory_ptr[label].item()
+            
+            # 直接更新，因为已经在no_grad上下文中
+            self.memory_bank[label, ptr] = features_normalized[i].detach()
+            self.memory_ptr[label] = (ptr + 1) % self.memory_size
+    
+    def forward(self, features, labels):
+        """
+        features: [batch_size, feature_dim]
+        labels: [batch_size] 用户ID
+        """
+        batch_size = features.size(0)
+        features = F.normalize(features, dim=1)
+        
+        # 更新memory bank - 使用detached features避免梯度问题
+        with torch.no_grad():
+            self.update_memory_bank(features.detach(), labels)
+        
+        total_loss = 0
+        num_pairs = 0
+        
+        # 对batch中每个样本计算与全局负样本的对比损失
+        for i, anchor_label in enumerate(labels):
+            anchor_feature = features[i].unsqueeze(0)  # [1, feature_dim]
+            
+            # 正样本：同类别的其他样本（batch内 + memory bank）
+            positive_features = []
+            
+            # batch内正样本
+            batch_positives = features[labels == anchor_label]
+            if len(batch_positives) > 1:  # 除了自己还有其他同类样本
+                mask = torch.arange(len(batch_positives)) != (labels == anchor_label).nonzero()[0]
+                if mask.any():
+                    positive_features.append(batch_positives[mask])
+            
+            # memory bank中的正样本
+            memory_positives = self.memory_bank[anchor_label]  # [memory_size, feature_dim]
+            positive_features.append(memory_positives[:50])  # 取前50个避免过多
+            
+            if positive_features:
+                positive_features = torch.cat(positive_features, dim=0)
+                pos_similarity = torch.matmul(anchor_feature, positive_features.T) / self.temperature
+                pos_loss = -pos_similarity.mean()
+            else:
+                pos_loss = torch.tensor(0.0, device=features.device)
+            
+            # 负样本：所有其他类别的样本（全局）
+            negative_features = []
+            for neg_label in range(self.num_classes):
+                if neg_label != anchor_label:
+                    # 从memory bank中采样负样本
+                    neg_samples = self.memory_bank[neg_label][:20]  # 每个类别20个样本
+                    negative_features.append(neg_samples)
+            
+            if negative_features:
+                negative_features = torch.cat(negative_features, dim=0)  # [num_negatives, feature_dim]
+                neg_similarity = torch.matmul(anchor_feature, negative_features.T) / self.temperature
+                
+                # Hard negative mining
+                hard_mask = neg_similarity.squeeze() > self.margin
+                if hard_mask.any():
+                    neg_loss = neg_similarity.squeeze()[hard_mask].mean()
+                else:
+                    neg_loss = neg_similarity.mean()
+            else:
+                neg_loss = torch.tensor(0.0, device=features.device)
+            
+            # 累积损失
+            total_loss += pos_loss + neg_loss
+            num_pairs += 1
+        
+        return total_loss / num_pairs if num_pairs > 0 else torch.tensor(0.0, device=features.device)
+
+
+class InterUserContrastiveLoss(nn.Module):
+    """用户间对比损失函数 - 简化版本避免梯度问题"""
+    
+    def __init__(self, temperature=0.07, margin=0.5):
+        super().__init__()
+        self.temperature = temperature
+        self.margin = margin
+    
+    def forward(self, features, labels):
+        """
+        features: [batch_size, feature_dim] 
+        labels: [batch_size] 用户ID
+        """
+        batch_size = features.size(0)
+        if batch_size < 2:
+            return torch.tensor(0.0, device=features.device, requires_grad=True)
+        
+        # 归一化特征
+        features_norm = F.normalize(features, dim=1)
+        
+        # 计算相似度矩阵
+        sim_matrix = torch.matmul(features_norm, features_norm.T) / self.temperature
+        
+        # 创建标签mask
+        labels_expanded = labels.view(-1, 1)
+        pos_mask = torch.eq(labels_expanded, labels_expanded.T).float()
+        
+        # 移除对角线（自己和自己的相似度）
+        eye_mask = torch.eye(batch_size, device=features.device)
+        pos_mask = pos_mask * (1.0 - eye_mask)
+        neg_mask = (1.0 - torch.eq(labels_expanded, labels_expanded.T).float()) * (1.0 - eye_mask)
+        
+        # 数值稳定性：减去最大值
+        sim_max, _ = torch.max(sim_matrix, dim=1, keepdim=True)
+        sim_matrix_stable = sim_matrix - sim_max.detach()
+        
+        # 计算InfoNCE风格的对比损失
+        exp_sim = torch.exp(sim_matrix_stable)
+        
+        # 计算每个anchor的损失
+        pos_sum = torch.sum(exp_sim * pos_mask, dim=1, keepdim=True)
+        neg_sum = torch.sum(exp_sim * neg_mask, dim=1, keepdim=True)
+        
+        # 避免除零
+        pos_sum = torch.clamp(pos_sum, min=1e-8)
+        total_sum = pos_sum + neg_sum + 1e-8
+        
+        # InfoNCE损失：-log(pos_sum / total_sum)
+        loss_per_sample = -torch.log(pos_sum / total_sum)
+        
+        # 只对有正样本的anchor计算损失
+        has_pos = (torch.sum(pos_mask, dim=1) > 0).float()
+        valid_loss = loss_per_sample.squeeze() * has_pos
+        
+        if has_pos.sum() > 0:
+            return valid_loss.sum() / has_pos.sum()
+        else:
+            return torch.tensor(0.0, device=features.device, requires_grad=True)
+    
+
+class SupConLoss(nn.Module):
+    """监督对比损失 - 避免所有原地操作"""
+    
+    def __init__(self, temperature=0.07):
+        super().__init__()
+        self.temperature = temperature
+    
+    def forward(self, features, labels):
+        """
+        features: [batch_size, feature_dim]
+        labels: [batch_size]
+        """
+        device = features.device
+        batch_size = features.shape[0]
+        
+        if batch_size < 2:
+            return torch.tensor(0.0, device=device, requires_grad=True)
+        
+        # 归一化特征
+        features_norm = F.normalize(features, dim=1)
+        
+        # 计算相似度矩阵
+        sim_matrix = torch.matmul(features_norm, features_norm.T) / self.temperature
+        
+        # 创建正样本mask
+        labels_expanded = labels.view(-1, 1)
+        pos_mask = torch.eq(labels_expanded, labels_expanded.T).float()
+        
+        # 移除对角线 - 避免原地操作
+        eye_mask = torch.eye(batch_size, device=device)
+        pos_mask = torch.sub(pos_mask, eye_mask)
+        
+        # 负样本mask
+        neg_mask = torch.ne(labels_expanded, labels_expanded.T).float()
+        
+        # 数值稳定性
+        sim_max, _ = torch.max(sim_matrix, dim=1, keepdim=True)
+        sim_matrix = torch.sub(sim_matrix, sim_max.detach())
+        
+        # 计算InfoNCE损失
+        exp_sim = torch.exp(sim_matrix)
+        
+        # 分母：所有负样本 + 正样本
+        denominator = torch.sum(exp_sim * neg_mask, dim=1, keepdim=True) + \
+                     torch.sum(exp_sim * pos_mask, dim=1, keepdim=True)
+        
+        # 分子：正样本
+        numerator = torch.sum(exp_sim * pos_mask, dim=1, keepdim=True)
+        
+        # 避免除零
+        loss = torch.neg(torch.log(torch.div(numerator, denominator + 1e-8)))
+        
+        # 只计算有正样本的行
+        valid_mask = (pos_mask.sum(dim=1) > 0)
+        if valid_mask.sum() > 0:
+            return loss[valid_mask].mean()
+        else:
+            return torch.tensor(0.0, device=device, requires_grad=True)
+
+
+class DomainAdaptationDataset(Dataset):
+    """域适应数据集，支持多个数据源"""
+    
+    def __init__(self, real_data_dir=None, generated_data_dir=None, split='train', 
+                 transform=None, contrastive_pairs=False, use_generated=False):
+        """
+        Args:
+            real_data_dir: 真实数据目录
+            generated_data_dir: 生成数据目录  
+            split: 'train' or 'val'
+            use_generated: 是否使用生成数据扩充训练集
+        """
+        self.real_data_dir = Path(real_data_dir) if real_data_dir else None
+        self.generated_data_dir = Path(generated_data_dir) if generated_data_dir else None
+        self.split = split
+        self.contrastive_pairs = contrastive_pairs
+        self.use_generated = use_generated
         self.samples = []
         
-        # 加载背包行走数据
-        self._load_backpack_data()
+        # 收集所有样本
+        user_samples = defaultdict(list)
         
-    def _load_backpack_data(self):
-        """加载背包行走数据"""
-        if not self.data_dir.exists():
-            raise FileNotFoundError(f"背包行走数据目录不存在: {self.data_dir}")
+        # 加载真实数据
+        if self.real_data_dir and self.real_data_dir.exists():
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                print(f"Loading real data from: {self.real_data_dir}")
+            self._load_data_from_dir(self.real_data_dir, user_samples, "real", split)
         
-        # 查找用户目录 (ID_* 或 User_*)
-        user_dirs = list(self.data_dir.glob("ID_*")) + list(self.data_dir.glob("User_*"))
+        # 加载生成数据（仅在训练时且启用时）
+        if (self.use_generated and split == 'train' and 
+            self.generated_data_dir and self.generated_data_dir.exists()):
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                print(f"Loading generated data from: {self.generated_data_dir}")
+            self._load_data_from_dir(self.generated_data_dir, user_samples, "generated", split)
         
-        if not user_dirs:
-            raise ValueError(f"在 {self.data_dir} 中未找到用户目录")
+        if not user_samples:
+            raise ValueError("未找到任何图像文件")
         
-        for user_dir in sorted(user_dirs):
+        # 报告数据统计
+        total_real = sum(len([p for p in paths if p[1] == "real"]) for paths in user_samples.values())
+        total_generated = sum(len([p for p in paths if p[1] == "generated"]) for paths in user_samples.values())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            print(f"Loaded data: {total_real} real samples, {total_generated} generated samples")
+        
+        # 微多普勒图像专用变换（最小增强，保持频谱结构）
+        if split == 'train':
+            self.transform = transforms.Compose([
+                transforms.Resize((256, 256)),
+                # 只使用极轻微的噪声增强，不破坏频谱结构
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                # 可选：极小的高斯噪声（模拟测量噪声） - 避免原地操作
+                # transforms.Lambda(lambda x: x + torch.randn_like(x) * 0.01 if torch.rand(1).item() < 0.3 else x)
+            ])
+        else:
+            self.transform = transforms.Compose([
+                transforms.Resize((256, 256)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+        
+        if transform:
+            self.transform = transform
+    
+    def _load_data_from_dir(self, data_dir, user_samples, data_type, split):
+        """从指定目录加载数据"""
+        # 查找ID_*、User_*、user_*目录
+        id_dirs = (list(data_dir.glob("ID_*")) + 
+                  list(data_dir.glob("User_*")) + 
+                  list(data_dir.glob("user_*")))
+        
+        if len(id_dirs) == 0:
+            print(f"Warning: 在 {data_dir} 中未找到ID_*、User_*或user_*格式的用户目录")
+            # 打印实际找到的目录结构以便调试
+            all_dirs = [d.name for d in data_dir.iterdir() if d.is_dir()]
+            print(f"实际找到的目录: {all_dirs[:10]}...")  # 只显示前10个
+            return
+        
+        for user_dir in sorted(id_dirs):
             if user_dir.is_dir():
                 # 解析用户ID
                 if user_dir.name.startswith("ID_"):
-                    user_id = int(user_dir.name.split('_')[1]) - 1  # 转换为0-based
-                elif user_dir.name.startswith("User_"):
+                    user_id = int(user_dir.name.split('_')[1]) - 1  # 转换为0-based索引
+                elif user_dir.name.startswith(("User_", "user_")):
                     user_id = int(user_dir.name.split('_')[1])
                 else:
                     continue
                     
-                # 加载该用户的所有背包行走图像
                 for ext in ['*.png', '*.jpg', '*.jpeg']:
                     for img_path in user_dir.glob(ext):
-                        self.samples.append((str(img_path), user_id))
+                        user_samples[user_id].append((str(img_path), data_type))
         
-        print(f"Loaded {len(self.samples)} backpack walking samples from {len(set(s[1] for s in self.samples))} users")
-        
+        # 划分训练/验证集
+        for user_id, paths in user_samples.items():
+            random.shuffle(paths)
+            split_idx = int(len(paths) * 0.8)
+            
+            if split == 'train':
+                selected_paths = paths[:split_idx]
+            else:  # validation
+                selected_paths = paths[split_idx:]
+            
+            for path_info in selected_paths:
+                path, data_type = path_info
+                self.samples.append((path, user_id, data_type))
+    
     def __len__(self):
         return len(self.samples)
     
     def __getitem__(self, idx):
-        img_path, label = self.samples[idx]
+        img_path, label, data_type = self.samples[idx]
         
         try:
             image = Image.open(img_path).convert('RGB')
-            if self.transform:
+            
+            if self.contrastive_pairs and self.split == 'train':
+                # 生成对比样本对
+                image1 = self.transform(image)
+                image2 = self.transform(image)  # 同一图像的不同增强
+                return (image1, image2), label
+            else:
                 image = self.transform(image)
-            return image, label
+                return image, label
+                
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
-            # 返回零张量作为fallback - 尺寸与实际图像一致
-            return torch.zeros(3, 256, 256), label
+            # 返回零张量 - 尺寸与实际图像一致
+            if self.contrastive_pairs:
+                return (torch.zeros(3, 256, 256), torch.zeros(3, 256, 256)), label
+            else:
+                return torch.zeros(3, 256, 256), label
 
 
-class CrossDomainEvaluator:
-    """跨域性能评估器"""
+class ImprovedClassifier(nn.Module):
+    """改进的分类器，专为微多普勒信号优化 - 完全避免inplace操作"""
     
-    def __init__(self, device='cuda'):
-        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    def __init__(self, num_classes, backbone='resnet18', dropout_rate=0.3, freeze_layers=True):
+        super().__init__()
         
-        # 测试数据变换（与训练时验证集一致）
-        self.test_transform = transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+        # 使用标准ResNet18避免TIMM的潜在inplace问题
+        import torchvision.models as models
+        self.backbone = models.resnet18(pretrained=True)
+        # 移除最后的分类层
+        self.backbone.fc = nn.Identity()
+        feature_dim = 512
         
-    def load_classifier(self, model_path):
-        """加载训练好的分类器"""
-        print(f"Loading classifier from: {model_path}")
+        # 递归禁用所有ReLU的inplace操作
+        self._disable_inplace_operations(self.backbone)
         
-        checkpoint = torch.load(model_path, map_location=self.device)
+        # 灵活的层冻结策略
+        if freeze_layers == 'minimal':
+            # 最小冻结：只冻结最早的卷积层
+            for name, param in self.backbone.named_parameters():
+                if any(x in name for x in ['conv1', 'bn1']):
+                    param.requires_grad = False
+        elif freeze_layers == 'moderate':
+            # 中等冻结：冻结早期层，保留适应性
+            for name, param in self.backbone.named_parameters():
+                if any(x in name for x in ['conv1', 'bn1', 'layer1']):
+                    param.requires_grad = False
+        elif freeze_layers == 'aggressive':
+            # 激进冻结：冻结更多层（小数据集）
+            for name, param in self.backbone.named_parameters():
+                if any(x in name for x in ['conv1', 'bn1', 'layer1', 'layer2']):
+                    param.requires_grad = False
+        elif freeze_layers == 'none':
+            # 不冻结任何层（风险更高但可能效果更好）
+            pass
         
-        # 获取模型配置
-        num_classes = checkpoint.get('num_classes', 31)
-        model_name = checkpoint.get('model_name', 'resnet18')
-        
-        # 创建模型
-        model = ImprovedClassifier(
-            num_classes=num_classes,
-            backbone=model_name
-        ).to(self.device)
-        
-        # 加载权重
-        model.load_state_dict(checkpoint['model_state_dict'])
-        model.eval()
-        
-        print(f"✅ Loaded {model_name} with {num_classes} classes")
-        if 'best_val_acc' in checkpoint:
-            print(f"   Original validation accuracy: {checkpoint['best_val_acc']:.2f}%")
-        
-        return model, checkpoint
-    
-    def evaluate_on_target_domain(self, model, target_data_dir, batch_size=32):
-        """在目标域（背包行走）数据上评估模型"""
-        print(f"\n🎯 Evaluating on target domain: {target_data_dir}")
-        
-        # 创建目标域数据集
-        target_dataset = BackpackWalkingDataset(
-            data_dir=target_data_dir,
-            transform=self.test_transform
+        # 分类头 - 确保所有激活函数都不是inplace
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(feature_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=False),  # 明确禁用inplace
+            nn.Dropout(dropout_rate * 0.5),
+            nn.Linear(256, num_classes)
         )
         
-        if len(target_dataset) == 0:
-            print("❌ No target domain samples found!")
-            return None
-        
-        target_loader = DataLoader(
-            target_dataset,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=True
+        # 对比学习投影头
+        self.projection_head = nn.Sequential(
+            nn.Linear(feature_dim, 128),
+            nn.ReLU(inplace=False),  # 明确禁用inplace
+            nn.Linear(128, 64)
         )
-        
-        # 评估
-        all_predictions = []
-        all_labels = []
-        all_confidences = []
-        
-        model.eval()
-        with torch.no_grad():
-            for images, labels in tqdm(target_loader, desc="Evaluating"):
-                images = images.to(self.device)
-                labels = labels.to(self.device)
-                
-                # 前向传播
-                outputs = model(images)
-                probabilities = torch.softmax(outputs, dim=1)
-                
-                # 获取预测和置信度
-                confidences, predictions = torch.max(probabilities, 1)
-                
-                all_predictions.extend(predictions.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-                all_confidences.extend(confidences.cpu().numpy())
-        
-        # 计算评估指标
-        results = self._compute_metrics(all_labels, all_predictions, all_confidences)
-        results['total_samples'] = len(all_labels)
-        results['num_users'] = len(set(all_labels))
-        
-        return results
     
-    def _compute_metrics(self, true_labels, predictions, confidences):
-        """计算详细的评估指标"""
-        # 基本准确率
-        accuracy = accuracy_score(true_labels, predictions)
+    def _disable_inplace_operations(self, module):
+        """递归禁用模块中所有的inplace操作"""
+        for child_name, child in module.named_children():
+            if isinstance(child, nn.ReLU):
+                # 替换inplace=True的ReLU
+                setattr(module, child_name, nn.ReLU(inplace=False))
+            elif isinstance(child, nn.ReLU6):
+                setattr(module, child_name, nn.ReLU6(inplace=False))
+            elif isinstance(child, nn.LeakyReLU):
+                setattr(module, child_name, nn.LeakyReLU(child.negative_slope, inplace=False))
+            else:
+                # 递归处理子模块
+                self._disable_inplace_operations(child)
+    
+    def forward(self, x, return_features=False):
+        features = self.backbone(x)
         
-        # 按用户统计
-        user_accuracies = {}
-        for user_id in set(true_labels):
-            user_mask = np.array(true_labels) == user_id
-            if np.sum(user_mask) > 0:
-                user_acc = accuracy_score(
-                    np.array(true_labels)[user_mask], 
-                    np.array(predictions)[user_mask]
-                )
-                user_accuracies[user_id] = user_acc
+        if return_features:
+            projected = self.projection_head(features)
+            return features, projected
         
-        # 置信度统计
-        correct_confidences = [conf for i, conf in enumerate(confidences) 
-                             if true_labels[i] == predictions[i]]
-        incorrect_confidences = [conf for i, conf in enumerate(confidences) 
-                               if true_labels[i] != predictions[i]]
-        
-        confidence_stats = {
-            'mean_confidence': np.mean(confidences),
-            'std_confidence': np.std(confidences),
-            'median_confidence': np.median(confidences),
-            'min_confidence': np.min(confidences),
-            'max_confidence': np.max(confidences),
-            'correct_confidence': np.mean(correct_confidences) if correct_confidences else 0,
-            'incorrect_confidence': np.mean(incorrect_confidences) if incorrect_confidences else 0,
-            'high_confidence_samples': np.sum(np.array(confidences) > 0.8) / len(confidences),
-            'low_confidence_samples': np.sum(np.array(confidences) < 0.5) / len(confidences)
-        }
-        
-        return {
-            'overall_accuracy': accuracy,
-            'user_accuracies': user_accuracies,
-            'mean_user_accuracy': np.mean(list(user_accuracies.values())),
-            'std_user_accuracy': np.std(list(user_accuracies.values())),
-            'confidence_stats': confidence_stats,
-            'classification_report': classification_report(
-                true_labels, predictions, output_dict=True, zero_division=0
+        logits = self.classifier(features)
+        return logits
+
+
+class FocalLoss(nn.Module):
+    """Focal Loss - 处理类别不平衡"""
+    
+    def __init__(self, alpha=1, gamma=2):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+    
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * ce_loss
+        return focal_loss.mean()
+
+
+class LabelSmoothingLoss(nn.Module):
+    """标签平滑损失"""
+    
+    def __init__(self, num_classes, smoothing=0.1):
+        super().__init__()
+        self.num_classes = num_classes
+        self.smoothing = smoothing
+    
+    def forward(self, pred, target):
+        confidence = 1.0 - self.smoothing
+        smooth_target = torch.full_like(pred, self.smoothing / (self.num_classes - 1))
+        smooth_target.scatter_(1, target.unsqueeze(1), confidence)
+        return F.kl_div(F.log_softmax(pred, dim=1), smooth_target, reduction='batchmean')
+
+
+def train_with_contrastive_learning(model, train_loader, val_loader, device, args, rank=0):
+    """改进的训练函数，集成对比学习"""
+    
+    # 分布式训练设置
+    def is_main_process():
+        return rank == 0
+    
+    # 验证数据集是否为空
+    if len(train_loader.dataset) == 0:
+        if is_main_process():
+            print("❌ 训练数据集为空，无法开始训练")
+        return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
+    
+    if len(val_loader.dataset) == 0:
+        if is_main_process():
+            print("❌ 验证数据集为空，无法开始训练")
+        return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
+    
+    if is_main_process():
+        print(f"训练集: {len(train_loader.dataset)} 样本, 验证集: {len(val_loader.dataset)} 样本")
+    
+    # 损失函数
+    if args.use_focal_loss:
+        classification_criterion = FocalLoss()
+    elif args.use_label_smoothing:
+        classification_criterion = LabelSmoothingLoss(args.num_classes)
+    else:
+        classification_criterion = nn.CrossEntropyLoss()
+    
+    # 重新启用对比学习 - 根据类型选择损失函数
+    if args.use_contrastive:
+        if args.contrastive_type == 'interuser':
+            if is_main_process():
+                print("✅ 启用InterUserContrastiveLoss对比学习 - 优化用户间差异")
+            contrastive_criterion = InterUserContrastiveLoss(
+                temperature=args.contrastive_temperature,
+                margin=args.contrastive_margin
             )
-        }
-    
-    def compare_models(self, baseline_results, enhanced_results):
-        """比较基线模型和增强模型的性能"""
-        print("\n" + "="*80)
-        print("🔍 CROSS-DOMAIN GENERALIZATION COMPARISON")
-        print("="*80)
-        
-        # 总体性能对比
-        baseline_acc = baseline_results['overall_accuracy']
-        enhanced_acc = enhanced_results['overall_accuracy']
-        improvement = enhanced_acc - baseline_acc
-        
-        print(f"\n📊 OVERALL PERFORMANCE:")
-        print(f"   • Baseline (real data only):     {baseline_acc:.1%}")
-        print(f"   • Enhanced (real + generated):   {enhanced_acc:.1%}")
-        print(f"   • Improvement:                   {improvement:+.1%}")
-        print(f"   • Relative improvement:          {improvement/baseline_acc:+.1%}")
-        
-        # 用户级别性能对比
-        baseline_user_acc = baseline_results['mean_user_accuracy']
-        enhanced_user_acc = enhanced_results['mean_user_accuracy']
-        user_improvement = enhanced_user_acc - baseline_user_acc
-        
-        print(f"\n👤 USER-LEVEL PERFORMANCE:")
-        print(f"   • Baseline mean user accuracy:   {baseline_user_acc:.1%}")
-        print(f"   • Enhanced mean user accuracy:   {enhanced_user_acc:.1%}")
-        print(f"   • Mean improvement per user:     {user_improvement:+.1%}")
-        
-        # 置信度对比
-        baseline_conf = baseline_results['confidence_stats']['mean_confidence']
-        enhanced_conf = enhanced_results['confidence_stats']['mean_confidence']
-        
-        print(f"\n🎯 CONFIDENCE ANALYSIS:")
-        print(f"   • Baseline mean confidence:      {baseline_conf:.3f}")
-        print(f"   • Enhanced mean confidence:      {enhanced_conf:.3f}")
-        print(f"   • Confidence change:             {enhanced_conf-baseline_conf:+.3f}")
-        
-        # 结果解释
-        if improvement > 0.05:  # 5%以上提升
-            grade = "🟢 SIGNIFICANT IMPROVEMENT"
-            interpretation = "Generated data substantially improves cross-domain generalization"
-        elif improvement > 0.02:  # 2%以上提升
-            grade = "🟡 MODERATE IMPROVEMENT" 
-            interpretation = "Generated data provides modest cross-domain benefits"
-        elif improvement > 0:
-            grade = "🟠 SLIGHT IMPROVEMENT"
-            interpretation = "Generated data provides minimal cross-domain benefits"
+        elif args.contrastive_type == 'supcon':
+            if is_main_process():
+                print("✅ 启用SupConLoss对比学习 - 监督对比学习")
+            contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
+        elif args.contrastive_type == 'global':
+            if is_main_process():
+                print("✅ 启用GlobalNegativeContrastiveLoss - 全局负样本对比")
+            contrastive_criterion = GlobalNegativeContrastiveLoss(
+                memory_size=64,
+                temperature=args.contrastive_temperature
+            )
         else:
-            grade = "🔴 NO IMPROVEMENT"
-            interpretation = "Generated data does not improve cross-domain performance"
-        
-        print(f"\n🏆 DOMAIN ADAPTATION ASSESSMENT: {grade}")
-        print(f"💡 INTERPRETATION: {interpretation}")
-        print("="*80)
-        
-        return {
-            'baseline_accuracy': baseline_acc,
-            'enhanced_accuracy': enhanced_acc,
-            'absolute_improvement': improvement,
-            'relative_improvement': improvement / baseline_acc,
-            'grade': grade,
-            'interpretation': interpretation
-        }
+            if is_main_process():
+                print(f"⚠️ 未知对比学习类型: {args.contrastive_type}，使用SupConLoss")
+            contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
+    else:
+        contrastive_criterion = None
     
-    def _advanced_domain_analysis(self, baseline_model, enhanced_model, target_data_dir, source_data_dir, output_path):
-        """高级域适应分析"""
-        print("\n🔬 Performing advanced domain analysis...")
-        
-        # 特征表示分析
-        if source_data_dir:
-            self._feature_analysis(baseline_model, enhanced_model, source_data_dir, target_data_dir, output_path)
-        
-        # 置信度分布分析
-        self._confidence_distribution_analysis(baseline_model, enhanced_model, target_data_dir, output_path)
-        
-        # 混淆矩阵对比
-        self._confusion_matrix_analysis(baseline_model, enhanced_model, target_data_dir, output_path)
+    # 优化器 - 使用更小的学习率和更强的weight decay
+    optimizer = optim.AdamW(
+        model.parameters(), 
+        lr=args.lr, 
+        weight_decay=args.weight_decay,
+        betas=(0.9, 0.999)
+    )
     
-    def _feature_analysis(self, baseline_model, enhanced_model, source_dir, target_dir, output_path):
-        """特征表示t-SNE分析"""
-        print("🎨 Analyzing feature representations...")
+    # 学习率调度器
+    scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer, T_0=10, T_mult=2, eta_min=1e-6
+    )
+    
+    best_val_acc = 0
+    patience_counter = 0
+    
+    history = {
+        'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [],
+        'contrastive_loss': [], 'classification_loss': []
+    }
+    
+    # 禁用异常检测，避免额外开销
+    torch.autograd.set_detect_anomaly(False)
+    
+    for epoch in range(args.epochs):
+        # 训练
+        model.train()
+        train_loss = 0
+        train_correct = 0
+        train_total = 0
+        contrastive_losses = []
+        classification_losses = []
         
-        def extract_features(model, data_dir, max_samples=500):
-            # 创建数据集
-            if 'backpack' in str(data_dir).lower() or 'target' in str(data_dir).lower():
-                dataset = BackpackWalkingDataset(data_dir, self.test_transform)
+        # 只在主进程显示进度条
+        if is_main_process():
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}")
+        else:
+            pbar = train_loader
+        
+        for batch_idx, batch_data in enumerate(pbar):
+            data, target = batch_data
+            target = target.to(device)
+            
+            # 对比学习训练循环
+            if isinstance(data, (tuple, list)) and len(data) == 2:
+                # 对比学习数据对
+                data1, data2 = data[0].to(device), data[1].to(device)
+                
+                if args.use_contrastive and contrastive_criterion is not None:
+                    # 完全合并输入，单次模型前向传播避免任何参数重复使用
+                    combined_data = torch.cat([data1, data2], dim=0)
+                    batch_size = data1.size(0)
+                    combined_target = torch.cat([target, target], dim=0)
+                    
+                    # 单次完整前向传播获取特征和投影
+                    combined_features, combined_proj = model(combined_data, return_features=True)
+                    
+                    # 单次分类器调用
+                    if hasattr(model, 'module'):
+                        combined_logits = model.module.classifier(combined_features)
+                    else:
+                        combined_logits = model.classifier(combined_features)
+                    
+                    # 分割结果
+                    logits1 = combined_logits[:batch_size]
+                    logits2 = combined_logits[batch_size:]
+                    proj1 = combined_proj[:batch_size] 
+                    proj2 = combined_proj[batch_size:]
+                    
+                    # 分类损失
+                    cls_loss1 = classification_criterion(logits1, target)
+                    cls_loss2 = classification_criterion(logits2, target)
+                    classification_loss = (cls_loss1 + cls_loss2) / 2
+                    
+                    # 对比损失：使用投影特征
+                    contrastive_loss = contrastive_criterion(combined_proj, combined_target)
+                    
+                    # 总损失
+                    total_loss = classification_loss + args.contrastive_weight * contrastive_loss
+                    pred = logits1.argmax(dim=1)
+                else:
+                    # 只使用第一张图进行分类
+                    logits = model(data1)
+                    total_loss = classification_criterion(logits, target)
+                    classification_loss = total_loss
+                    contrastive_loss = torch.tensor(0.0, device=device)
+                    pred = logits.argmax(dim=1)
             else:
-                # 假设源域数据格式相同
-                dataset = BackpackWalkingDataset(data_dir, self.test_transform)
-            
-            loader = DataLoader(dataset, batch_size=32, shuffle=True)
-            
-            features = []
-            labels = []
-            model.eval()
-            
-            with torch.no_grad():
-                sample_count = 0
-                for images, batch_labels in loader:
-                    if sample_count >= max_samples:
-                        break
-                    
-                    images = images.to(self.device)
-                    # 提取特征 (倒数第二层)
-                    feat = model.backbone(images)
-                    if hasattr(model, 'classifier'):
-                        feat = model.classifier[:-1](feat)  # 除了最后分类层
-                    
-                    features.append(feat.cpu().numpy())
-                    labels.extend(batch_labels.numpy())
-                    sample_count += len(batch_labels)
-            
-            return np.vstack(features), np.array(labels)
-        
-        # 提取特征
-        try:
-            source_feat_bl, source_labels = extract_features(baseline_model, source_dir)
-            target_feat_bl, target_labels = extract_features(baseline_model, target_dir)
-            target_feat_eh, _ = extract_features(enhanced_model, target_dir)
-            
-            # t-SNE分析
-            fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-            
-            for idx, (model_name, target_feat) in enumerate([('Baseline', target_feat_bl), ('Enhanced', target_feat_eh)]):
-                # 合并源域和目标域特征
-                all_features = np.vstack([source_feat_bl, target_feat])
-                domain_labels = np.hstack([np.zeros(len(source_feat_bl)), np.ones(len(target_feat))])
+                # 单张图像训练
+                if isinstance(data, (tuple, list)):
+                    data = data[0]
                 
-                # t-SNE降维
-                tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(all_features)//4))
-                features_2d = tsne.fit_transform(all_features)
+                data = data.to(device)
+                logits = model(data)
+                total_loss = classification_criterion(logits, target)
+                classification_loss = total_loss
+                contrastive_loss = torch.tensor(0.0, device=device)
+                pred = logits.argmax(dim=1)
+            
+            # 反向传播
+            optimizer.zero_grad()
+            total_loss.backward()
+            
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            optimizer.step()
+            
+            # 统计
+            train_loss += total_loss.item()
+            train_correct += pred.eq(target).sum().item()
+            train_total += target.size(0)
+            
+            contrastive_losses.append(contrastive_loss.item() if isinstance(contrastive_loss, torch.Tensor) else 0.0)
+            classification_losses.append(classification_loss.item())
+            
+            # 只在主进程更新进度条
+            if is_main_process() and isinstance(pbar, tqdm):
+                pbar.set_postfix({
+                    'Loss': f'{total_loss.item():.4f}',
+                    'Acc': f'{100.*train_correct/train_total:.1f}%'
+                })
+        
+        # 验证
+        model.eval()
+        val_loss = 0
+        val_correct = 0
+        val_total = 0
+        
+        with torch.no_grad():
+            for data, target in val_loader:
+                data, target = data.to(device), target.to(device)
                 
-                # 绘制
-                colors = ['blue', 'red']
-                domains = ['Source (Normal)', 'Target (Backpack)']
-                for i, (color, domain) in enumerate(zip(colors, domains)):
-                    mask = domain_labels == i
-                    axes[idx].scatter(features_2d[mask, 0], features_2d[mask, 1], 
-                                    c=color, label=domain, alpha=0.6, s=20)
+                logits = model(data)
+                loss = classification_criterion(logits, target)
                 
-                axes[idx].set_title(f'{model_name} Model - Domain Separation')
-                axes[idx].legend()
-                axes[idx].grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            plt.savefig(output_path / 'feature_analysis.png', dpi=300, bbox_inches='tight')
-            plt.close()
-            
-        except Exception as e:
-            print(f"⚠️ Feature analysis failed: {e}")
-    
-    def _confidence_distribution_analysis(self, baseline_model, enhanced_model, target_dir, output_path):
-        """置信度分布分析"""
-        print("📈 Analyzing confidence distributions...")
+                pred = logits.argmax(dim=1)
+                val_loss += loss.item()
+                val_correct += pred.eq(target).sum().item()
+                val_total += target.size(0)
         
-        def get_confidence_stats(model, data_dir):
-            dataset = BackpackWalkingDataset(data_dir, self.test_transform)
-            loader = DataLoader(dataset, batch_size=32, shuffle=False)
-            
-            correct_confidences = []
-            incorrect_confidences = []
-            
-            model.eval()
-            with torch.no_grad():
-                for images, labels in loader:
-                    images, labels = images.to(self.device), labels.to(self.device)
-                    outputs = model(images)
-                    probs = torch.softmax(outputs, dim=1)
-                    preds = torch.argmax(outputs, dim=1)
-                    
-                    for pred, label, prob in zip(preds, labels, probs):
-                        confidence = prob[pred].item()
-                        if pred.item() == label.item():
-                            correct_confidences.append(confidence)
-                        else:
-                            incorrect_confidences.append(confidence)
-            
-            return correct_confidences, incorrect_confidences
+        # 更新学习率
+        scheduler.step()
         
-        try:
-            # 获取置信度统计
-            bl_correct, bl_incorrect = get_confidence_stats(baseline_model, target_dir)
-            eh_correct, eh_incorrect = get_confidence_stats(enhanced_model, target_dir)
-            
-            # 绘制对比图
-            fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-            
-            models = [('Baseline', bl_correct, bl_incorrect), ('Enhanced', eh_correct, eh_incorrect)]
-            
-            for idx, (name, correct, incorrect) in enumerate(models):
-                # 置信度分布
-                axes[idx, 0].hist(correct, bins=30, alpha=0.7, label='Correct', color='green', density=True)
-                axes[idx, 0].hist(incorrect, bins=30, alpha=0.7, label='Incorrect', color='red', density=True)
-                axes[idx, 0].set_title(f'{name} - Confidence Distribution')
-                axes[idx, 0].set_xlabel('Confidence')
-                axes[idx, 0].set_ylabel('Density')
-                axes[idx, 0].legend()
-                axes[idx, 0].grid(True, alpha=0.3)
-                
-                # 箱线图
-                data = [correct, incorrect] if len(correct) > 0 and len(incorrect) > 0 else [[0.5], [0.5]]
-                axes[idx, 1].boxplot(data, labels=['Correct', 'Incorrect'])
-                axes[idx, 1].set_title(f'{name} - Confidence Box Plot')
-                axes[idx, 1].set_ylabel('Confidence')
-                axes[idx, 1].grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            plt.savefig(output_path / 'confidence_analysis.png', dpi=300, bbox_inches='tight')
-            plt.close()
-            
-        except Exception as e:
-            print(f"⚠️ Confidence analysis failed: {e}")
-    
-    def _confusion_matrix_analysis(self, baseline_model, enhanced_model, target_dir, output_path):
-        """混淆矩阵对比分析"""
-        print("🔍 Generating confusion matrices...")
+        # 防止除零错误
+        if len(train_loader) == 0:
+            print("❌ 训练数据集为空，请检查数据路径和格式")
+            return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
         
-        def get_predictions(model, data_dir):
-            dataset = BackpackWalkingDataset(data_dir, self.test_transform)
-            loader = DataLoader(dataset, batch_size=32, shuffle=False)
-            
-            all_preds = []
-            all_labels = []
-            
-            model.eval()
-            with torch.no_grad():
-                for images, labels in loader:
-                    images = images.to(self.device)
-                    outputs = model(images)
-                    preds = torch.argmax(outputs, dim=1)
-                    
-                    all_preds.extend(preds.cpu().numpy())
-                    all_labels.extend(labels.numpy())
-            
-            return all_labels, all_preds
+        if len(val_loader) == 0:
+            print("❌ 验证数据集为空，请检查数据路径和格式")
+            return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
         
-        try:
-            # 获取预测结果
-            bl_labels, bl_preds = get_predictions(baseline_model, target_dir)
-            eh_labels, eh_preds = get_predictions(enhanced_model, target_dir)
-            
-            # 生成混淆矩阵
-            fig, axes = plt.subplots(1, 2, figsize=(15, 6))
-            
-            for idx, (name, labels, preds) in enumerate([('Baseline', bl_labels, bl_preds), ('Enhanced', eh_labels, eh_preds)]):
-                cm = confusion_matrix(labels, preds)
-                cm_normalized = cm.astype('float') / (cm.sum(axis=1)[:, np.newaxis] + 1e-8)
-                
-                im = axes[idx].imshow(cm_normalized, interpolation='nearest', cmap=plt.cm.Blues)
-                axes[idx].set_title(f'{name} Model - Normalized Confusion Matrix')
-                
-                # 添加数值标签 (只显示部分，避免过于密集)
-                if cm.shape[0] <= 10:
-                    thresh = cm_normalized.max() / 2.
-                    for i in range(cm.shape[0]):
-                        for j in range(cm.shape[1]):
-                            axes[idx].text(j, i, f'{cm_normalized[i, j]:.2f}',
-                                         ha="center", va="center",
-                                         color="white" if cm_normalized[i, j] > thresh else "black")
-                
-                axes[idx].set_ylabel('True Label')
-                axes[idx].set_xlabel('Predicted Label')
-            
-            plt.tight_layout()
-            plt.savefig(output_path / 'confusion_matrices.png', dpi=300, bbox_inches='tight')
-            plt.close()
-            
-        except Exception as e:
-            print(f"⚠️ Confusion matrix analysis failed: {e}")
-    
-    def _generate_comprehensive_report(self, baseline_results, enhanced_results, output_path):
-        """生成综合域适应报告"""
-        improvement = enhanced_results['overall_accuracy'] - baseline_results['overall_accuracy']
-        relative_improvement = (improvement / baseline_results['overall_accuracy']) * 100
+        # 统计
+        avg_train_loss = train_loss / len(train_loader)
+        avg_val_loss = val_loss / len(val_loader)
+        train_acc = 100. * train_correct / train_total if train_total > 0 else 0.0
+        val_acc = 100. * val_correct / val_total if val_total > 0 else 0.0
         
-        # 统计显著性检验 (用户级别)
-        baseline_user_acc = list(baseline_results['user_accuracies'].values())
-        enhanced_user_acc = list(enhanced_results['user_accuracies'].values())
+        history['train_loss'].append(avg_train_loss)
+        history['train_acc'].append(train_acc)
+        history['val_loss'].append(avg_val_loss)
+        history['val_acc'].append(val_acc)
+        history['contrastive_loss'].append(np.mean(contrastive_losses))
+        history['classification_loss'].append(np.mean(classification_losses))
         
-        if len(baseline_user_acc) == len(enhanced_user_acc) and len(baseline_user_acc) > 1:
-            t_stat, p_value = ttest_rel(enhanced_user_acc, baseline_user_acc)
-            significant = bool(p_value < 0.05)
-        else:
-            t_stat, p_value, significant = 0, 1.0, False
+        # 只在主进程打印
+        if is_main_process():
+            print(f"Epoch {epoch+1}/{args.epochs}")
+            print(f"Train: Loss={avg_train_loss:.4f}, Acc={train_acc:.2f}%")
+            print(f"Val: Loss={avg_val_loss:.4f}, Acc={val_acc:.2f}%")
+            print(f"LR: {optimizer.param_groups[0]['lr']:.6f}")
         
-        # 评估成功程度
-        if improvement > 0.05 and relative_improvement > 5 and significant:
-            assessment = {"level": "HIGHLY_SUCCESSFUL", "emoji": "🟢"}
-        elif improvement > 0.02 and relative_improvement > 2 and significant:
-            assessment = {"level": "MODERATELY_SUCCESSFUL", "emoji": "🟡"}
-        elif improvement > 0:
-            assessment = {"level": "MARGINALLY_SUCCESSFUL", "emoji": "🟠"}
-        else:
-            assessment = {"level": "NOT_SUCCESSFUL", "emoji": "🔴"}
-        
-        # 用户级别详细分析
-        baseline_user_acc = list(baseline_results['user_accuracies'].values())
-        enhanced_user_acc = list(enhanced_results['user_accuracies'].values())
-        user_improvements = [enhanced_user_acc[i] - baseline_user_acc[i] for i in range(len(baseline_user_acc))]
-        users_improved = sum(1 for imp in user_improvements if imp > 0)
-        
-        user_level_analysis = {
-            "total_users": len(baseline_user_acc),
-            "users_improved": users_improved,
-            "improvement_ratio": users_improved / len(baseline_user_acc),
-            "mean_improvement": float(np.mean(user_improvements)),
-            "std_improvement": float(np.std(user_improvements)),
-            "max_improvement": float(np.max(user_improvements)),
-            "min_improvement": float(np.min(user_improvements))
-        }
-        
-        # 置信度分析
-        baseline_conf = baseline_results['confidence_stats']
-        enhanced_conf = enhanced_results['confidence_stats']
-        confidence_analysis = {
-            "baseline_mean_confidence": float(baseline_conf['mean_confidence']),
-            "enhanced_mean_confidence": float(enhanced_conf['mean_confidence']),
-            "confidence_improvement": float(enhanced_conf['mean_confidence'] - baseline_conf['mean_confidence']),
-            "baseline_correct_conf": float(baseline_conf['correct_confidence']),
-            "enhanced_correct_conf": float(enhanced_conf['correct_confidence']),
-            "calibration_improvement": "Improved" if enhanced_conf['correct_confidence'] > baseline_conf['correct_confidence'] else "Degraded"
-        }
-        
-        # 错误分析 - 找出最容易混淆的用户对和最难分类的用户
-        def analyze_errors(results):
-            user_accuracies = results['user_accuracies']
-            sorted_users = sorted(user_accuracies.items(), key=lambda x: x[1])
-            hardest_users = [user_id for user_id, acc in sorted_users[:5]]
-            return hardest_users
-        
-        baseline_hard_users = analyze_errors(baseline_results)
-        enhanced_hard_users = analyze_errors(enhanced_results)
-        
-        # 计算困难案例的改进
-        hard_case_baseline_acc = np.mean([baseline_results['user_accuracies'][u] for u in baseline_hard_users])
-        hard_case_enhanced_acc = np.mean([enhanced_results['user_accuracies'][u] for u in baseline_hard_users])
-        
-        error_analysis = {
-            "most_confused_pairs": [[0,1], [2,3], [4,5]],  # 简化处理
-            "hardest_users": baseline_hard_users,
-            "hard_case_improvement": float(hard_case_enhanced_acc - hard_case_baseline_acc)
-        }
-        
-        # 生成详细报告
-        report = {
-            "experiment_summary": {
-                "research_question": "Can synthetic normal gait data improve recognition of backpack gait?",
-                "domain_adaptation": "Normal Gait (Source) → Backpack Gait (Target)"
-            },
-            "performance_metrics": {
-                "baseline_accuracy": float(baseline_results['overall_accuracy']),
-                "enhanced_accuracy": float(enhanced_results['overall_accuracy']),
-                "absolute_improvement": float(improvement),
-                "relative_improvement_percent": float(relative_improvement)
-            },
-            "user_level_analysis": user_level_analysis,
-            "confidence_analysis": confidence_analysis,
-            "error_analysis": error_analysis,
-            "statistical_validation": {
-                "t_statistic": float(t_stat),
-                "p_value": float(p_value),
-                "statistically_significant": significant
-            },
-            "assessment": assessment,
-            "recommendations": self._generate_recommendations(improvement, relative_improvement, significant)
-        }
-        
-        # 转换numpy类型为Python原生类型以支持JSON序列化
-        def convert_numpy_types(obj):
-            if hasattr(obj, 'item'):  # numpy scalar
-                return obj.item()
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_numpy_types(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_numpy_types(v) for v in obj]
+        # 早停和最佳模型保存（只在主进程）
+        if is_main_process():
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                best_model_state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+                patience_counter = 0
+                print(f"🎯 New best validation accuracy: {best_val_acc:.2f}%")
             else:
-                return obj
-        
-        report = convert_numpy_types(report)
-        
-        # 保存并打印报告
-        with open(output_path / 'comprehensive_domain_analysis.json', 'w') as f:
-            json.dump(report, f, indent=2)
-        
-        self._print_comprehensive_summary(report)
-        return report
+                patience_counter += 1
+            
+            if patience_counter >= args.patience:
+                print(f"🛑 Early stopping at epoch {epoch+1}")
+                break
     
-    def _generate_recommendations(self, improvement, relative_improvement, significant):
-        """生成建议"""
-        recommendations = []
-        
-        if significant and improvement > 0.02:
-            recommendations.append("✅ Deploy synthetic data augmentation in production")
-            recommendations.append("✅ Focus data collection on normal gait patterns only")
-        else:
-            recommendations.append("⚠️ Investigate improved generation quality")
-            recommendations.append("⚠️ Consider alternative domain adaptation techniques")
-        
-        if relative_improvement < 5:
-            recommendations.append("📈 Generate more diverse synthetic samples")
-            recommendations.append("🔬 Explore advanced domain adaptation methods")
-        
-        recommendations.append("🧪 Validate on additional gait variations")
-        recommendations.append("💰 Perform cost-benefit analysis vs. real data collection")
-        
-        return recommendations
-    
-    def _print_comprehensive_summary(self, report):
-        """打印详细综合摘要"""
-        print("\n" + "="*100)
-        print("🎯 跨域适应综合分析报告")
-        print("="*100)
-        
-        # 实验概述
-        summary = report['experiment_summary']
-        print(f"\n📋 研究问题:")
-        print(f"   能否通过生成的正常步态数据提升背包步态识别效果?")
-        print(f"   域迁移: 正常步态(源域) → 背包步态(目标域)")
-        
-        # 性能结果
-        metrics = report['performance_metrics']
-        print(f"\n📊 整体性能对比:")
-        print(f"   • 基线模型 (仅真实数据):             {metrics['baseline_accuracy']:.1%}")
-        print(f"   • 增强模型 (真实+生成数据):          {metrics['enhanced_accuracy']:.1%}")
-        print(f"   • 绝对改进幅度:                     {metrics['absolute_improvement']:+.1%}")
-        print(f"   • 相对改进百分比:                   {metrics['relative_improvement_percent']:+.1f}%")
-        
-        # 用户级别分析
-        if 'user_level_analysis' in report:
-            user_analysis = report['user_level_analysis']
-            print(f"\n👤 用户级别详细分析:")
-            print(f"   • 评估用户总数:                     {user_analysis['total_users']}")
-            print(f"   • 改进用户数量:                     {user_analysis['users_improved']}/{user_analysis['total_users']} ({user_analysis['improvement_ratio']:.1%})")
-            print(f"   • 用户级平均改进:                   {user_analysis['mean_improvement']:+.1%}")
-            print(f"   • 用户级改进标准差:                 {user_analysis['std_improvement']:.1%}")
-            print(f"   • 最大个体改进:                     {user_analysis['max_improvement']:+.1%}")
-            print(f"   • 最小个体变化:                     {user_analysis['min_improvement']:+.1%}")
-        
-        # 置信度分析
-        if 'confidence_analysis' in report:
-            conf_analysis = report['confidence_analysis']
-            print(f"\n🎯 置信度和预测质量分析:")
-            print(f"   • 基线模型平均置信度:               {conf_analysis['baseline_mean_confidence']:.3f}")
-            print(f"   • 增强模型平均置信度:               {conf_analysis['enhanced_mean_confidence']:.3f}")
-            print(f"   • 置信度改进:                       {conf_analysis['confidence_improvement']:+.3f}")
-            print(f"   • 基线正确预测置信度:               {conf_analysis['baseline_correct_conf']:.3f}")
-            print(f"   • 增强正确预测置信度:               {conf_analysis['enhanced_correct_conf']:.3f}")
-            print(f"   • 校准改进情况:                     {conf_analysis['calibration_improvement']}")
-        
-        # 统计验证
-        stats = report['statistical_validation']
-        print(f"\n📈 统计显著性检验:")
-        print(f"   • 配对t检验统计量:                  {stats['t_statistic']:.4f}")
-        print(f"   • P值:                             {stats['p_value']:.4f}")
-        print(f"   • 显著性水平 (α=0.05):              {'✅ 显著' if stats['statistically_significant'] else '❌ 不显著'}")
-        print(f"   • 效应量:                           {'中等' if abs(stats['t_statistic']) > 2 else '较小'}")
-        
-        # 错误分析
-        if 'error_analysis' in report:
-            error_analysis = report['error_analysis']
-            print(f"\n🔍 错误模式分析:")
-            print(f"   • 最易混淆用户对:                   {', '.join(map(str, error_analysis['most_confused_pairs'][:3]))}")
-            print(f"   • 最难分类用户:                     {', '.join(map(str, error_analysis['hardest_users'][:5]))}")
-            print(f"   • 困难案例改进:                     {error_analysis['hard_case_improvement']:+.1%}")
-        
-        # 成功评估
-        assessment = report['assessment']
-        print(f"\n🏆 域适应评估结果: {assessment['emoji']} {assessment['level']}")
-        
-        # 详细建议
-        print(f"\n🚀 优化建议:")
-        for i, rec in enumerate(report['recommendations'], 1):
-            print(f"   {i}. {rec}")
-        
-        print("\n" + "="*100)
-        print("📄 详细分析文件:")
-        print("   • comprehensive_domain_analysis.json - 完整数值结果")
-        print("   • confidence_analysis.png - 置信度分布对比图") 
-        print("   • confusion_matrices.png - 混淆矩阵可视化")
-        if 'user_level_analysis' in report:
-            print("   • per_user_analysis.png - 逐用户改进对比图")
-        print("="*100)
-
-    def save_detailed_results(self, results, output_path):
-        """保存详细的评估结果"""
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # 转换numpy int64键为Python int以支持JSON序列化
-        def convert_keys(obj):
-            if isinstance(obj, dict):
-                return {str(k) if hasattr(k, 'item') else k: convert_keys(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_keys(item) for item in obj]
-            else:
-                return obj
-        
-        serializable_results = convert_keys(results)
-        
-        with open(output_path, 'w') as f:
-            json.dump(serializable_results, f, indent=2, default=str)
-        
-        print(f"📄 Detailed results saved to: {output_path}")
+    return model, best_model_state, best_val_acc, history
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Cross-domain evaluation on backpack walking data')
-    
-    # 模型参数
-    parser.add_argument('--baseline_model', required=True, 
-                       help='Path to baseline classifier (trained on real data only)')
-    parser.add_argument('--enhanced_model', required=True,
-                       help='Path to enhanced classifier (trained on real + generated data)')
+    parser = argparse.ArgumentParser(description='Domain adaptation classifier training')
     
     # 数据参数
-    parser.add_argument('--backpack_data_dir', required=True,
-                       help='Directory containing backpack walking data')
+    parser.add_argument('--real_data_dir', type=str, required=True, help='Real dataset directory')
+    parser.add_argument('--generated_data_dir', type=str, help='Generated dataset directory')
+    parser.add_argument('--use_generated', action='store_true', 
+                       help='Use generated data to augment training set')
     
-    # 输出参数
-    parser.add_argument('--output_dir', default='./cross_domain_results',
-                       help='Output directory for results')
+    parser.add_argument('--output_dir', type=str, default='./domain_classifier', help='Output directory')
+    parser.add_argument('--num_classes', type=int, default=31, help='Number of classes')
+    parser.add_argument('--epochs', type=int, default=200, help='Number of epochs')
+    parser.add_argument('--batch_size', type=int, default=16, help='Batch size per GPU')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (smaller)')
+    parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay (stronger)')
+    parser.add_argument('--dropout_rate', type=float, default=0.5, help='Dropout rate')
+    parser.add_argument('--patience', type=int, default=10, help='Early stopping patience')
+    
+    # 对比学习参数
+    parser.add_argument('--use_contrastive', action='store_true', help='Use contrastive learning')
+    parser.add_argument('--contrastive_weight', type=float, default=0.5, help='Contrastive loss weight')
+    parser.add_argument('--contrastive_temperature', type=float, default=0.07, help='Contrastive temperature')
+    parser.add_argument('--contrastive_type', type=str, default='supcon', 
+                       choices=['global', 'interuser', 'supcon'],
+                       help='Contrastive loss type: global(memory bank all users), interuser(hard negative mining), supcon(supervised contrastive)')
+    parser.add_argument('--contrastive_margin', type=float, default=0.5, 
+                       help='Margin for hard negative mining in interuser contrastive loss')
+    
+    # 损失函数选择
+    parser.add_argument('--use_focal_loss', action='store_true', help='Use focal loss')
+    parser.add_argument('--use_label_smoothing', action='store_true', help='Use label smoothing')
+    
+    # 模型选择 - ResNet18专为微多普勒优化
+    parser.add_argument('--backbone', type=str, default='resnet18', help='Backbone architecture')
+    parser.add_argument('--freeze_layers', type=str, default='moderate', 
+                       choices=['none', 'minimal', 'moderate', 'aggressive'],
+                       help='Layer freezing strategy: none(risk overfitting), minimal(conv1+bn1), moderate(+layer1), aggressive(+layer2)')
     
     args = parser.parse_args()
     
-    # 创建评估器
-    evaluator = CrossDomainEvaluator()
+    # 初始化分布式训练
+    rank, world_size, local_rank = setup_distributed()
     
-    # 加载并评估基线模型
-    print("📊 Loading and evaluating baseline model...")
-    baseline_model, _ = evaluator.load_classifier(args.baseline_model)
-    baseline_results = evaluator.evaluate_on_target_domain(baseline_model, args.backpack_data_dir)
+    # 设置设备
+    if torch.cuda.is_available():
+        device = torch.device(f'cuda:{local_rank}')
+        torch.cuda.set_device(local_rank)
+    else:
+        device = torch.device('cpu')
     
-    # 加载并评估增强模型
-    print("📊 Loading and evaluating enhanced model...")
-    enhanced_model, _ = evaluator.load_classifier(args.enhanced_model)
-    enhanced_results = evaluator.evaluate_on_target_domain(enhanced_model, args.backpack_data_dir)
+    if is_main_process():
+        print(f"Using distributed training with {world_size} GPUs")
+        print(f"Current device: {device}")
     
-    if baseline_results is None or enhanced_results is None:
-        print("❌ Evaluation failed")
-        return
+    # 创建输出目录（只在主进程）
+    if is_main_process():
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
     
-    # 高级分析
-    output_path = Path(args.output_dir)
-    output_path.mkdir(exist_ok=True)
+    # 设置随机种子
+    torch.manual_seed(42 + rank)  # 每个进程不同的随机种子
+    np.random.seed(42 + rank)
+    random.seed(42 + rank)
     
-    evaluator._advanced_domain_analysis(baseline_model, enhanced_model, 
-                                       args.backpack_data_dir, None, output_path)
+    # 数据集
+    train_dataset = DomainAdaptationDataset(
+        real_data_dir=args.real_data_dir,
+        generated_data_dir=args.generated_data_dir,
+        split='train',
+        contrastive_pairs=args.use_contrastive,
+        use_generated=args.use_generated
+    )
     
-    # 生成综合报告
-    report = evaluator._generate_comprehensive_report(baseline_results, enhanced_results, output_path)
+    val_dataset = DomainAdaptationDataset(
+        real_data_dir=args.real_data_dir,
+        generated_data_dir=None,  # 验证集只使用真实数据
+        split='val',
+        contrastive_pairs=False,
+        use_generated=False
+    )
     
-    # 保存详细结果
-    all_results = {
-        'baseline_results': baseline_results,
-        'enhanced_results': enhanced_results,
-        'comprehensive_report': report,
-        'evaluation_config': vars(args)
-    }
+    # 分布式采样器
+    train_sampler = DistributedSampler(train_dataset) if world_size > 1 else None
+    val_sampler = DistributedSampler(val_dataset, shuffle=False) if world_size > 1 else None
     
-    evaluator.save_detailed_results(all_results, output_path / 'cross_domain_evaluation.json')
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=args.batch_size, 
+        shuffle=(train_sampler is None), 
+        sampler=train_sampler,
+        num_workers=0,  # 避免多进程卡住
+        pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_dataset, 
+        batch_size=args.batch_size * 2, 
+        shuffle=False,
+        sampler=val_sampler,
+        num_workers=0,  # 避免多进程卡住
+        pin_memory=True
+    )
     
-    print(f"\n✅ Cross-domain evaluation completed!")
-    print(f"📁 Results saved to: {args.output_dir}")
+    # 模型
+    model = ImprovedClassifier(
+        num_classes=args.num_classes,
+        backbone=args.backbone,
+        dropout_rate=args.dropout_rate,
+        freeze_layers=args.freeze_layers
+    ).to(device)
+    
+    # 分布式训练设置 - 使用static_graph解决参数重复使用问题
+    if dist.is_initialized():
+        model = DDP(model, device_ids=[device], find_unused_parameters=True)
+        # 设置静态图模式，允许参数在同一次反向传播中多次使用
+        model._set_static_graph()
+    
+    if is_main_process():
+        total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"Model parameters: {total_params:,}")
+    
+    # 训练
+    model, best_state, best_acc, history = train_with_contrastive_learning(
+        model, train_loader, val_loader, device, args, rank
+    )
+    
+    # 只在主进程保存模型
+    if is_main_process():
+        output_dir = Path(args.output_dir)
+        
+        # 保存最佳模型
+        model_path = output_dir / 'best_improved_classifier.pth'
+        torch.save({
+            'model_state_dict': best_state,
+            'best_val_acc': best_acc,
+            'num_classes': args.num_classes,
+            'model_name': args.backbone,
+            'args': vars(args)
+        }, model_path)
+        
+        # 保存训练历史
+        history_path = output_dir / 'training_history.json'
+        with open(history_path, 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        print(f"\n✅ Training completed!")
+        print(f"Best validation accuracy: {best_acc:.2f}%")
+        print(f"Model saved to: {model_path}")
+    
+    # 清理分布式训练
+    cleanup_distributed()
+    
+    # 确保程序正常退出
+    if is_main_process():
+        print("🎉 训练流程完全结束，程序即将退出")
+    
+    # 显式退出程序避免卡住
+    import sys
+    sys.exit(0)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
