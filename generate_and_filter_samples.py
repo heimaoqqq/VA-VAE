@@ -266,7 +266,8 @@ def load_classifier(checkpoint_path, device):
     model.eval()
     
     print(f"✅ 分类器加载完成: {checkpoint_path}")
-    print(f"📊 Epoch: {checkpoint['epoch']}, Best Acc: {checkpoint['best_acc']:.2f}%")
+    if 'epoch' in checkpoint:
+        print(f"📊 Epoch: {checkpoint['epoch']}, Best Acc: {checkpoint.get('best_acc', 0):.2f}%")
     
     return model
 
@@ -291,9 +292,9 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
     user_dir = Path(output_dir) / f"User_{user_id:02d}"
     user_dir.mkdir(parents=True, exist_ok=True)
     
-    # 图像预处理（与分类器训练时一致）
+    # 图像预处理 - 保持256x256尺寸，与生成时一致
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((256, 256)),  # 统一为256x256
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -372,7 +373,10 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
                     # 准备批量分类
                     batch_tensors = []
                     for image in decoded_images:
+                        # 确保图像是256x256
                         pil_image = Image.fromarray(image)
+                        if pil_image.size != (256, 256):
+                            pil_image = pil_image.resize((256, 256), Image.LANCZOS)
                         image_tensor = transform(pil_image).unsqueeze(0)
                         batch_tensors.append(image_tensor)
                     
@@ -419,7 +423,7 @@ def main():
                        default='/kaggle/input/50000-pt/0050000.pt', 
                        help='DiT model checkpoint path')
     parser.add_argument('--classifier_checkpoint', type=str,
-                       default='./best_classifier.pth',
+                       default='./improved_classifier/best_improved_classifier.pth',
                        help='Classifier checkpoint path')
     parser.add_argument('--config', type=str, 
                        default='configs/dit_s_microdoppler.yaml', 
