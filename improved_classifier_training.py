@@ -316,7 +316,7 @@ class ImprovedMicroDopplerDataset(Dataset):
         # 微多普勒图像专用变换（最小增强，保持频谱结构）
         if split == 'train':
             self.transform = transforms.Compose([
-                transforms.Resize((256, 256)),
+                transforms.Resize((224, 224)),
                 # 只使用极轻微的噪声增强，不破坏频谱结构
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -325,7 +325,7 @@ class ImprovedMicroDopplerDataset(Dataset):
             ])
         else:
             self.transform = transforms.Compose([
-                transforms.Resize((256, 256)),
+                transforms.Resize((224, 224)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
