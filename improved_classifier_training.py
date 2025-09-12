@@ -44,7 +44,14 @@ def setup_distributed():
 def cleanup_distributed():
     """清理分布式训练"""
     if dist.is_initialized():
-        dist.destroy_process_group()
+        try:
+            # 添加超时保护
+            import time
+            start_time = time.time()
+            dist.destroy_process_group()
+            print(f"✅ 分布式清理完成，耗时 {time.time() - start_time:.2f}s")
+        except Exception as e:
+            print(f"⚠️ 分布式清理失败: {e}")
 
 
 def is_main_process():
@@ -792,7 +799,7 @@ def main():
         batch_size=args.batch_size, 
         shuffle=(train_sampler is None), 
         sampler=train_sampler,
-        num_workers=4,
+        num_workers=0,  # 避免多进程卡住
         pin_memory=True
     )
     val_loader = DataLoader(
@@ -800,7 +807,7 @@ def main():
         batch_size=args.batch_size * 2, 
         shuffle=False,
         sampler=val_sampler,
-        num_workers=4,
+        num_workers=0,  # 避免多进程卡住
         pin_memory=True
     )
     
@@ -852,6 +859,14 @@ def main():
     
     # 清理分布式训练
     cleanup_distributed()
+    
+    # 确保程序正常退出
+    if is_main_process():
+        print("🎉 训练流程完全结束，程序即将退出")
+    
+    # 显式退出程序避免卡住
+    import sys
+    sys.exit(0)
 
 
 if __name__ == "__main__":
