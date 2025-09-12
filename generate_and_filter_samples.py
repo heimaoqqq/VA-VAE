@@ -472,21 +472,45 @@ def main():
     if world_size > 1:
         dist.barrier()
     
-    # 为指定范围的用户生成样本
+    # 分布式处理：每个GPU处理不同的用户
     total_collected = 0
-    for user_id in range(args.start_user, args.end_user + 1):
-        if rank == 0:  # 单卡处理
-            collected = generate_and_filter_for_user(
-                model, vae, transport, classifier, user_id,
-                target_samples=args.target_samples,
-                batch_size=args.batch_size,
-                confidence_threshold=args.confidence_threshold,
-                cfg_scale=args.cfg_scale,
-                output_dir=args.output_dir,
-                device=device,
-                rank=rank
-            )
-            total_collected += collected
+    user_list = list(range(args.start_user, args.end_user + 1))
+    
+    # 将用户分配给不同的GPU
+    users_per_gpu = len(user_list) // world_size
+    extra_users = len(user_list) % world_size
+    
+    # 计算当前GPU负责的用户范围
+    start_idx = rank * users_per_gpu + min(rank, extra_users)
+    end_idx = start_idx + users_per_gpu + (1 if rank < extra_users else 0)
+    
+    my_users = user_list[start_idx:end_idx]
+    
+    if rank == 0:
+        print(f"🔄 分布式处理: {world_size} GPUs")
+        print(f"📊 GPU分配: 每个GPU处理约{users_per_gpu}个用户")
+    
+    print(f"GPU {rank}: 处理用户 {my_users}")
+    
+    # 每个GPU处理自己分配的用户
+    for user_id in my_users:
+        collected = generate_and_filter_for_user(
+            model, vae, transport, classifier, user_id,
+            target_samples=args.target_samples,
+            batch_size=args.batch_size,
+            confidence_threshold=args.confidence_threshold,
+            cfg_scale=args.cfg_scale,
+            output_dir=args.output_dir,
+            device=device,
+            rank=rank
+        )
+        total_collected += collected
+    
+    # 同步所有GPU的结果
+    if world_size > 1:
+        total_tensor = torch.tensor([total_collected], device=device)
+        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
+        total_collected = total_tensor.item()
     
     if rank == 0:
         print(f"🎯 生成完成！")
