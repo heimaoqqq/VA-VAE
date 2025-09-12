@@ -78,8 +78,8 @@ class BackpackWalkingDataset(Dataset):
             return image, label
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
-            # 返回零张量作为fallback
-            return torch.zeros(3, 224, 224), label
+            # 返回零张量作为fallback - 尺寸与实际图像一致
+            return torch.zeros(3, 256, 256), label
 
 
 class CrossDomainEvaluator:
