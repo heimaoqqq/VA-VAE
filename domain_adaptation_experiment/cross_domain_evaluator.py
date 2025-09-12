@@ -521,8 +521,8 @@ class CrossDomainEvaluator:
                 "domain_adaptation": "Normal Gait (Source) → Backpack Gait (Target)"
             },
             "performance_metrics": {
-                "baseline_accuracy": float(baseline_results['accuracy']),
-                "enhanced_accuracy": float(enhanced_results['accuracy']),
+                "baseline_accuracy": float(baseline_results['overall_accuracy']),
+                "enhanced_accuracy": float(enhanced_results['overall_accuracy']),
                 "absolute_improvement": float(improvement),
                 "relative_improvement_percent": float(relative_improvement)
             },
