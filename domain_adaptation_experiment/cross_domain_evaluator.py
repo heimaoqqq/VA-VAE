@@ -500,7 +500,7 @@ class CrossDomainEvaluator:
         
         if len(baseline_user_acc) == len(enhanced_user_acc) and len(baseline_user_acc) > 1:
             t_stat, p_value = ttest_rel(enhanced_user_acc, baseline_user_acc)
-            significant = p_value < 0.05
+            significant = bool(p_value < 0.05)
         else:
             t_stat, p_value, significant = 0, 1.0, False
         
@@ -534,6 +534,21 @@ class CrossDomainEvaluator:
             "assessment": assessment,
             "recommendations": self._generate_recommendations(improvement, relative_improvement, significant)
         }
+        
+        # 转换numpy类型为Python原生类型以支持JSON序列化
+        def convert_numpy_types(obj):
+            if hasattr(obj, 'item'):  # numpy scalar
+                return obj.item()
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_numpy_types(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy_types(v) for v in obj]
+            else:
+                return obj
+        
+        report = convert_numpy_types(report)
         
         # 保存并打印报告
         with open(output_path / 'comprehensive_domain_analysis.json', 'w') as f:
