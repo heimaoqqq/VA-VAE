@@ -306,9 +306,8 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
     pbar = tqdm(total=target_samples, 
                 desc=f"User_{user_id:02d}", 
                 position=rank,
-                leave=True,
-                bar_format='{desc}: {n}/{total} [{bar:30}] {percentage:3.0f}% | 生成:{postfix[0]} 成功率:{postfix[1]:.1f}%')
-    pbar.set_postfix([0, 0])
+                leave=True)
+    pbar.set_postfix({'生成': 0, '成功率': '0.0%'})
     
     with torch.no_grad():
         while len(collected_samples) < target_samples:
@@ -412,7 +411,7 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
                     # 更新进度条
                     pbar.n = len(collected_samples)
                     success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
-                    pbar.set_postfix([total_generated, success_rate])
+                    pbar.set_postfix({'生成': total_generated, '成功率': f'{success_rate:.1f}%'})
                     pbar.refresh()
                     
                 except Exception as e:
