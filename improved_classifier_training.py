@@ -768,9 +768,9 @@ def main():
         output_dir.mkdir(parents=True, exist_ok=True)
     
     # 设置随机种子
-    torch.manual_seed(42 + rank)  # 每个进程不同的随机种子
-    np.random.seed(42 + rank)
-    random.seed(42 + rank)
+    torch.manual_seed(42)  # 固定种子为42
+    np.random.seed(42)
+    random.seed(42)
     
     # 数据集
     train_dataset = ImprovedMicroDopplerDataset(
