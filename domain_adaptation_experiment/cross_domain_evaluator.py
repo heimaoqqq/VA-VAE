@@ -491,8 +491,8 @@ class CrossDomainEvaluator:
     
     def _generate_comprehensive_report(self, baseline_results, enhanced_results, output_path):
         """生成综合域适应报告"""
-        improvement = enhanced_results['accuracy'] - baseline_results['accuracy']
-        relative_improvement = (improvement / baseline_results['accuracy']) * 100
+        improvement = enhanced_results['overall_accuracy'] - baseline_results['overall_accuracy']
+        relative_improvement = (improvement / baseline_results['overall_accuracy']) * 100
         
         # 统计显著性检验 (用户级别)
         baseline_user_acc = list(baseline_results['user_accuracies'].values())
