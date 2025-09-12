@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-跨域评估脚本
-测试分类器在背包行走数据（目标域）上的识别性能
-用于比较基线分类器 vs 生成数据增强分类器的域泛化能力
+综合域适应分析工具
+集成了基本评估和高级分析功能
+研究问题：正常步态(源域) → 背包步态(目标域) 的域适应效果
 """
 
 import torch
@@ -16,9 +16,12 @@ import argparse
 import json
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.manifold import TSNE
+from scipy.stats import ttest_rel, mannwhitneyu
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
+from collections import defaultdict
 
 # 添加父目录到路径以导入分类器
 import sys
@@ -280,6 +283,312 @@ class CrossDomainEvaluator:
             'interpretation': interpretation
         }
     
+    def _advanced_domain_analysis(self, baseline_model, enhanced_model, target_data_dir, source_data_dir, output_path):
+        """高级域适应分析"""
+        print("\n🔬 Performing advanced domain analysis...")
+        
+        # 特征表示分析
+        if source_data_dir:
+            self._feature_analysis(baseline_model, enhanced_model, source_data_dir, target_data_dir, output_path)
+        
+        # 置信度分布分析
+        self._confidence_distribution_analysis(baseline_model, enhanced_model, target_data_dir, output_path)
+        
+        # 混淆矩阵对比
+        self._confusion_matrix_analysis(baseline_model, enhanced_model, target_data_dir, output_path)
+    
+    def _feature_analysis(self, baseline_model, enhanced_model, source_dir, target_dir, output_path):
+        """特征表示t-SNE分析"""
+        print("🎨 Analyzing feature representations...")
+        
+        def extract_features(model, data_dir, max_samples=500):
+            # 创建数据集
+            if 'backpack' in str(data_dir).lower() or 'target' in str(data_dir).lower():
+                dataset = BackpackWalkingDataset(data_dir, self.test_transform)
+            else:
+                # 假设源域数据格式相同
+                dataset = BackpackWalkingDataset(data_dir, self.test_transform)
+            
+            loader = DataLoader(dataset, batch_size=32, shuffle=True)
+            
+            features = []
+            labels = []
+            model.eval()
+            
+            with torch.no_grad():
+                sample_count = 0
+                for images, batch_labels in loader:
+                    if sample_count >= max_samples:
+                        break
+                    
+                    images = images.to(self.device)
+                    # 提取特征 (倒数第二层)
+                    feat = model.backbone(images)
+                    if hasattr(model, 'classifier'):
+                        feat = model.classifier[:-1](feat)  # 除了最后分类层
+                    
+                    features.append(feat.cpu().numpy())
+                    labels.extend(batch_labels.numpy())
+                    sample_count += len(batch_labels)
+            
+            return np.vstack(features), np.array(labels)
+        
+        # 提取特征
+        try:
+            source_feat_bl, source_labels = extract_features(baseline_model, source_dir)
+            target_feat_bl, target_labels = extract_features(baseline_model, target_dir)
+            target_feat_eh, _ = extract_features(enhanced_model, target_dir)
+            
+            # t-SNE分析
+            fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+            
+            for idx, (model_name, target_feat) in enumerate([('Baseline', target_feat_bl), ('Enhanced', target_feat_eh)]):
+                # 合并源域和目标域特征
+                all_features = np.vstack([source_feat_bl, target_feat])
+                domain_labels = np.hstack([np.zeros(len(source_feat_bl)), np.ones(len(target_feat))])
+                
+                # t-SNE降维
+                tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(all_features)//4))
+                features_2d = tsne.fit_transform(all_features)
+                
+                # 绘制
+                colors = ['blue', 'red']
+                domains = ['Source (Normal)', 'Target (Backpack)']
+                for i, (color, domain) in enumerate(zip(colors, domains)):
+                    mask = domain_labels == i
+                    axes[idx].scatter(features_2d[mask, 0], features_2d[mask, 1], 
+                                    c=color, label=domain, alpha=0.6, s=20)
+                
+                axes[idx].set_title(f'{model_name} Model - Domain Separation')
+                axes[idx].legend()
+                axes[idx].grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(output_path / 'feature_analysis.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+        except Exception as e:
+            print(f"⚠️ Feature analysis failed: {e}")
+    
+    def _confidence_distribution_analysis(self, baseline_model, enhanced_model, target_dir, output_path):
+        """置信度分布分析"""
+        print("📈 Analyzing confidence distributions...")
+        
+        def get_confidence_stats(model, data_dir):
+            dataset = BackpackWalkingDataset(data_dir, self.test_transform)
+            loader = DataLoader(dataset, batch_size=32, shuffle=False)
+            
+            correct_confidences = []
+            incorrect_confidences = []
+            
+            model.eval()
+            with torch.no_grad():
+                for images, labels in loader:
+                    images, labels = images.to(self.device), labels.to(self.device)
+                    outputs = model(images)
+                    probs = torch.softmax(outputs, dim=1)
+                    preds = torch.argmax(outputs, dim=1)
+                    
+                    for pred, label, prob in zip(preds, labels, probs):
+                        confidence = prob[pred].item()
+                        if pred.item() == label.item():
+                            correct_confidences.append(confidence)
+                        else:
+                            incorrect_confidences.append(confidence)
+            
+            return correct_confidences, incorrect_confidences
+        
+        try:
+            # 获取置信度统计
+            bl_correct, bl_incorrect = get_confidence_stats(baseline_model, target_dir)
+            eh_correct, eh_incorrect = get_confidence_stats(enhanced_model, target_dir)
+            
+            # 绘制对比图
+            fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+            
+            models = [('Baseline', bl_correct, bl_incorrect), ('Enhanced', eh_correct, eh_incorrect)]
+            
+            for idx, (name, correct, incorrect) in enumerate(models):
+                # 置信度分布
+                axes[idx, 0].hist(correct, bins=30, alpha=0.7, label='Correct', color='green', density=True)
+                axes[idx, 0].hist(incorrect, bins=30, alpha=0.7, label='Incorrect', color='red', density=True)
+                axes[idx, 0].set_title(f'{name} - Confidence Distribution')
+                axes[idx, 0].set_xlabel('Confidence')
+                axes[idx, 0].set_ylabel('Density')
+                axes[idx, 0].legend()
+                axes[idx, 0].grid(True, alpha=0.3)
+                
+                # 箱线图
+                data = [correct, incorrect] if len(correct) > 0 and len(incorrect) > 0 else [[0.5], [0.5]]
+                axes[idx, 1].boxplot(data, labels=['Correct', 'Incorrect'])
+                axes[idx, 1].set_title(f'{name} - Confidence Box Plot')
+                axes[idx, 1].set_ylabel('Confidence')
+                axes[idx, 1].grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(output_path / 'confidence_analysis.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+        except Exception as e:
+            print(f"⚠️ Confidence analysis failed: {e}")
+    
+    def _confusion_matrix_analysis(self, baseline_model, enhanced_model, target_dir, output_path):
+        """混淆矩阵对比分析"""
+        print("🔍 Generating confusion matrices...")
+        
+        def get_predictions(model, data_dir):
+            dataset = BackpackWalkingDataset(data_dir, self.test_transform)
+            loader = DataLoader(dataset, batch_size=32, shuffle=False)
+            
+            all_preds = []
+            all_labels = []
+            
+            model.eval()
+            with torch.no_grad():
+                for images, labels in loader:
+                    images = images.to(self.device)
+                    outputs = model(images)
+                    preds = torch.argmax(outputs, dim=1)
+                    
+                    all_preds.extend(preds.cpu().numpy())
+                    all_labels.extend(labels.numpy())
+            
+            return all_labels, all_preds
+        
+        try:
+            # 获取预测结果
+            bl_labels, bl_preds = get_predictions(baseline_model, target_dir)
+            eh_labels, eh_preds = get_predictions(enhanced_model, target_dir)
+            
+            # 生成混淆矩阵
+            fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+            
+            for idx, (name, labels, preds) in enumerate([('Baseline', bl_labels, bl_preds), ('Enhanced', eh_labels, eh_preds)]):
+                cm = confusion_matrix(labels, preds)
+                cm_normalized = cm.astype('float') / (cm.sum(axis=1)[:, np.newaxis] + 1e-8)
+                
+                im = axes[idx].imshow(cm_normalized, interpolation='nearest', cmap=plt.cm.Blues)
+                axes[idx].set_title(f'{name} Model - Normalized Confusion Matrix')
+                
+                # 添加数值标签 (只显示部分，避免过于密集)
+                if cm.shape[0] <= 10:
+                    thresh = cm_normalized.max() / 2.
+                    for i in range(cm.shape[0]):
+                        for j in range(cm.shape[1]):
+                            axes[idx].text(j, i, f'{cm_normalized[i, j]:.2f}',
+                                         ha="center", va="center",
+                                         color="white" if cm_normalized[i, j] > thresh else "black")
+                
+                axes[idx].set_ylabel('True Label')
+                axes[idx].set_xlabel('Predicted Label')
+            
+            plt.tight_layout()
+            plt.savefig(output_path / 'confusion_matrices.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+        except Exception as e:
+            print(f"⚠️ Confusion matrix analysis failed: {e}")
+    
+    def _generate_comprehensive_report(self, baseline_results, enhanced_results, output_path):
+        """生成综合域适应报告"""
+        improvement = enhanced_results['accuracy'] - baseline_results['accuracy']
+        relative_improvement = (improvement / baseline_results['accuracy']) * 100
+        
+        # 统计显著性检验 (用户级别)
+        baseline_user_acc = list(baseline_results['user_accuracies'].values())
+        enhanced_user_acc = list(enhanced_results['user_accuracies'].values())
+        
+        if len(baseline_user_acc) == len(enhanced_user_acc) and len(baseline_user_acc) > 1:
+            t_stat, p_value = ttest_rel(enhanced_user_acc, baseline_user_acc)
+            significant = p_value < 0.05
+        else:
+            t_stat, p_value, significant = 0, 1.0, False
+        
+        # 评估成功程度
+        if improvement > 0.05 and relative_improvement > 5 and significant:
+            assessment = {"level": "HIGHLY_SUCCESSFUL", "emoji": "🟢"}
+        elif improvement > 0.02 and relative_improvement > 2 and significant:
+            assessment = {"level": "MODERATELY_SUCCESSFUL", "emoji": "🟡"}
+        elif improvement > 0:
+            assessment = {"level": "MARGINALLY_SUCCESSFUL", "emoji": "🟠"}
+        else:
+            assessment = {"level": "NOT_SUCCESSFUL", "emoji": "🔴"}
+        
+        # 生成报告
+        report = {
+            "experiment_summary": {
+                "research_question": "Can synthetic normal gait data improve recognition of backpack gait?",
+                "domain_adaptation": "Normal Gait (Source) → Backpack Gait (Target)"
+            },
+            "performance_metrics": {
+                "baseline_accuracy": float(baseline_results['accuracy']),
+                "enhanced_accuracy": float(enhanced_results['accuracy']),
+                "absolute_improvement": float(improvement),
+                "relative_improvement_percent": float(relative_improvement)
+            },
+            "statistical_validation": {
+                "t_statistic": float(t_stat),
+                "p_value": float(p_value),
+                "statistically_significant": significant
+            },
+            "assessment": assessment,
+            "recommendations": self._generate_recommendations(improvement, relative_improvement, significant)
+        }
+        
+        # 保存并打印报告
+        with open(output_path / 'comprehensive_domain_analysis.json', 'w') as f:
+            json.dump(report, f, indent=2)
+        
+        self._print_comprehensive_summary(report)
+        return report
+    
+    def _generate_recommendations(self, improvement, relative_improvement, significant):
+        """生成建议"""
+        recommendations = []
+        
+        if significant and improvement > 0.02:
+            recommendations.append("✅ Deploy synthetic data augmentation in production")
+            recommendations.append("✅ Focus data collection on normal gait patterns only")
+        else:
+            recommendations.append("⚠️ Investigate improved generation quality")
+            recommendations.append("⚠️ Consider alternative domain adaptation techniques")
+        
+        if relative_improvement < 5:
+            recommendations.append("📈 Generate more diverse synthetic samples")
+            recommendations.append("🔬 Explore advanced domain adaptation methods")
+        
+        recommendations.append("🧪 Validate on additional gait variations")
+        recommendations.append("💰 Perform cost-benefit analysis vs. real data collection")
+        
+        return recommendations
+    
+    def _print_comprehensive_summary(self, report):
+        """打印综合摘要"""
+        print("\n" + "="*80)
+        print("🎯 COMPREHENSIVE DOMAIN ADAPTATION ANALYSIS")
+        print("="*80)
+        
+        metrics = report['performance_metrics']
+        print(f"\n📊 PERFORMANCE RESULTS:")
+        print(f"   • Baseline Accuracy:        {metrics['baseline_accuracy']:.1%}")
+        print(f"   • Enhanced Accuracy:        {metrics['enhanced_accuracy']:.1%}")
+        print(f"   • Absolute Improvement:     {metrics['absolute_improvement']:+.1%}")
+        print(f"   • Relative Improvement:     {metrics['relative_improvement_percent']:+.1f}%")
+        
+        stats = report['statistical_validation']
+        print(f"\n📈 STATISTICAL VALIDATION:")
+        print(f"   • P-value:                  {stats['p_value']:.4f}")
+        print(f"   • Statistically Significant: {'Yes' if stats['statistically_significant'] else 'No'}")
+        
+        assessment = report['assessment']
+        print(f"\n🏆 ASSESSMENT: {assessment['emoji']} {assessment['level']}")
+        
+        print(f"\n🚀 RECOMMENDATIONS:")
+        for rec in report['recommendations']:
+            print(f"   • {rec}")
+        
+        print("="*80)
+
     def save_detailed_results(self, results, output_path):
         """保存详细的评估结果"""
         output_path = Path(output_path)
@@ -315,9 +624,6 @@ def main():
     parser.add_argument('--backpack_data_dir', required=True,
                        help='Directory containing backpack walking data')
     
-    # 评估参数
-    parser.add_argument('--batch_size', type=int, default=32, help='Evaluation batch size')
-    
     # 输出参数
     parser.add_argument('--output_dir', default='./cross_domain_results',
                        help='Output directory for results')
@@ -327,28 +633,8 @@ def main():
     # 创建评估器
     evaluator = CrossDomainEvaluator()
     
-    # 评估基线模型
-    print("🔵 Evaluating BASELINE classifier...")
-    baseline_model, _ = evaluator.load_classifier(args.baseline_model)
-    baseline_results = evaluator.evaluate_on_target_domain(
-        baseline_model, args.backpack_data_dir, args.batch_size
-    )
-    
-    # 评估增强模型  
-    print("\n🟢 Evaluating ENHANCED classifier...")
-    enhanced_model, _ = evaluator.load_classifier(args.enhanced_model)
-    enhanced_results = evaluator.evaluate_on_target_domain(
-        enhanced_model, args.backpack_data_dir, args.batch_size
-    )
-    
-    # 比较结果
-    comparison = evaluator.compare_models(baseline_results, enhanced_results)
-    
-    # 保存结果
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 保存详细结果
+    # 完整的域适应对比分析
+    evaluator.compare_models(args.baseline_model, args.enhanced_model, args.backpack_data_dir, output_dir=args.output_dir)
     all_results = {
         'baseline_results': baseline_results,
         'enhanced_results': enhanced_results,
