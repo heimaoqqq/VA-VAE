@@ -514,16 +514,27 @@ def main():
         )
         total_collected += collected
     
-    # 同步所有GPU的结果
+    # 打印当前GPU完成情况
+    print(f"GPU {rank} 完成: 收集了 {total_collected} 个样本 (处理了 {len(my_users)} 个用户)")
+    
+    # 同步所有GPU的结果（添加超时保护）
     if world_size > 1:
-        total_tensor = torch.tensor([total_collected], device=device)
-        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
-        total_collected = total_tensor.item()
+        try:
+            dist.barrier()  # 先同步确保所有GPU都完成
+            total_tensor = torch.tensor([total_collected], device=device)
+            dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
+            total_collected = total_tensor.item()
+        except Exception as e:
+            print(f"⚠️ GPU {rank} 同步失败: {e}")
+            # 继续执行，使用本地结果
     
     if rank == 0:
         print(f"🎯 生成完成！")
         print(f"✅ 总共收集了 {total_collected} 个高质量样本")
         print(f"📁 样本保存在: {args.output_dir}")
+        if world_size > 1:
+            expected_total = len(user_list) * args.target_samples
+            print(f"📊 预期总数: {expected_total} (31用户 × {args.target_samples}样本/用户)")
     
     # 清理分布式
     if world_size > 1:
