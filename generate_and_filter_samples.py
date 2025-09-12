@@ -302,7 +302,13 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
     collected_samples = []
     total_generated = 0
     
-    print(f"🎯 开始为User_{user_id:02d}生成样本，目标: {target_samples}张")
+    # 创建动态进度条
+    pbar = tqdm(total=target_samples, 
+                desc=f"User_{user_id:02d}", 
+                position=rank,
+                leave=True,
+                bar_format='{desc}: {n}/{total} [{bar:30}] {percentage:3.0f}% | 生成:{postfix[0]} 成功率:{postfix[1]:.1f}%')
+    pbar.set_postfix([0, 0])
     
     with torch.no_grad():
         while len(collected_samples) < target_samples:
@@ -389,22 +395,25 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
                         confidences, predictions = torch.max(probabilities, dim=1)
                     
                     # 筛选高质量样本
+                    batch_accepted = 0
                     for i in range(len(decoded_images)):
                         if predictions[i].item() == user_id and confidences[i].item() > confidence_threshold:
                             # 保存图像
                             save_path = user_dir / f"sample_{len(collected_samples):06d}.png"
                             Image.fromarray(decoded_images[i]).save(save_path)
                             collected_samples.append(save_path)
+                            batch_accepted += 1
                             
                             if len(collected_samples) >= target_samples:
                                 break
                     
                     total_generated += current_batch_size
                     
-                    # 打印进度
+                    # 更新进度条
+                    pbar.n = len(collected_samples)
                     success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
-                    print(f"User_{user_id:02d}: 已收集 {len(collected_samples)}/{target_samples} | "
-                          f"生成了 {total_generated} 张 | 成功率: {success_rate:.1f}%")
+                    pbar.set_postfix([total_generated, success_rate])
+                    pbar.refresh()
                     
                 except Exception as e:
                     print(f"❌ 处理批次时出错: {e}")
@@ -414,7 +423,13 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
                 print("❌ VAE未加载，无法解码")
                 break
     
-    print(f"✅ User_{user_id:02d} 完成: 收集了 {len(collected_samples)} 个高质量样本")
+    pbar.close()
+    
+    # 最终统计
+    final_success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
+    print(f"✅ User_{user_id:02d} 完成: 收集了 {len(collected_samples)}/{target_samples} 个高质量样本 | "
+          f"总生成: {total_generated} 张 | 最终成功率: {final_success_rate:.1f}%")
+    
     return len(collected_samples)
 
 def main():
