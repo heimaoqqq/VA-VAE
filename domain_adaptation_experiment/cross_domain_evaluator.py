@@ -537,9 +537,9 @@ class CrossDomainEvaluator:
             "baseline_mean_confidence": float(baseline_conf['mean_confidence']),
             "enhanced_mean_confidence": float(enhanced_conf['mean_confidence']),
             "confidence_improvement": float(enhanced_conf['mean_confidence'] - baseline_conf['mean_confidence']),
-            "baseline_correct_conf": float(baseline_conf['mean_correct_confidence']),
-            "enhanced_correct_conf": float(enhanced_conf['mean_correct_confidence']),
-            "calibration_improvement": "Improved" if enhanced_conf['mean_correct_confidence'] > baseline_conf['mean_correct_confidence'] else "Degraded"
+            "baseline_correct_conf": float(baseline_conf['correct_confidence']),
+            "enhanced_correct_conf": float(enhanced_conf['correct_confidence']),
+            "calibration_improvement": "Improved" if enhanced_conf['correct_confidence'] > baseline_conf['correct_confidence'] else "Degraded"
         }
         
         # 错误分析 - 找出最容易混淆的用户对和最难分类的用户
