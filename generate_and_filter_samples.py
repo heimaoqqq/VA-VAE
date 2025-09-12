@@ -302,12 +302,8 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
     collected_samples = []
     total_generated = 0
     
-    # 创建动态进度条
-    pbar = tqdm(total=target_samples, 
-                desc=f"User_{user_id:02d}", 
-                position=rank,
-                leave=True)
-    pbar.set_postfix({'生成': 0, '成功率': '0.0%'})
+    # 不使用tqdm避免多GPU输出混乱，改用简单打印
+    print(f"🎯 开始为User_{user_id:02d}生成样本，目标: {target_samples}张")
     
     with torch.no_grad():
         while len(collected_samples) < target_samples:
@@ -408,11 +404,11 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
                     
                     total_generated += current_batch_size
                     
-                    # 更新进度条
-                    pbar.n = len(collected_samples)
-                    success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
-                    pbar.set_postfix({'生成': total_generated, '成功率': f'{success_rate:.1f}%'})
-                    pbar.refresh()
+                    # 打印进度（每成功收集100张或完成时）
+                    if (len(collected_samples) > 0 and len(collected_samples) % 100 == 0) or len(collected_samples) >= target_samples:
+                        success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
+                        print(f"User_{user_id:02d}: 已收集 {len(collected_samples)}/{target_samples} | "
+                              f"生成了 {total_generated} 张 | 成功率: {success_rate:.1f}%")
                     
                 except Exception as e:
                     print(f"❌ 处理批次时出错: {e}")
@@ -421,8 +417,6 @@ def generate_and_filter_for_user(model, vae, transport, classifier, user_id,
             else:
                 print("❌ VAE未加载，无法解码")
                 break
-    
-    pbar.close()
     
     # 最终统计
     final_success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
