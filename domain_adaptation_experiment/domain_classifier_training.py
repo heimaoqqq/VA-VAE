@@ -318,11 +318,9 @@ class DomainAdaptationDataset(Dataset):
         if not user_samples:
             raise ValueError("未找到任何图像文件")
         
-        # 报告数据统计
-        total_real = sum(len([p for p in paths if p[1] == "real"]) for paths in user_samples.values())
-        total_generated = sum(len([p for p in paths if p[1] == "generated"]) for paths in user_samples.values())
+        # 详细数据统计报告
         if not dist.is_initialized() or dist.get_rank() == 0:
-            print(f"Loaded data: {total_real} real samples, {total_generated} generated samples")
+            self._print_data_statistics(user_samples)
         
         # 微多普勒图像专用变换（最小增强，保持频谱结构）
         if split == 'train':
@@ -344,12 +342,11 @@ class DomainAdaptationDataset(Dataset):
         if transform:
             self.transform = transform
     
-    def _load_data_from_dir(self, data_dir, user_samples, data_type, split):
-        """从指定目录加载数据"""
-        # 查找ID_*、User_*、user_*目录
-        id_dirs = (list(data_dir.glob("ID_*")) + 
-                  list(data_dir.glob("User_*")) + 
-                  list(data_dir.glob("user_*")))
+    def _print_data_statistics(self, user_samples):
+        """打印详细的数据统计信息"""
+        print("\n" + "="*60)
+        print("数据集统计报告")
+        print("="*60)
         
         if len(id_dirs) == 0:
             print(f"Warning: 在 {data_dir} 中未找到ID_*、User_*或user_*格式的用户目录")
