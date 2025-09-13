@@ -390,31 +390,32 @@ class DomainAdaptationDataset(Dataset):
                 self.samples.append((path, user_id, data_type))
 
     def _print_data_statistics(self, user_samples):
-        """打印详细的数据统计信息"""
+        """打印详细的数据统计信息 - 基于实际加载的数据集"""
         print("\n" + "="*60)
-        print("数据集统计报告")
+        print(f"数据集统计报告 ({self.split.upper()})")
         print("="*60)
         
-        # 按数据类型统计
+        # 基于实际加载的self.samples进行统计
         data_type_counts = defaultdict(int)
         user_coverage = defaultdict(set)  # 每种数据类型覆盖的用户
+        user_data_counts = defaultdict(lambda: defaultdict(int))  # 用户级别的数据类型统计
         
-        for user_id, samples in user_samples.items():
-            for _, data_type in samples:
-                data_type_counts[data_type] += 1
-                user_coverage[data_type].add(user_id)
+        for _, user_id, data_type in self.samples:
+            data_type_counts[data_type] += 1
+            user_coverage[data_type].add(user_id)
+            user_data_counts[user_id][data_type] += 1
         
         # 总体统计
         total_real = data_type_counts.get('real', 0)
         total_generated = sum(count for dtype, count in data_type_counts.items() if dtype.startswith('generated'))
         
-        print(f"📊 总体统计:")
+        print(f"📊 {self.split}集统计:")
         print(f"   真实样本: {total_real}")
         print(f"   合成样本: {total_generated}")
         if total_real > 0:
             print(f"   扩充倍数: {total_generated / total_real:.2f}x")
         print(f"   总样本数: {total_real + total_generated}")
-        print(f"   用户总数: {len(user_samples)}")
+        print(f"   覆盖用户数: {len(user_data_counts)}")
         
         # 数据源详细统计
         print(f"\n📁 数据源统计:")
@@ -423,33 +424,40 @@ class DomainAdaptationDataset(Dataset):
             print(f"   {data_type}: {count} 样本 (覆盖 {users_covered} 用户)")
         
         # 用户级别统计
-        print(f"\n👥 用户级别统计:")
+        print(f"\n👥 用户级别统计 ({self.split}):")
         user_real_counts = []
         user_generated_counts = []
         
-        for user_id in sorted(user_samples.keys()):
-            samples = user_samples[user_id]
-            real_count = sum(1 for _, dtype in samples if dtype == 'real')
-            generated_count = sum(1 for _, dtype in samples if dtype.startswith('generated'))
+        for user_id in sorted(user_data_counts.keys()):
+            user_counts = user_data_counts[user_id]
+            real_count = user_counts.get('real', 0)
+            generated_count = sum(count for dtype, count in user_counts.items() if dtype.startswith('generated'))
             
             user_real_counts.append(real_count)
             user_generated_counts.append(generated_count)
             
             if user_id < 5:  # 只显示前5个用户的详细信息
-                ratio = f"{generated_count/real_count:.1f}x" if real_count > 0 else "无真实数据"
+                if real_count > 0:
+                    ratio = f"{generated_count/real_count:.1f}x"
+                else:
+                    ratio = "无真实数据" if generated_count == 0 else f"仅合成({generated_count})"
                 print(f"   用户 {user_id:02d}: 真实={real_count}, 合成={generated_count} (扩充{ratio})")
         
-        if len(user_samples) > 5:
-            print(f"   ... (共 {len(user_samples)} 用户)")
+        if len(user_data_counts) > 5:
+            print(f"   ... (共 {len(user_data_counts)} 用户)")
         
         # 统计摘要
-        avg_real = sum(user_real_counts) / len(user_real_counts) if user_real_counts else 0
-        avg_generated = sum(user_generated_counts) / len(user_generated_counts) if user_generated_counts else 0
-        
-        print(f"\n📈 平均统计:")
-        print(f"   平均真实样本/用户: {avg_real:.1f}")
-        print(f"   平均合成样本/用户: {avg_generated:.1f}")
-        print(f"   平均扩充倍数: {avg_generated/avg_real:.2f}x" if avg_real > 0 else "   平均扩充倍数: 无真实数据")
+        if user_real_counts:
+            avg_real = sum(user_real_counts) / len(user_real_counts)
+            avg_generated = sum(user_generated_counts) / len(user_generated_counts)
+            
+            print(f"\n📈 平均统计:")
+            print(f"   平均真实样本/用户: {avg_real:.1f}")
+            print(f"   平均合成样本/用户: {avg_generated:.1f}")
+            if avg_real > 0:
+                print(f"   平均扩充倍数: {avg_generated/avg_real:.2f}x")
+            else:
+                print(f"   平均扩充倍数: 无真实数据")
         
         print("="*60)
     
