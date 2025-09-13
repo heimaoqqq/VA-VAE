@@ -280,29 +280,34 @@ class DomainAdaptationDataset(Dataset):
     """域适应数据集，支持多个数据源"""
     
     def __init__(self, real_data_dir=None, generated_data_dirs=None, split='train', 
-                 transform=None, contrastive_pairs=False, use_generated=False):
+                 transform=None, contrastive_pairs=False, use_generated=False, split_file=None):
         """
         Args:
             real_data_dir: 真实数据目录
             generated_data_dirs: 生成数据目录列表
             split: 'train' or 'val'
             use_generated: 是否使用生成数据扩充训练集
+            split_file: 预划分文件路径 (dataset_split.json)
         """
         self.real_data_dir = Path(real_data_dir) if real_data_dir else None
         self.generated_data_dirs = [Path(d) for d in generated_data_dirs] if generated_data_dirs else []
         self.split = split
         self.contrastive_pairs = contrastive_pairs
         self.use_generated = use_generated
+        self.split_file = split_file
         self.samples = []
         
         # 收集所有样本
         user_samples = defaultdict(list)
         
-        # 加载真实数据
+        # 加载真实数据 - 使用预划分文件
         if self.real_data_dir and self.real_data_dir.exists():
             if not dist.is_initialized() or dist.get_rank() == 0:
                 print(f"Loading real data from: {self.real_data_dir}")
-            self._load_data_from_dir(self.real_data_dir, user_samples, "real", split)
+            if self.split_file:
+                self._load_presplit_data(user_samples, "real", split)
+            else:
+                self._load_data_from_dir(self.real_data_dir, user_samples, "real", split)
         
         # 加载生成数据（仅在训练时且启用时）
         if self.use_generated and split == 'train' and self.generated_data_dirs:
@@ -342,6 +347,55 @@ class DomainAdaptationDataset(Dataset):
         if transform:
             self.transform = transform
     
+    def _load_presplit_data(self, user_samples, data_type, split):
+        """从预划分JSON文件加载数据"""
+        import json
+        
+        if not self.split_file or not Path(self.split_file).exists():
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                print(f"⚠️ 预划分文件不存在: {self.split_file}")
+            return
+        
+        # 加载预划分数据
+        with open(self.split_file, 'r') as f:
+            data_split = json.load(f)
+        
+        split_data = data_split.get(split, {})
+        if not split_data:
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                print(f"⚠️ 在预划分文件中未找到{split}数据")
+            return
+        
+        # 解析用户ID和添加样本
+        for user_folder_name, image_paths in split_data.items():
+            # 从文件夹名解析用户ID
+            if user_folder_name.startswith("ID_"):
+                user_id = int(user_folder_name.split('_')[1]) - 1  # 转换为0-based索引
+            elif user_folder_name.startswith(("User_", "user_")):
+                user_id = int(user_folder_name.split('_')[1])
+            else:
+                # 尝试直接解析数字
+                try:
+                    user_id = int(user_folder_name)
+                except ValueError:
+                    if not dist.is_initialized() or dist.get_rank() == 0:
+                        print(f"⚠️ 无法解析用户ID: {user_folder_name}")
+                    continue
+            
+            # 验证图像文件存在并添加到数据集
+            valid_paths = []
+            for img_path in image_paths:
+                if Path(img_path).exists():
+                    valid_paths.append(img_path)
+                    user_samples[user_id].append((img_path, data_type))
+                    self.samples.append((img_path, user_id, data_type))
+                else:
+                    if not dist.is_initialized() or dist.get_rank() == 0:
+                        print(f"⚠️ 图像文件不存在: {img_path}")
+            
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                print(f"   用户 {user_id} ({user_folder_name}): {len(valid_paths)}/{len(image_paths)} 张图像")
+
     def _load_data_from_dir(self, data_dir, user_samples, data_type, split):
         """从指定目录加载数据"""
         data_dir = Path(data_dir)
@@ -361,6 +415,9 @@ class DomainAdaptationDataset(Dataset):
             print(f"实际找到的目录: {all_dirs[:10]}...")  # 只显示前10个
             return
         
+        # 临时存储当前数据源的样本
+        current_data_samples = defaultdict(list)
+        
         for user_dir in sorted(id_dirs):
             if user_dir.is_dir():
                 # 解析用户ID
@@ -373,21 +430,38 @@ class DomainAdaptationDataset(Dataset):
                     
                 for ext in ['*.png', '*.jpg', '*.jpeg']:
                     for img_path in user_dir.glob(ext):
-                        user_samples[user_id].append((str(img_path), data_type))
+                        current_data_samples[user_id].append((str(img_path), data_type))
         
-        # 划分训练/验证集
-        for user_id, paths in user_samples.items():
-            random.shuffle(paths)
-            split_idx = int(len(paths) * 0.8)
-            
+        # 根据数据类型决定如何添加到数据集
+        if data_type == 'real':
+            # 真实数据需要按split划分 - 使用固定种子确保一致性
+            for user_id, paths in current_data_samples.items():
+                # 将当前真实数据添加到user_samples以便统计
+                user_samples[user_id].extend(paths)
+                
+                # 使用固定种子划分训练/验证集，确保训练集和验证集使用相同的划分
+                random.Random(42 + user_id).shuffle(paths)  # 每个用户使用不同但固定的种子
+                split_idx = int(len(paths) * 0.8)
+                
+                if split == 'train':
+                    selected_paths = paths[:split_idx]
+                else:  # validation
+                    selected_paths = paths[split_idx:]
+                
+                for path_info in selected_paths:
+                    path, dtype = path_info
+                    self.samples.append((path, user_id, dtype))
+        else:
+            # 生成数据只添加到训练集
             if split == 'train':
-                selected_paths = paths[:split_idx]
-            else:  # validation
-                selected_paths = paths[split_idx:]
-            
-            for path_info in selected_paths:
-                path, data_type = path_info
-                self.samples.append((path, user_id, data_type))
+                for user_id, paths in current_data_samples.items():
+                    # 将合成数据添加到user_samples以便统计
+                    user_samples[user_id].extend(paths)
+                    
+                    # 合成数据全部添加到训练集
+                    for path_info in paths:
+                        path, dtype = path_info
+                        self.samples.append((path, user_id, dtype))
 
     def _print_data_statistics(self, user_samples):
         """打印详细的数据统计信息 - 基于实际加载的数据集"""
@@ -850,6 +924,8 @@ def main():
     parser.add_argument('--generated_data_dir', type=str, action='append', help='Generated dataset directory (can be specified multiple times)')
     parser.add_argument('--use_generated', action='store_true', 
                        help='Use generated data to augment training set')
+    parser.add_argument('--split_file', type=str, default='/kaggle/working/dataset_split.json',
+                       help='Pre-split dataset JSON file path')
     
     parser.add_argument('--output_dir', type=str, default='./domain_classifier', help='Output directory')
     parser.add_argument('--num_classes', type=int, default=31, help='Number of classes')
@@ -912,7 +988,8 @@ def main():
         generated_data_dirs=args.generated_data_dir,  # 现在是列表
         split='train',
         contrastive_pairs=args.use_contrastive,
-        use_generated=args.use_generated
+        use_generated=args.use_generated,
+        split_file=args.split_file
     )
     
     val_dataset = DomainAdaptationDataset(
@@ -920,7 +997,8 @@ def main():
         generated_data_dirs=None,  # 验证集只使用真实数据
         split='val',
         contrastive_pairs=False,
-        use_generated=False
+        use_generated=False,
+        split_file=args.split_file
     )
     
     # 分布式采样器
