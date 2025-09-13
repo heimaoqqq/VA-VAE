@@ -53,11 +53,11 @@ class BackpackWalkingDataset(Dataset):
         
         for user_dir in sorted(user_dirs):
             if user_dir.is_dir():
-                # 解析用户ID
+                # 解析用户ID - 保持与训练时一致
                 if user_dir.name.startswith("ID_"):
-                    user_id = int(user_dir.name.split('_')[1]) - 1  # 转换为0-based
+                    user_id = int(user_dir.name.split('_')[1]) - 1  # ID_格式转换为0-based
                 elif user_dir.name.startswith("User_"):
-                    user_id = int(user_dir.name.split('_')[1])
+                    user_id = int(user_dir.name.split('_')[1])      # User_格式已经是0-based
                 else:
                     continue
                     
@@ -124,7 +124,7 @@ class CrossDomainEvaluator:
         
         return model, checkpoint
     
-    def evaluate_on_target_domain(self, model, target_data_dir, batch_size=32):
+    def evaluate_on_target_domain(self, model, target_data_dir, batch_size=16):
         """在目标域（背包行走）数据上评估模型"""
         print(f"\n🎯 Evaluating on target domain: {target_data_dir}")
         
