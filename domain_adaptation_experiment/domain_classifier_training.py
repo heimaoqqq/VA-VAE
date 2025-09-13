@@ -934,7 +934,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (smaller)')
     parser.add_argument('--weight_decay', type=float, default=0.01, help='Weight decay (stronger)')
     parser.add_argument('--dropout_rate', type=float, default=0.5, help='Dropout rate')
-    parser.add_argument('--patience', type=int, default=10, help='Early stopping patience')
+    parser.add_argument('--patience', type=int, default=5, help='Early stopping patience')
     
     # 对比学习参数
     parser.add_argument('--use_contrastive', action='store_true', help='Use contrastive learning')
