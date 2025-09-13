@@ -372,7 +372,7 @@ class DomainAdaptationDataset(Dataset):
             if user_folder_name.startswith("ID_"):
                 user_id = int(user_folder_name.split('_')[1]) - 1  # 转换为0-based索引
             elif user_folder_name.startswith(("User_", "user_")):
-                user_id = int(user_folder_name.split('_')[1])
+                user_id = int(user_folder_name.split('_')[1])  # User_已经是0-based
             else:
                 # 尝试直接解析数字
                 try:
@@ -424,7 +424,7 @@ class DomainAdaptationDataset(Dataset):
                 if user_dir.name.startswith("ID_"):
                     user_id = int(user_dir.name.split('_')[1]) - 1  # 转换为0-based索引
                 elif user_dir.name.startswith(("User_", "user_")):
-                    user_id = int(user_dir.name.split('_')[1])
+                    user_id = int(user_dir.name.split('_')[1])  # User_已经是0-based
                 else:
                     continue
                     
