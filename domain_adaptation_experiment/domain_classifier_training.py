@@ -45,7 +45,14 @@ def setup_distributed():
 def cleanup_distributed():
     """清理分布式训练"""
     if dist.is_initialized():
-        dist.destroy_process_group()
+        try:
+            # 添加超时保护
+            import time
+            start_time = time.time()
+            dist.destroy_process_group()
+            print(f"✅ 分布式清理完成，耗时 {time.time() - start_time:.2f}s")
+        except Exception as e:
+            print(f"⚠️ 分布式清理失败: {e}")
 
 
 def is_main_process():
@@ -272,17 +279,17 @@ class SupConLoss(nn.Module):
 class DomainAdaptationDataset(Dataset):
     """域适应数据集，支持多个数据源"""
     
-    def __init__(self, real_data_dir=None, generated_data_dir=None, split='train', 
+    def __init__(self, real_data_dir=None, generated_data_dirs=None, split='train', 
                  transform=None, contrastive_pairs=False, use_generated=False):
         """
         Args:
             real_data_dir: 真实数据目录
-            generated_data_dir: 生成数据目录  
+            generated_data_dirs: 生成数据目录列表
             split: 'train' or 'val'
             use_generated: 是否使用生成数据扩充训练集
         """
         self.real_data_dir = Path(real_data_dir) if real_data_dir else None
-        self.generated_data_dir = Path(generated_data_dir) if generated_data_dir else None
+        self.generated_data_dirs = [Path(d) for d in generated_data_dirs] if generated_data_dirs else []
         self.split = split
         self.contrastive_pairs = contrastive_pairs
         self.use_generated = use_generated
@@ -298,11 +305,15 @@ class DomainAdaptationDataset(Dataset):
             self._load_data_from_dir(self.real_data_dir, user_samples, "real", split)
         
         # 加载生成数据（仅在训练时且启用时）
-        if (self.use_generated and split == 'train' and 
-            self.generated_data_dir and self.generated_data_dir.exists()):
-            if not dist.is_initialized() or dist.get_rank() == 0:
-                print(f"Loading generated data from: {self.generated_data_dir}")
-            self._load_data_from_dir(self.generated_data_dir, user_samples, "generated", split)
+        if self.use_generated and split == 'train' and self.generated_data_dirs:
+            for i, generated_dir in enumerate(self.generated_data_dirs):
+                if generated_dir.exists():
+                    if not dist.is_initialized() or dist.get_rank() == 0:
+                        print(f"Loading generated data from: {generated_dir}")
+                    self._load_data_from_dir(generated_dir, user_samples, f"generated_{i+1}", split)
+                else:
+                    if not dist.is_initialized() or dist.get_rank() == 0:
+                        print(f"⚠️ Generated data directory not found: {generated_dir}")
         
         if not user_samples:
             raise ValueError("未找到任何图像文件")
@@ -761,7 +772,7 @@ def main():
     
     # 数据参数
     parser.add_argument('--real_data_dir', type=str, required=True, help='Real dataset directory')
-    parser.add_argument('--generated_data_dir', type=str, help='Generated dataset directory')
+    parser.add_argument('--generated_data_dir', type=str, action='append', help='Generated dataset directory (can be specified multiple times)')
     parser.add_argument('--use_generated', action='store_true', 
                        help='Use generated data to augment training set')
     
@@ -823,7 +834,7 @@ def main():
     # 数据集
     train_dataset = DomainAdaptationDataset(
         real_data_dir=args.real_data_dir,
-        generated_data_dir=args.generated_data_dir,
+        generated_data_dirs=args.generated_data_dir,  # 现在是列表
         split='train',
         contrastive_pairs=args.use_contrastive,
         use_generated=args.use_generated
@@ -831,7 +842,7 @@ def main():
     
     val_dataset = DomainAdaptationDataset(
         real_data_dir=args.real_data_dir,
-        generated_data_dir=None,  # 验证集只使用真实数据
+        generated_data_dirs=None,  # 验证集只使用真实数据
         split='val',
         contrastive_pairs=False,
         use_generated=False
@@ -846,7 +857,7 @@ def main():
         batch_size=args.batch_size, 
         shuffle=(train_sampler is None), 
         sampler=train_sampler,
-        num_workers=4,
+        num_workers=0,  # 避免多进程卡住
         pin_memory=True
     )
     val_loader = DataLoader(
@@ -854,7 +865,7 @@ def main():
         batch_size=args.batch_size * 2, 
         shuffle=False,
         sampler=val_sampler,
-        num_workers=4,
+        num_workers=0,  # 避免多进程卡住
         pin_memory=True
     )
     
@@ -906,6 +917,14 @@ def main():
     
     # 清理分布式训练
     cleanup_distributed()
+    
+    # 确保程序正常退出
+    if is_main_process():
+        print("🎉 训练流程完全结束，程序即将退出")
+    
+    # 显式退出程序避免卡住
+    import sys
+    sys.exit(0)
 
 
 if __name__ == "__main__":
