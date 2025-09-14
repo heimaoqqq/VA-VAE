@@ -233,43 +233,50 @@ def load_classifier(checkpoint_path, device):
     """加载预训练的分类器"""
     import torchvision.models as models
     
-    # 创建与generate_and_filter_samples.py完全一致的模型结构
-    class MicroDopplerModel(nn.Module):
-        def __init__(self, num_classes=31, dropout_rate=0.3):
+    # 创建与train_calibrated_classifier.py完全一致的DomainAdaptiveClassifier结构
+    class DomainAdaptiveClassifier(nn.Module):
+        def __init__(self, num_classes=31, dropout_rate=0.3, feature_dim=512):
             super().__init__()
             
             # 使用ResNet18作为backbone
             self.backbone = models.resnet18(pretrained=False)
+            backbone_dim = self.backbone.fc.in_features
             self.backbone.fc = nn.Identity()
-            feature_dim = 512
             
-            # 分类头
+            # 特征投影层（与训练时完全一致）
+            self.feature_projector = nn.Sequential(
+                nn.Linear(backbone_dim, feature_dim),
+                nn.BatchNorm1d(feature_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout_rate)
+            )
+            
+            # 分类头（与训练时完全一致）
             self.classifier = nn.Sequential(
-                nn.Dropout(dropout_rate),
                 nn.Linear(feature_dim, 256),
                 nn.BatchNorm1d(256),
-                nn.ReLU(inplace=False),
-                nn.Dropout(dropout_rate * 0.5),
+                nn.ReLU(inplace=True),
+                nn.Dropout(dropout_rate),
                 nn.Linear(256, num_classes)
             )
             
-            # 对比学习投影头
-            self.projection_head = nn.Sequential(
-                nn.Linear(feature_dim, 128),
-                nn.ReLU(inplace=False),
-                nn.Linear(128, 64)
-            )
+            # 身份特征记忆库
+            self.register_buffer('feature_bank', torch.zeros(num_classes, feature_dim))
+            self.register_buffer('feature_count', torch.zeros(num_classes))
         
         def forward(self, x):
-            features = self.backbone(x)
-            return self.classifier(features)
+            backbone_features = self.backbone(x)
+            features = self.feature_projector(backbone_features)
+            logits = self.classifier(features)
+            return logits
     
     # 创建模型
-    model = MicroDopplerModel(num_classes=31)
+    model = DomainAdaptiveClassifier(num_classes=31)
     
-    # 加载权重
+    # 加载权重 - 现在结构完全匹配
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
+    
     model = model.to(device)
     model.eval()
     
