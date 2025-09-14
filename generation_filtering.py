@@ -481,24 +481,25 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
         'domain_stats': {cond["name"]: {'generated': 0, 'accepted': 0} for cond in domain_conditions}
     }
     
-    print(f"🎯 开始为User_{user_id:02d}生成样本，目标: {target_samples}张")
-    print(f"📊 统一筛选标准（按文献重要性排序）:")
-    print(f"   1. 身份一致性(置信度): >{confidence_threshold:.2f}")
-    print(f"   2. 用户特异性: >{user_specificity_threshold:.2f}")
-    print(f"   3. 预测稳定性: >{stability_threshold:.2f}")
-    print(f"   4. 决策边界: >{margin_threshold:.2f}")
-    print(f"   5. 特征多样性: >{diversity_threshold:.2f} (max_sim≤0.9)")
+    if rank == 0:
+        print(f"🎯 开始为User_{user_id:02d}生成样本，目标: {target_samples}张")
+        print(f"📊 统一筛选标准（按文献重要性排序）:")
+        print(f"   1. 身份一致性(置信度): >{confidence_threshold:.2f}")
+        print(f"   2. 用户特异性: >{user_specificity_threshold:.2f}")
+        print(f"   3. 预测稳定性: >{stability_threshold:.2f}")
+        print(f"   4. 决策边界: >{margin_threshold:.2f}")
+        print(f"   5. 特征多样性: >{diversity_threshold:.2f} (max_sim≤0.9)")
+    else:
+        print(f"[GPU{rank}] 🎯 User_{user_id:02d} 目标: {target_samples}张")
     
     # 存储已收集的特征用于多样性评估
     collected_features = []
     condition_stats = {cond["name"]: 0 for cond in domain_conditions}
     
-    # 创建进度条（只在rank 0显示）
-    if rank == 0:
-        pbar = tqdm(total=target_samples, desc=f"User_{user_id:02d}", unit="样本", 
-                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
-    else:
-        pbar = None
+    # 每个GPU都显示自己的进度条
+    pbar = tqdm(total=target_samples, desc=f"[GPU{rank}]User_{user_id:02d}", unit="样本", 
+                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}', 
+                position=rank, leave=True)
     
     with torch.no_grad():
         # 按域条件循环生成
@@ -515,7 +516,10 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                 reverse=False
             )
             
-            print(f"🌍 生成域: {condition['name']} (CFG={condition['cfg']:.1f}, Steps={condition['steps']})")
+            if rank == 0:
+                print(f"🌍 生成域: {condition['name']} (CFG={condition['cfg']:.1f}, Steps={condition['steps']})")
+            else:
+                print(f"[GPU{rank}] 🌍 {condition['name']} (CFG={condition['cfg']:.1f})")
             
             while condition_collected < condition_target and len(collected_samples) < target_samples:
                 # 生成一批样本
@@ -659,8 +663,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                             collected_samples.append(save_path)
                             collected_features.append(candidate['features'])
                             batch_accepted += 1
-                            if pbar:
-                                pbar.update(1)  # 更新进度条
+                            pbar.update(1)  # 更新进度条
                             
                             if len(collected_samples) >= target_samples:
                                 break
@@ -675,45 +678,43 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         # total_generated += current_batch_size  # 已在stats中统计
                         
                         # 更新进度条的后缀信息
-                        if pbar:
-                            success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
-                            pbar.set_postfix({
-                                '已生成': stats['total_generated'],
-                                '通过率': f'{success_rate:.1f}%',
-                                '域': condition["name"]
-                            })
+                        success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
+                        pbar.set_postfix({
+                            '已生成': stats['total_generated'],
+                            '通过率': f'{success_rate:.1f}%',
+                            '域': condition["name"]
+                        })
                     
                     except Exception as e:
-                        print(f"❌ 处理批次时出错: {e}")
+                        print(f"[GPU{rank}] ❌ 处理批次时出错: {e}")
                         import traceback
                         traceback.print_exc()
                 else:
-                    print("❌ VAE未加载，无法解码")
+                    print(f"[GPU{rank}] ❌ VAE未加载，无法解码")
                     break
     
     # 关闭进度条
-    if pbar:
-        pbar.close()
+    pbar.close()
     
     # 简化统计报告
     final_success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
     
-    if rank == 0:  # 只在主进程输出统计
-        print(f"\n✅ User_{user_id:02d} 完成: {len(collected_samples)}/{target_samples} 样本 | 生成: {stats['total_generated']} 张 | 通过率: {final_success_rate:.1f}%")
-        
-        # 多样性统计
-        if stats['collected_diversities']:
-            avg_diversity = np.mean(stats['collected_diversities'])
-            print(f"   🌈 平均多样性: {avg_diversity:.3f}")
-        
-        # 各域表现
-        domain_summary = []
-        for domain_name, domain_stat in stats['domain_stats'].items():
-            if domain_stat['generated'] > 0:
-                domain_rate = domain_stat['accepted'] / domain_stat['generated'] * 100
-                domain_summary.append(f"{domain_name}:{domain_rate:.0f}%")
-        if domain_summary:
-            print(f"   🌐 各域: {' | '.join(domain_summary)}")
+    # 每个GPU输出自己的统计
+    print(f"\n[GPU{rank}] ✅ User_{user_id:02d} 完成: {len(collected_samples)}/{target_samples} 样本 | 生成: {stats['total_generated']} 张 | 通过率: {final_success_rate:.1f}%")
+    
+    # 多样性统计
+    if stats['collected_diversities']:
+        avg_diversity = np.mean(stats['collected_diversities'])
+        print(f"[GPU{rank}]    🌈 平均多样性: {avg_diversity:.3f}")
+    
+    # 各域表现
+    domain_summary = []
+    for domain_name, domain_stat in stats['domain_stats'].items():
+        if domain_stat['generated'] > 0:
+            domain_rate = domain_stat['accepted'] / domain_stat['generated'] * 100
+            domain_summary.append(f"{domain_name}:{domain_rate:.0f}%")
+    if domain_summary:
+        print(f"[GPU{rank}]    🌐 各域: {' | '.join(domain_summary)}")
     
     return len(collected_samples)
 
