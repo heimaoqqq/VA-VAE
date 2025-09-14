@@ -12,8 +12,9 @@ import yaml
 import sys
 
 # 添加LightningDiT路径
-sys.path.insert(0, './LightningDiT')
-from lightningdit.inference import create_model_and_transport
+sys.path.append('LightningDiT')
+from models.lightningdit import LightningDiT_models
+from transport import create_transport, Sampler
 from simplified_vavae import SimplifiedVAVAE
 
 def load_models(args, device, rank=0):
@@ -21,15 +22,62 @@ def load_models(args, device, rank=0):
     print(f"🔄 [GPU{rank}] 加载模型...")
     
     # 加载配置
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+    with open(args.config, 'r', encoding='utf-8') as f:
+        config = yaml.load(f, Loader=yaml.FullLoader)
     
-    # 创建DiT模型和transport
-    model, transport = create_model_and_transport(
-        config_path=args.config,
-        checkpoint_path=args.dit_checkpoint,
-        device=device,
-        use_compile=False
+    # 创建DiT模型
+    latent_size = config['data']['image_size'] // config['vae']['downsample_ratio']
+    model = LightningDiT_models[config['model']['model_type']](
+        input_size=latent_size,
+        num_classes=config['data']['num_classes'],
+        class_dropout_prob=config['model'].get('class_dropout_prob', 0.1),
+        use_qknorm=config['model']['use_qknorm'],
+        use_swiglu=config['model'].get('use_swiglu', False),
+        use_rope=config['model'].get('use_rope', False),
+        use_rmsnorm=config['model'].get('use_rmsnorm', False),
+        wo_shift=config['model'].get('wo_shift', False),
+        in_channels=config['model'].get('in_chans', 4),
+        use_checkpoint=config['model'].get('use_checkpoint', False),
+    ).to(device)
+    
+    # 加载权重
+    if os.path.exists(args.dit_checkpoint):
+        print(f"📦 [GPU{rank}] 从checkpoint加载权重: {args.dit_checkpoint}")
+        checkpoint = torch.load(args.dit_checkpoint, map_location=lambda storage, loc: storage)
+        
+        # 处理权重键名
+        if 'ema' in checkpoint:
+            checkpoint_weights = {'model': checkpoint['ema']}
+            print(f"📦 [GPU{rank}] 使用EMA权重进行推理")
+        elif 'model' in checkpoint:
+            checkpoint_weights = checkpoint
+        else:
+            checkpoint_weights = {'model': checkpoint}
+        
+        # 加载权重
+        model_state_dict = model.state_dict()
+        for name, param in checkpoint_weights['model'].items():
+            if name in model_state_dict:
+                if param.shape == model_state_dict[name].shape:
+                    model_state_dict[name].copy_(param)
+                elif name == 'x_embedder.proj.weight':
+                    # 特殊处理x_embedder.proj.weight
+                    weight = torch.zeros_like(model_state_dict[name])
+                    weight[:, :16] = param[:, :16]
+                    model_state_dict[name] = weight
+                else:
+                    if rank == 0:
+                        print(f"跳过参数 '{name}'，形状不匹配: "
+                            f"checkpoint {param.shape}, model {model_state_dict[name].shape}")
+        model.load_state_dict(model_state_dict, strict=False)
+    
+    # 创建transport
+    transport = create_transport(
+        config['sampler']['sample_method'],
+        config['sampler']['sample_steps'],
+        config['sampler'].get('snr_type', 'uniform'),
+        config['sampler'].get('top_p', 0.0),
+        config['sampler'].get('top_k', 0.0),
     )
     
     # 加载VAE
