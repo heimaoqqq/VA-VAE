@@ -452,6 +452,8 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.3)  # 适度dropout
     parser.add_argument('--mixup_alpha', type=float, default=0.0)  # 小数据集不用mixup
     parser.add_argument('--use_focal_loss', action='store_true')
+    parser.add_argument('--early_stop_patience', type=int, default=8,
+                       help='连续多少个epoch不改善则早停')
     
     args = parser.parse_args()
     
@@ -579,6 +581,8 @@ def main():
     
     # 训练循环
     best_ece = float('inf')
+    best_score = -float('inf')  # 用于早停的最佳分数 (val_acc - val_ece)
+    patience_counter = 0
     history = []
     
     for epoch in range(args.epochs):
@@ -613,7 +617,9 @@ def main():
             'train_acc': train_acc,
             'val_loss': val_loss,
             'val_acc': val_acc,
-            'val_ece': val_ece
+            'val_ece': val_ece,
+            'score': val_acc - val_ece,
+            'patience_counter': patience_counter if rank == 0 else 0
         })
         
         if rank == 0:
@@ -622,32 +628,56 @@ def main():
             print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
             print(f"Val ECE: {val_ece:.4f}, Feature Std: {feature_std:.4f}")
         
-        # 保存最佳模型（只在主进程）
+        # 保存最佳模型和早停检查（只在主进程）
         if rank == 0:
-            score = val_acc - val_ece
-            if val_ece < best_ece and val_acc > 0.85:
-                best_ece = val_ece
+            score = val_acc - val_ece  # 综合分数：准确率高且校准好
+            
+            # 检查是否有改善
+            if score > best_score:
+                best_score = score
+                patience_counter = 0
                 
-                # 保存模型时要处理DDP wrapper
-                model_to_save = model.module if is_distributed else model
-                torch.save({
-                    'model_state_dict': model_to_save.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'epoch': epoch + 1,
-                    'val_acc': val_acc,
-                    'val_ece': val_ece,
-                    'num_classes': num_classes,
-                    'class_names': train_dataset.classes,
-                    'args': vars(args)
-                }, Path(args.output_dir) / 'best_calibrated_model.pth')
-                print(f"Best model saved with ECE: {val_ece:.4f}")
+                # 保存最佳模型
+                if val_ece < best_ece and val_acc > 0.85:
+                    best_ece = val_ece
+                    
+                    model_to_save = model.module if is_distributed else model
+                    torch.save({
+                        'model_state_dict': model_to_save.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'epoch': epoch + 1,
+                        'val_acc': val_acc,
+                        'val_ece': val_ece,
+                        'num_classes': num_classes,
+                        'class_names': train_dataset.classes,
+                        'args': vars(args)
+                    }, Path(args.output_dir) / 'best_calibrated_model.pth')
+                    print(f"Best model saved with ECE: {val_ece:.4f}")
+                
+                print(f"Score improved: {score:.4f} (best: {best_score:.4f})")
+            else:
+                patience_counter += 1
+                print(f"No improvement for {patience_counter}/{args.early_stop_patience} epochs")
+                
+                # 早停检查
+                if patience_counter >= args.early_stop_patience:
+                    print(f"\n🛑 Early stopping triggered after {patience_counter} epochs without improvement")
+                    print(f"Best score: {best_score:.4f}, Best ECE: {best_ece:.4f}")
+                    break
     
     # 保存训练历史（只在主进程）
     if rank == 0:
         with open(Path(args.output_dir) / 'training_history.json', 'w') as f:
             json.dump(history, f, indent=2)
         
-        print(f"\n训练完成！最佳ECE: {best_ece:.4f}")
+        final_epoch = len(history)
+        if patience_counter >= args.early_stop_patience:
+            print(f"\n🛑 训练提前停止在第 {final_epoch} epoch")
+        else:
+            print(f"\n✅ 训练完成！总共 {final_epoch} epochs")
+        
+        print(f"最佳综合分数: {best_score:.4f}")
+        print(f"最佳ECE: {best_ece:.4f}")
         print(f"模型保存在: {args.output_dir}")
     
     # 清理DDP
