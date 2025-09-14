@@ -120,9 +120,9 @@ def load_real_data(data_dir, max_samples_per_user=100):
         print(f"ID_{user_id}: {len(user_samples)} samples -> label {correct_label} ({class_name})")
     
     print(f"📊 总计加载: {len(samples)} 样本")
-    return samples, labels
+    return samples, labels, class_to_idx
 
-def calculate_metrics_batch(classifier, images, labels, device):
+def calculate_metrics_batch(classifier, images, labels, device, class_to_idx):
     """批量计算所有筛选指标"""
     classifier.eval()
     
@@ -221,8 +221,6 @@ def calculate_metrics_batch(classifier, images, labels, device):
         print(f"  Top3用户: {debug['top3_users']} ({top3_ids})")
         print("")
     
-    # 把 class_to_idx 传递给其他函数使用
-    batch_metrics['class_to_idx'] = class_to_idx
     return batch_metrics
 
 def analyze_diversity(features):
@@ -389,7 +387,7 @@ def main():
     
     # 加载真实数据
     print("🔄 加载真实数据...")
-    images, labels = load_real_data(args.real_data_dir, args.max_samples_per_user)
+    images, labels, class_to_idx = load_real_data(args.real_data_dir, args.max_samples_per_user)
     
     if len(images) == 0:
         print("❌ 未找到真实数据！请检查数据目录路径")
@@ -397,7 +395,7 @@ def main():
     
     # 计算指标
     print("🔄 计算筛选指标...")
-    metrics = calculate_metrics_batch(classifier, images, labels, device)
+    metrics = calculate_metrics_batch(classifier, images, labels, device, class_to_idx)
     
     # 分析用户间差异
     print("🔄 分析用户间差异...")
