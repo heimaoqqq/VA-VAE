@@ -499,7 +499,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     # 每个GPU都显示自己的进度条
     pbar = tqdm(total=target_samples, desc=f"[GPU{rank}]User_{user_id:02d}", unit="样本", 
                 bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}', 
-                position=rank, leave=True)
+                position=rank, leave=False, dynamic_ncols=True)
     
     with torch.no_grad():
         # 按域条件循环生成
@@ -516,10 +516,8 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                 reverse=False
             )
             
-            if rank == 0:
-                print(f"🌍 生成域: {condition['name']} (CFG={condition['cfg']:.1f}, Steps={condition['steps']})")
-            else:
-                print(f"[GPU{rank}] 🌍 {condition['name']} (CFG={condition['cfg']:.1f})")
+            # 只输出一次域切换信息，避免滚动
+            pass
             
             while condition_collected < condition_target and len(collected_samples) < target_samples:
                 # 生成一批样本
@@ -677,13 +675,11 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         
                         # total_generated += current_batch_size  # 已在stats中统计
                         
-                        # 更新进度条的后缀信息
+                        # 更新进度条的后缀信息（使用简短域名）
                         success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
-                        pbar.set_postfix({
-                            '已生成': stats['total_generated'],
-                            '通过率': f'{success_rate:.1f}%',
-                            '域': condition["name"]
-                        })
+                        domain_map = {"low_guidance": "Low", "standard": "Std", "high_guidance": "High", "single": "Single"}
+                        domain_short = domain_map.get(condition["name"], condition["name"][:3])
+                        pbar.set_postfix_str(f'生成{stats["total_generated"]} 通过{success_rate:.1f}% {domain_short}')
                     
                     except Exception as e:
                         print(f"[GPU{rank}] ❌ 处理批次时出错: {e}")
