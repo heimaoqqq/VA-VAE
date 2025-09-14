@@ -533,7 +533,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                 y = torch.tensor([user_id] * current_batch_size, device=device)
                 
                 # 创建随机噪声
-                z = torch.randn(current_batch_size, 4, 32, 32, device=device)
+                z = torch.randn(current_batch_size, 4, 16, 16, device=device)
                 
                 # 使用当前域条件生成样本
                 current_cfg = condition["cfg"]
