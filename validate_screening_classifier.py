@@ -379,6 +379,54 @@ class ScreeningClassifierValidator:
         plt.close()
 
 
+def load_classifier(checkpoint_path, device):
+    """加载分类器模型"""
+    import torchvision.models as models
+    
+    # 创建与improved_classifier_training.py完全一致的模型结构
+    class MicroDopplerModel(nn.Module):
+        def __init__(self, num_classes=31, dropout_rate=0.3):
+            super().__init__()
+            
+            # 使用ResNet18作为backbone
+            self.backbone = models.resnet18(pretrained=False)
+            self.backbone.fc = nn.Identity()
+            feature_dim = 512
+            
+            # 分类头
+            self.classifier = nn.Sequential(
+                nn.Dropout(dropout_rate),
+                nn.Linear(feature_dim, 256),
+                nn.BatchNorm1d(256),
+                nn.ReLU(inplace=False),
+                nn.Dropout(dropout_rate * 0.5),
+                nn.Linear(256, num_classes)
+            )
+            
+            # 对比学习投影头
+            self.projection_head = nn.Sequential(
+                nn.Linear(feature_dim, 128),
+                nn.ReLU(inplace=False),
+                nn.Linear(128, 64)
+            )
+        
+        def forward(self, x):
+            features = self.backbone(x)
+            return self.classifier(features)
+    
+    # 创建模型
+    model = MicroDopplerModel(num_classes=31)
+    
+    # 加载权重
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model = model.to(device)
+    model.eval()
+    
+    print(f"✅ 分类器加载完成: {checkpoint_path}")
+    return model
+
+
 def main():
     parser = argparse.ArgumentParser(description='Validate screening classifier reliability')
     parser.add_argument('--classifier_path', type=str, required=True,
@@ -397,45 +445,85 @@ def main():
     print(f"📂 真实测试数据: {args.real_test_data}")
     print(f"📂 合成数据: {args.synthetic_data}")
     
-    # 创建输出目录
-    output_path = Path(args.output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"🔧 使用设备: {device}")
     
-    # 加载分类器（需要根据实际模型结构）
-    # classifier = load_classifier(args.classifier_path, device)
-    # validator = ScreeningClassifierValidator(classifier, device)
+    # 加载分类器
+    try:
+        classifier = load_classifier(args.classifier_path, device)
+        validator = ScreeningClassifierValidator(classifier, device)
+    except Exception as e:
+        print(f"❌ 分类器加载失败: {e}")
+        return
     
     # 执行验证
-    print("\n开始验证...")
+    print("\n🚀 开始验证...")
     
-    # 1. 校准度评估
-    # calibration_results = validator.evaluate_calibration(args.real_test_data)
+    try:
+        # 1. 校准度评估
+        print("\n📊 1. 评估分类器校准度...")
+        calibration_results = validator.evaluate_calibration(args.real_test_data)
+        print(f"   ECE: {calibration_results['ece']:.4f} {'✅' if calibration_results['is_well_calibrated'] else '❌'}")
+        print(f"   Brier Score: {calibration_results['brier_score']:.4f}")
+        
+        # 2. 置信度分布比较
+        print("\n📊 2. 比较置信度分布...")
+        distribution_results = validator.evaluate_confidence_distribution(
+            args.real_test_data, args.synthetic_data
+        )
+        print(f"   真实数据置信度: {distribution_results['real_confidence']['mean']:.3f} ± {distribution_results['real_confidence']['std']:.3f}")
+        print(f"   合成数据置信度: {distribution_results['synthetic_confidence']['mean']:.3f} ± {distribution_results['synthetic_confidence']['std']:.3f}")
+        print(f"   KL散度: {distribution_results['kl_divergence']:.4f} {'✅' if distribution_results['is_distribution_similar'] else '❌'}")
+        
+        # 3. 决策边界稳定性
+        print("\n📊 3. 评估决策边界稳定性...")
+        synthetic_samples = list(Path(args.synthetic_data).glob("**/*.png"))
+        if synthetic_samples:
+            stability_results = validator.evaluate_decision_boundary_stability(synthetic_samples)
+            print(f"   平均稳定性: {stability_results['average_stability']:.3f}")
+            print(f"   稳定样本比例: {stability_results['stable_samples_ratio']:.3f} {'✅' if stability_results['is_stable'] else '❌'}")
+        else:
+            print("   ⚠️ 未找到合成样本")
+            stability_results = {'is_stable': False, 'average_stability': 0, 'stable_samples_ratio': 0}
+        
+        # 4. 错误模式分析
+        print("\n📊 4. 分析错误模式...")
+        error_results = validator.evaluate_error_analysis(args.synthetic_data)
+        print(f"   总错误数: {error_results['total_errors']}")
+        print(f"   低置信度错误比例: {error_results['low_confidence_error_ratio']:.3f} {'✅' if error_results['is_error_pattern_acceptable'] else '❌'}")
+        print(f"   高置信度错误数: {error_results['high_confidence_errors_count']}")
+        
+        # 综合评估
+        print("\n📋 综合评估结果:")
+        print("=" * 50)
+        
+        # 计算总体可靠性分数
+        results = {
+            'calibration': calibration_results,
+            'distribution': distribution_results,
+            'stability': stability_results,
+            'errors': error_results
+        }
+        
+        overall = validator._compute_overall_reliability(results)
+        print(f"📈 总体可靠性评分: {overall['score']}/100 ({overall['rating']})")
+        print(f"🎯 是否可用于筛选: {'✅ 可用' if overall['is_reliable'] else '❌ 不可用'}")
+        
+        # 生成建议
+        recommendations = validator._generate_recommendations(results)
+        if recommendations:
+            print("\n💡 改进建议:")
+            for i, rec in enumerate(recommendations, 1):
+                print(f"   {i}. {rec}")
+        else:
+            print("\n💡 分类器表现良好，无需改进")
+            
+    except Exception as e:
+        print(f"❌ 验证过程出错: {e}")
+        import traceback
+        traceback.print_exc()
     
-    # 2. 置信度分布比较
-    # distribution_results = validator.evaluate_confidence_distribution(
-    #     args.real_test_data, args.synthetic_data
-    # )
-    
-    # 3. 决策边界稳定性
-    # synthetic_samples = list(Path(args.synthetic_data).glob("**/*.png"))
-    # stability_results = validator.evaluate_decision_boundary_stability(synthetic_samples)
-    
-    # 4. 错误模式分析
-    # error_results = validator.evaluate_error_analysis(args.synthetic_data)
-    
-    # 生成报告
-    # results = {
-    #     'calibration': calibration_results,
-    #     'distribution': distribution_results,
-    #     'stability': stability_results,
-    #     'errors': error_results
-    # }
-    
-    # report = validator.generate_reliability_report(results, output_path)
-    
-    print(f"\n✅ 验证完成！报告保存在: {output_path}")
-    
+    print("\n✅ 验证完成！")
+
 if __name__ == "__main__":
     main()
