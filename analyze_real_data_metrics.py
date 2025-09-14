@@ -67,7 +67,7 @@ def load_classifier(checkpoint_path, device):
     model.eval()
     return model
 
-def load_real_data(data_dir, max_samples_per_user=50):
+def load_real_data(data_dir, max_samples_per_user=100):
     """加载真实微多普勒数据"""
     data_dir = Path(data_dir)
     samples = []
