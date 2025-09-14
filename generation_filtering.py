@@ -440,7 +440,7 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
 def generate_and_filter_advanced(model, vae, transport, classifier, user_id, 
                                  target_samples=800, batch_size=100, 
                                  confidence_threshold=0.95, margin_threshold=0.2,
-                                 stability_threshold=0.8, diversity_threshold=0.12,
+                                 stability_threshold=0.8, diversity_threshold=0.1,
                                  user_specificity_threshold=0.1, 
                                  conservative_mode=False, cfg_scale=12.0, 
                                  domain_coverage=True,
@@ -487,7 +487,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     print(f"   2. 用户特异性: >{user_specificity_threshold:.2f}")
     print(f"   3. 预测稳定性: >{stability_threshold:.2f}")
     print(f"   4. 决策边界: >{margin_threshold:.2f}")
-    print(f"   5. 特征多样性: >{diversity_threshold:.2f}")
+    print(f"   5. 特征多样性: >{diversity_threshold:.2f} (max_sim≤0.9)")
     
     # 存储已收集的特征用于多样性评估
     collected_features = []
@@ -559,9 +559,9 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                 # 反归一化（按照generate_and_filter_samples.py的实现）
                 latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
                 if os.path.exists(latent_stats_path):
-                    stats = torch.load(latent_stats_path, map_location=device)
-                    mean = stats['mean'].to(device)
-                    std = stats['std'].to(device)
+                    latent_stats = torch.load(latent_stats_path, map_location=device)
+                    mean = latent_stats['mean'].to(device)
+                    std = latent_stats['std'].to(device)
                     latent_multiplier = 1.0
                     samples_denorm = (samples * std) / latent_multiplier + mean
                 else:
@@ -742,8 +742,8 @@ def main():
                        help='Decision margin threshold')
     parser.add_argument('--stability_threshold', type=float, default=0.8,
                        help='Augmentation stability threshold')
-    parser.add_argument('--diversity_threshold', type=float, default=0.12,
-                       help='Feature diversity threshold')
+    parser.add_argument('--diversity_threshold', type=float, default=0.1,
+                       help='Feature diversity threshold (1.0 - max_similarity)')
     parser.add_argument('--user_specificity_threshold', type=float, default=0.1,
                        help='User specificity threshold')
     # 移除visual_quality_threshold参数
