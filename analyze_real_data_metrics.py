@@ -81,10 +81,13 @@ def load_real_data(data_dir, max_samples_per_user=100):
             continue
             
         user_samples = []
+        # 加载所有jpg文件，不受max_samples_per_user限制（实际文件数约150）
         for img_path in user_dir.glob("*.jpg"):
             user_samples.append(str(img_path))
-            if len(user_samples) >= max_samples_per_user:
-                break
+        
+        # 如果文件数超过限制才截取，否则全部加载
+        if len(user_samples) > max_samples_per_user:
+            user_samples = user_samples[:max_samples_per_user]
         
         samples.extend(user_samples)
         labels.extend([user_id - 1] * len(user_samples))  # ID_1 -> label 0, ID_2 -> label 1, etc.
@@ -298,7 +301,7 @@ def main():
                        help='训练好的分类器checkpoint路径')
     parser.add_argument('--output_dir', type=str, default='./real_data_analysis',
                        help='分析结果输出目录')
-    parser.add_argument('--max_samples_per_user', type=int, default=50,
+    parser.add_argument('--max_samples_per_user', type=int, default=100,
                        help='每个用户最大样本数（避免内存溢出）')
     
     args = parser.parse_args()
@@ -354,8 +357,12 @@ def main():
         similarities = analyze_diversity(metrics['features'])
         results['mean_feature_similarity'] = np.mean(similarities)
     
-    # 保存到文件
+    # 保存到文件（修复JSON序列化问题）
     import json
+    # 转换user_statistics中的tuple keys为string
+    if 'user_statistics' in results:
+        results['user_statistics'] = {str(k): v for k, v in results['user_statistics'].items()}
+    
     with open(output_dir / 'analysis_results.json', 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False, default=str)
     
