@@ -81,7 +81,7 @@ def load_real_data(data_dir, max_samples_per_user=50):
             continue
             
         user_samples = []
-        for img_path in user_dir.glob("*.png"):
+        for img_path in user_dir.glob("*.jpg"):
             user_samples.append(str(img_path))
             if len(user_samples) >= max_samples_per_user:
                 break
