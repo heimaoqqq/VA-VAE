@@ -102,7 +102,8 @@ def load_classifier(model_path, device):
         from train_calibrated_classifier import DomainAdaptiveClassifier
         model = DomainAdaptiveClassifier(
             num_classes=checkpoint['num_classes'],
-            backbone='resnet18'
+            dropout_rate=0.3,
+            feature_dim=512
         )
     else:
         from improved_classifier_training import ImprovedClassifier
