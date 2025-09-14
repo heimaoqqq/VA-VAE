@@ -278,14 +278,66 @@ def compute_ece(probs, labels, n_bins=10):
 
 class SplitDataset(Dataset):
     """基于dataset_split.json的数据集类"""
-    def __init__(self, split_data, transform=None):
-        self.data = split_data
+    def __init__(self, split_data, transform=None, debug=False):
         self.transform = transform
         
-        # 创建类别到索引的映射
-        unique_classes = sorted(set(item['class'] for item in self.data))
-        self.class_to_idx = {cls: idx for idx, cls in enumerate(unique_classes)}
-        self.classes = unique_classes
+        if debug:
+            print(f"Split data type: {type(split_data)}")
+            print(f"Split data length: {len(split_data)}")
+            if len(split_data) > 0:
+                print(f"First item type: {type(split_data[0])}")
+                print(f"First item: {split_data[0]}")
+        
+        # 检查数据格式并转换
+        self.data = []
+        unique_classes = set()
+        
+        for item in split_data:
+            if isinstance(item, dict):
+                # 格式1: [{'path': '...', 'class': '...'}]
+                if 'class' in item and 'path' in item:
+                    self.data.append(item)
+                    unique_classes.add(item['class'])
+                elif 'label' in item and 'path' in item:
+                    # 可能用的是label而不class
+                    self.data.append({'path': item['path'], 'class': item['label']})
+                    unique_classes.add(item['label'])
+                else:
+                    if debug:
+                        print(f"Unknown dict format: {item}")
+            elif isinstance(item, str):
+                # 格式2: ['/path/to/User_01/image1.jpg', ...]
+                # 从路径中提取类别
+                path_parts = Path(item).parts
+                # 寻找User_XX模式
+                user_class = None
+                for part in path_parts:
+                    if part.startswith('User_'):
+                        user_class = part
+                        break
+                
+                if user_class:
+                    self.data.append({'path': item, 'class': user_class})
+                    unique_classes.add(user_class)
+                else:
+                    if debug:
+                        print(f"Cannot extract class from path: {item}")
+            elif isinstance(item, list) and len(item) == 2:
+                # 格式3: [['/path', 'class'], ...]
+                path, class_name = item
+                self.data.append({'path': path, 'class': class_name})
+                unique_classes.add(class_name)
+            else:
+                if debug:
+                    print(f"Unknown item format: {type(item)} - {item}")
+        
+        # 创建类别映射
+        self.classes = sorted(unique_classes)
+        self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
+        
+        if debug:
+            print(f"Processed {len(self.data)} items")
+            print(f"Found {len(self.classes)} classes: {self.classes[:5]}...")
         
     def __len__(self):
         return len(self.data)
@@ -296,7 +348,12 @@ class SplitDataset(Dataset):
         class_name = item['class']
         
         # 加载图像
-        image = Image.open(image_path).convert('RGB')
+        try:
+            image = Image.open(image_path).convert('RGB')
+        except Exception as e:
+            print(f"Error loading image {image_path}: {e}")
+            # 返回一个黑色图像作为备选
+            image = Image.new('RGB', (256, 256), color='black')
         
         if self.transform:
             image = self.transform(image)
@@ -389,9 +446,15 @@ def main():
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # 创建数据集
-    train_dataset = SplitDataset(split_data['train'], transform=train_transform)
-    val_dataset = SplitDataset(split_data['val'], transform=val_transform)
+    # 创建数据集（启用调试模式）
+    debug_mode = (rank == 0)  # 只在主进程输出调试信息
+    
+    train_dataset = SplitDataset(split_data['train'], 
+                                transform=train_transform, 
+                                debug=debug_mode)
+    val_dataset = SplitDataset(split_data['val'], 
+                              transform=val_transform, 
+                              debug=debug_mode)
     
     if rank == 0:
         print(f"Train samples: {len(train_dataset)}")
