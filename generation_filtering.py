@@ -439,9 +439,9 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
 
 def generate_and_filter_advanced(model, vae, transport, classifier, user_id, 
                                  target_samples=800, batch_size=100, 
-                                 confidence_threshold=0.985, margin_threshold=0.985,
-                                 stability_threshold=0.85, diversity_threshold=0.700,
-                                 user_specificity_threshold=0.985, 
+                                 confidence_threshold=0.8, margin_threshold=0.4,
+                                 stability_threshold=0.7, diversity_threshold=0.6,
+                                 user_specificity_threshold=0.4, 
                                  conservative_mode=False, cfg_scale=12.0, 
                                  domain_coverage=True,
                                  output_dir='./filtered_samples', device=None, rank=0,
@@ -702,17 +702,17 @@ def main():
                        help='Target number of samples per user')
     parser.add_argument('--batch_size', type=int, default=100, 
                        help='Batch size for generation')
-    # 合成样本筛选阈值（平衡策略-优于75%真实样本质量）
-    parser.add_argument('--confidence_threshold', type=float, default=0.985,
-                       help='高于75%真实样本的置信度要求')
-    parser.add_argument('--margin_threshold', type=float, default=0.985,
-                       help='高于75%真实样本的决策边界要求')
-    parser.add_argument('--stability_threshold', type=float, default=0.85,
+    # 合成样本筛选阈值（平衡策略-质量与覆盖度并重）
+    parser.add_argument('--confidence_threshold', type=float, default=0.8,
+                       help='置信度要求（域适应平衡点）')
+    parser.add_argument('--margin_threshold', type=float, default=0.4,
+                       help='决策边界要求（差值形式，0-1范围）')
+    parser.add_argument('--stability_threshold', type=float, default=0.7,
                        help='预测稳定性要求')
-    parser.add_argument('--diversity_threshold', type=float, default=0.700,
+    parser.add_argument('--diversity_threshold', type=float, default=0.6,
                        help='特征多样性阈值(1-相似度)')
-    parser.add_argument('--user_specificity_threshold', type=float, default=0.985,
-                       help='高于75%真实样本的用户特异性要求')
+    parser.add_argument('--user_specificity_threshold', type=float, default=0.4,
+                       help='用户特异性要求（平衡质量与数量）')
     # 移除visual_quality_threshold参数
     parser.add_argument('--conservative_mode', action='store_true',
                        help='Enable conservative filtering (stricter thresholds)')
