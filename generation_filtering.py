@@ -280,33 +280,107 @@ def load_classifier(checkpoint_path, device):
     return model
 
 
-def compute_multi_metrics(images, classifier, user_id, device):
-    """计算多个评估指标"""
+def extract_features(images, classifier, device):
+    """提取图像特征用于多样性评估"""
     transform = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    metrics_list = []
+    features_list = []
+    
+    with torch.no_grad():
+        for img in images:
+            img_tensor = transform(img).unsqueeze(0).to(device)
+            # 提取backbone特征（在分类头之前）
+            features = classifier.backbone(img_tensor)
+            features_list.append(features.cpu().numpy().flatten())
+    
+    return np.array(features_list)
+
+
+def compute_diversity_metrics(features):
+    """计算特征多样性指标"""
+    if len(features) < 2:
+        return {'diversity_score': 0.0, 'avg_pairwise_dist': 0.0}
+    
+    cosine_sim_matrix = cosine_similarity(features)
+    upper_triangle = np.triu(cosine_sim_matrix, k=1)
+    avg_similarity = np.sum(upper_triangle) / (len(features) * (len(features) - 1) / 2)
+    diversity_score = 1.0 - avg_similarity
+    
+    from scipy.spatial.distance import pdist
+    pairwise_distances = pdist(features, metric='euclidean')
+    avg_pairwise_dist = np.mean(pairwise_distances)
+    
+    return {
+        'diversity_score': diversity_score,
+        'avg_pairwise_dist': avg_pairwise_dist,
+        'avg_similarity': avg_similarity
+    }
+
+
+def simple_quality_check(images):
+    """简化的图像质量检查（仅检测基本异常）"""
+    quality_scores = []
     
     for img in images:
-        # 转换图像
+        img_array = np.array(img)
+        
+        # 只检测基本像素值异常
+        pixel_mean = np.mean(img_array)
+        pixel_std = np.std(img_array)
+        
+        # 简单的质量分数：只检查是否全黑/全白或无变化
+        is_valid = (
+            10 < pixel_mean < 245 and  # 不是全黑或全白
+            pixel_std > 5              # 有一定变化
+        )
+        
+        quality_score = {
+            'pixel_mean': pixel_mean,
+            'pixel_std': pixel_std,
+            'is_valid': is_valid,
+            'overall': 1.0 if is_valid else 0.0
+        }
+        
+        quality_scores.append(quality_score)
+    
+    return quality_scores
+
+
+def compute_user_specific_metrics(images, classifier, user_id, device, user_prototypes=None):
+    """计算用户特定指标"""
+    transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    user_metrics_list = []
+    
+    for img in images:
         img_tensor = transform(img).unsqueeze(0).to(device)
         
         with torch.no_grad():
-            # 获取分类器输出
+            # 获取分类器输出和特征
             outputs = classifier(img_tensor)
             probs = F.softmax(outputs, dim=1)
+            features = classifier.backbone(img_tensor)
             
-            # 1. 置信度
+            # 1. 基本指标
             confidence, pred = torch.max(probs, dim=1)
-            
-            # 2. 决策边界
             sorted_probs, _ = torch.sort(probs, dim=1, descending=True)
             margin = (sorted_probs[0, 0] - sorted_probs[0, 1]).item()
             
-            # 3. 增强稳定性（测试不同的增强版本）
+            # 2. 用户特异性分数（与其他用户的区分度）
+            user_prob = probs[0, user_id].item()
+            other_probs = torch.cat([probs[0, :user_id], probs[0, user_id+1:]])
+            max_other_prob = torch.max(other_probs).item()
+            user_specificity = user_prob - max_other_prob
+            
+            # 3. 增强稳定性
             aug_preds = []
             for _ in range(3):
                 aug_transform = transforms.Compose([
@@ -321,39 +395,61 @@ def compute_multi_metrics(images, classifier, user_id, device):
                 aug_pred = torch.argmax(aug_outputs, dim=1)
                 aug_preds.append(aug_pred.item())
             
-            # 计算稳定性（预测一致性）
             stability = sum([p == pred.item() for p in aug_preds]) / len(aug_preds)
+            
+            # 4. 与用户原型的相似度（如果提供）
+            prototype_similarity = 0.0
+            if user_prototypes is not None and user_id in user_prototypes:
+                prototype_features = user_prototypes[user_id]
+                current_features = features.cpu().numpy().flatten()
+                prototype_similarity = cosine_similarity(
+                    [current_features], [prototype_features]
+                )[0, 0]
             
             metrics = {
                 'predicted': pred.item(),
                 'confidence': confidence.item(),
                 'margin': margin,
                 'stability': stability,
-                'correct': pred.item() == user_id
+                'user_specificity': user_specificity,
+                'prototype_similarity': prototype_similarity,
+                'correct': pred.item() == user_id,
+                'features': features.cpu().numpy().flatten()
             }
             
-            metrics_list.append(metrics)
+            user_metrics_list.append(metrics)
     
-    return metrics_list
+    return user_metrics_list
 
 
 def generate_and_filter_advanced(model, vae, transport, classifier, user_id, 
                                  target_samples=800, batch_size=100, 
                                  confidence_threshold=0.95, margin_threshold=0.2,
-                                 stability_threshold=0.8, cfg_scale=12.0, 
-                                 output_dir='./filtered_samples', device=None, rank=0):
+                                 stability_threshold=0.8, diversity_threshold=0.3,
+                                 user_specificity_threshold=0.1, 
+                                 conservative_mode=False, cfg_scale=12.0, 
+                                 domain_coverage=True,
+                                 output_dir='./filtered_samples', device=None, rank=0,
+                                 user_prototypes=None):
     """为单个用户生成并使用多指标筛选样本"""
     
-    # 创建采样器和采样函数
+    # 域覆盖策略：多样化生成条件
+    if domain_coverage:
+        # 定义不同的生成条件组合（覆盖不同域）
+        domain_conditions = [
+            {"cfg": cfg_scale * 0.7, "steps": 200, "name": "low_guidance"},     # 低引导，更多样
+            {"cfg": cfg_scale, "steps": 300, "name": "standard"},              # 标准设置
+            {"cfg": cfg_scale * 1.3, "steps": 400, "name": "high_guidance"},   # 高引导，更精确
+        ]
+        samples_per_condition = target_samples // len(domain_conditions)
+        print(f"🌐 域覆盖模式: {len(domain_conditions)}种生成条件，每种{samples_per_condition}张")
+    else:
+        # 单一条件生成
+        domain_conditions = [{"cfg": cfg_scale, "steps": 300, "name": "single"}]
+        samples_per_condition = target_samples
+    
+    # 创建采样器（将在循环中动态调整参数）
     sampler = Sampler(transport)
-    sample_fn = sampler.sample_ode(
-        sampling_method="dopri5",
-        num_steps=300,
-        atol=1e-6,
-        rtol=1e-3,
-        reverse=False,
-        timestep_shift=0.1
-    )
     
     # 创建输出目录
     user_dir = Path(output_dir) / f"User_{user_id:02d}"
@@ -363,110 +459,177 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     total_generated = 0
     
     print(f"🎯 开始为User_{user_id:02d}生成样本，目标: {target_samples}张")
-    print(f"📊 筛选标准: 置信度>{confidence_threshold:.2f}, 边界>{margin_threshold:.2f}, 稳定性>{stability_threshold:.2f}")
+    print(f"📊 统一筛选标准（按文献重要性排序）:")
+    print(f"   1. 身份一致性(置信度): >{confidence_threshold:.2f}")
+    print(f"   2. 用户特异性: >{user_specificity_threshold:.2f}")
+    print(f"   3. 预测稳定性: >{stability_threshold:.2f}")
+    print(f"   4. 决策边界: >{margin_threshold:.2f}")
+    print(f"   5. 特征多样性: >{diversity_threshold:.2f}")
+    
+    # 存储已收集的特征用于多样性评估
+    collected_features = []
+    condition_stats = {cond["name"]: 0 for cond in domain_conditions}
     
     with torch.no_grad():
-        while len(collected_samples) < target_samples:
-            # 生成一批样本
-            current_batch_size = min(batch_size, target_samples - len(collected_samples))
+        # 按域条件循环生成
+        for condition in domain_conditions:
+            condition_target = samples_per_condition
+            condition_collected = 0
             
-            # 准备条件
-            y = torch.tensor([user_id] * current_batch_size, device=device)
+            # 为当前条件创建特定的采样函数
+            current_sample_fn = sampler.sample_ode(
+                sampling_method="dopri5",
+                num_steps=condition["steps"],
+                atol=1e-6,
+                rtol=1e-3,
+                reverse=False,
+                time_shifting_factor=None
+            )
             
-            # 创建随机噪声
-            z = torch.randn(current_batch_size, 32, 16, 16, device=device)
+            print(f"🌍 生成域: {condition['name']} (CFG={condition['cfg']:.1f}, Steps={condition['steps']})")
             
-            # CFG采样
-            if cfg_scale > 1.0:
-                z_cfg = torch.cat([z, z], 0)
-                y_null = torch.tensor([31] * current_batch_size, device=device)
-                y_cfg = torch.cat([y, y_null], 0)
+            while condition_collected < condition_target and len(collected_samples) < target_samples:
+                # 生成一批样本
+                remaining_total = target_samples - len(collected_samples)
+                remaining_condition = condition_target - condition_collected
+                current_batch_size = min(batch_size, remaining_condition, remaining_total)
                 
-                cfg_interval_start = 0.11
-                model_kwargs = dict(y=y_cfg, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
+                # 准备条件
+                y = torch.tensor([user_id] * current_batch_size, device=device)
                 
-                if hasattr(model, 'forward_with_cfg'):
-                    samples = sample_fn(z_cfg, model.forward_with_cfg, **model_kwargs)
+                # 创建随机噪声
+                z = torch.randn(current_batch_size, 4, 32, 32, device=device)
+                
+                # 使用当前域条件生成样本
+                current_cfg = condition["cfg"]
+                if current_cfg > 1.0:
+                    # 使用CFG
+                    model_kwargs = {"y": y}
+                    samples = current_sample_fn(
+                        z, 
+                        model.forward_with_cfg, 
+                        **model_kwargs, 
+                        cfg_scale=current_cfg, 
+                        verbose=False
+                    )[0]
                 else:
-                    def model_fn_cfg(x, t, **kwargs):
-                        pred = model(x, t, **kwargs)
-                        pred_cond, pred_uncond = pred.chunk(2, dim=0)
-                        return pred_uncond + cfg_scale * (pred_cond - pred_uncond)
-                    samples = sample_fn(z_cfg, model_fn_cfg, **model_kwargs)
+                    # 不使用CFG
+                    samples = current_sample_fn(
+                        z, 
+                        model.forward, 
+                        y=y, 
+                        verbose=False
+                    )[0]
                 
-                samples = samples[-1]
-                samples, _ = samples.chunk(2, dim=0)
-            else:
-                samples = sample_fn(z, model, **dict(y=y))
-                samples = samples[-1]
-            
-            # 反归一化
-            latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
-            if os.path.exists(latent_stats_path):
-                stats = torch.load(latent_stats_path, map_location=device)
-                mean = stats['mean'].to(device)
-                std = stats['std'].to(device)
-                latent_multiplier = 1.0
-                samples_denorm = (samples * std) / latent_multiplier + mean
-            else:
-                # 备用：从数据集计算
-                try:
-                    from LightningDiT.datasets.img_latent_dataset import ImgLatentDataset
-                    train_dataset = ImgLatentDataset('./latents_safetensors/train', latent_norm=True)
-                    stats = train_dataset.compute_latent_stats()
-                    mean = stats['mean'].to(device).squeeze(0)
-                    std = stats['std'].to(device).squeeze(0)
-                    
-                    # 保存统计文件
-                    os.makedirs('./latents_safetensors/train', exist_ok=True)
-                    torch.save({'mean': mean, 'std': std}, './latents_safetensors/train/latent_stats.pt')
-                    
-                    samples_denorm = (samples * std) / 1.0 + mean
-                except:
-                    print("⚠️ 无法加载latent统计，使用原始样本")
-                    samples_denorm = samples
-            
-            # VAE解码
-            if vae is not None:
-                try:
-                    decoded_images = vae.decode_to_images(samples_denorm)
-                    images_pil = [Image.fromarray(img) for img in decoded_images]
-                    
-                    # 计算多指标
-                    metrics_list = compute_multi_metrics(images_pil, classifier, user_id, device)
-                    
-                    # 筛选高质量样本
-                    batch_accepted = 0
-                    for i, metrics in enumerate(metrics_list):
-                        if (metrics['correct'] and 
-                            metrics['confidence'] > confidence_threshold and
-                            metrics['margin'] > margin_threshold and
-                            metrics['stability'] > stability_threshold):
+                # VAE解码
+                if vae is not None:
+                    try:
+                        decoded_images = vae.decode_to_images(samples)
+                        images_pil = [Image.fromarray(img) for img in decoded_images]
+                        
+                        # 计算用户特定指标
+                        metrics_list = compute_user_specific_metrics(
+                            images_pil, classifier, user_id, device, user_prototypes
+                        )
+                        
+                        # 简化的质量检查
+                        visual_quality_scores = simple_quality_check(images_pil)
+                        
+                        # 提取当前批次的特征
+                        current_features = [m['features'] for m in metrics_list]
+                        
+                        # 筛选高质量样本
+                        batch_accepted = 0
+                        batch_candidates = []  # 候选样本
+                        
+                        # 第一步：基本质量筛选
+                        for i, metrics in enumerate(metrics_list):
+                            # 应用保守模式调整阈值
+                            actual_conf_thresh = confidence_threshold * (1.05 if conservative_mode else 1.0)
+                            actual_margin_thresh = margin_threshold * (1.1 if conservative_mode else 1.0)
+                            actual_stability_thresh = stability_threshold * (1.05 if conservative_mode else 1.0)
                             
-                            # 保存图像
+                            # 核心4指标筛选（按文献重要性排序）
+                            if (metrics['correct'] and 
+                                metrics['confidence'] > actual_conf_thresh and      # 1. 身份一致性(最重要)
+                                metrics['user_specificity'] > user_specificity_threshold and  # 2. 用户特异性
+                                metrics['stability'] > actual_stability_thresh and  # 3. 预测稳定性
+                                metrics['margin'] > actual_margin_thresh and        # 4. 决策边界
+                                visual_quality_scores[i]['is_valid']):              # 5. 基本有效性
+                                
+                                # 简化的统计异常检测（仅在保守模式下）
+                                if conservative_mode and len(collected_features) > 15:
+                                    try:
+                                        # 使用简单的Z-score检测
+                                        feature_array = np.array(collected_features)
+                                        current_feature = metrics['features']
+                                        
+                                        # 计算与现有样本的欧氏距离
+                                        distances = [np.linalg.norm(current_feature - f) for f in feature_array]
+                                        mean_dist = np.mean(distances)
+                                        std_dist = np.std(distances)
+                                        
+                                        # Z-score > 2.5 被认为异常
+                                        if std_dist > 0 and (distances[-1] - mean_dist) / std_dist > 2.5:
+                                            continue
+                                    except:
+                                        pass
+                                
+                                batch_candidates.append({
+                                    'image': images_pil[i],
+                                    'features': metrics['features'],
+                                    'metrics': metrics,
+                                    'index': i
+                                })
+                        
+                        # 第二步：多样性筛选
+                        for candidate in batch_candidates:
+                            # 检查与已收集样本的多样性
+                            if len(collected_features) > 0:
+                                candidate_features = candidate['features'].reshape(1, -1)
+                                collected_array = np.array(collected_features)
+                                
+                                # 计算与现有样本的最大相似度
+                                similarities = cosine_similarity(candidate_features, collected_array)[0]
+                                max_similarity = np.max(similarities)
+                                diversity_score = 1.0 - max_similarity
+                                
+                                # 如果多样性不足，跳过
+                                if diversity_score < diversity_threshold:
+                                    continue
+                            
+                            # 通过所有筛选，保存样本
                             save_path = user_dir / f"sample_{len(collected_samples):06d}.png"
-                            images_pil[i].save(save_path)
+                            candidate['image'].save(save_path)
                             collected_samples.append(save_path)
+                            collected_features.append(candidate['features'])
                             batch_accepted += 1
                             
                             if len(collected_samples) >= target_samples:
                                 break
+                        
+                        # 更新条件统计
+                        condition_collected += batch_accepted
+                        condition_stats[condition["name"]] += batch_accepted
+                        
+                        if len(collected_samples) >= target_samples:
+                            break
+                        
+                        total_generated += current_batch_size
+                        
+                        # 打印进度（每成功收集100张或完成时）
+                        if (len(collected_samples) > 0 and len(collected_samples) % 100 == 0) or len(collected_samples) >= target_samples:
+                            success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
+                            print(f"User_{user_id:02d}: 已收集 {len(collected_samples)}/{target_samples} | "
+                                  f"生成了 {total_generated} 张 | 成功率: {success_rate:.1f}%")
                     
-                    total_generated += current_batch_size
-                    
-                    # 打印进度（每成功收集100张或完成时）
-                    if (len(collected_samples) > 0 and len(collected_samples) % 100 == 0) or len(collected_samples) >= target_samples:
-                        success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
-                        print(f"User_{user_id:02d}: 已收集 {len(collected_samples)}/{target_samples} | "
-                              f"生成了 {total_generated} 张 | 成功率: {success_rate:.1f}%")
-                    
-                except Exception as e:
-                    print(f"❌ 处理批次时出错: {e}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                print("❌ VAE未加载，无法解码")
-                break
+                    except Exception as e:
+                        print(f"❌ 处理批次时出错: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    print("❌ VAE未加载，无法解码")
+                    break
     
     # 最终统计
     final_success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
@@ -500,8 +663,20 @@ def main():
                        help='Decision margin threshold')
     parser.add_argument('--stability_threshold', type=float, default=0.8,
                        help='Augmentation stability threshold')
+    parser.add_argument('--diversity_threshold', type=float, default=0.3,
+                       help='Feature diversity threshold')
+    parser.add_argument('--user_specificity_threshold', type=float, default=0.1,
+                       help='User specificity threshold')
+    # 移除visual_quality_threshold参数
+    parser.add_argument('--conservative_mode', action='store_true',
+                       help='Enable conservative filtering (stricter thresholds)')
+    # 移除max_outlier_ratio参数（简化版本不需要）
     parser.add_argument('--cfg_scale', type=float, default=12.0, 
-                       help='CFG scale for generation')
+                       help='Base CFG scale for generation')
+    parser.add_argument('--domain_coverage', action='store_true', default=True,
+                       help='Enable domain coverage with diverse generation conditions')
+    parser.add_argument('--single_condition', action='store_true',
+                       help='Use single generation condition (disable domain coverage)')
     parser.add_argument('--start_user', type=int, default=0,
                        help='Starting user ID')
     parser.add_argument('--end_user', type=int, default=30,
@@ -520,7 +695,14 @@ def main():
         print(f"   - 置信度: {args.confidence_threshold}")
         print(f"   - 决策边界: {args.margin_threshold}")
         print(f"   - 稳定性: {args.stability_threshold}")
-        print(f"⚙️ CFG Scale: {args.cfg_scale}")
+        print(f"   - 多样性: {args.diversity_threshold}")
+        print(f"   - 用户特异性: {args.user_specificity_threshold}")
+        print(f"   - 简化质量检查: 开启")
+        if args.conservative_mode:
+            print(f"   - 保守模式: 开启（更严格的统计检测）")
+        domain_coverage_enabled = not args.single_condition
+        print(f"🌐 域覆盖: {'开启' if domain_coverage_enabled else '关闭'}")
+        print(f"⚙️ 基础CFG: {args.cfg_scale}")
     
     # 加载DiT模型
     model, vae, transport, config, device = load_model_and_config(
@@ -567,7 +749,12 @@ def main():
             confidence_threshold=args.confidence_threshold,
             margin_threshold=args.margin_threshold,
             stability_threshold=args.stability_threshold,
+            diversity_threshold=args.diversity_threshold,
+            user_specificity_threshold=args.user_specificity_threshold,
+            # visual_quality_threshold 参数已移除
+            conservative_mode=args.conservative_mode,
             cfg_scale=args.cfg_scale,
+            domain_coverage=not args.single_condition,
             output_dir=args.output_dir,
             device=device,
             rank=rank
