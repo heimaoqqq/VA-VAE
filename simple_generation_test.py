@@ -73,11 +73,11 @@ def load_models(args, device, rank=0):
     
     # 创建transport
     transport = create_transport(
-        config['sampler']['sample_method'],
-        config['sampler']['sample_steps'],
-        config['sampler'].get('snr_type', 'uniform'),
-        config['sampler'].get('top_p', 0.0),
-        config['sampler'].get('top_k', 0.0),
+        config['sample'].get('sampling_method', 'dopri5'),
+        config['sample'].get('num_sampling_steps', 250),
+        config['transport'].get('snr_type', 'uniform'),
+        config['sample'].get('top_p', 0.0),
+        config['sample'].get('top_k', 0.0),
     )
     
     # 加载VAE
