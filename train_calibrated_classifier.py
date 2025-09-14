@@ -7,13 +7,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 import torchvision.transforms as transforms
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from torchvision.datasets import ImageFolder
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data.distributed import DistributedSampler
 import numpy as np
 from pathlib import Path
 import argparse
 from tqdm import tqdm
 import json
+import os
+from PIL import Image
 
 
 class LabelSmoothingLoss(nn.Module):
@@ -159,11 +164,17 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, use_co
         # 对比损失（增强身份特征学习）
         contrast_loss = torch.tensor(0.0).to(device)
         if use_contrastive and epoch > 5:  # 前5个epoch只用分类损失
+            # 获取实际模型（处理DDP wrapper）
+            actual_model = model.module if hasattr(model, 'module') else model
+            
             # 计算特征相似度
-            feature_sim = model.compute_feature_similarity(features)
+            feature_sim = actual_model.compute_feature_similarity(features)
+            
+            # 动态获取类别数量
+            num_classes = feature_sim.size(1)
             
             # 对比损失：同类特征相似，异类特征分离
-            labels_one_hot = F.one_hot(labels, num_classes=31).float()
+            labels_one_hot = F.one_hot(labels, num_classes=num_classes).float()
             positive_sim = (feature_sim * labels_one_hot).sum(dim=1)
             negative_sim = (feature_sim * (1 - labels_one_hot)).max(dim=1)[0]
             
@@ -265,10 +276,69 @@ def compute_ece(probs, labels, n_bins=10):
     return ece
 
 
+class SplitDataset(Dataset):
+    """基于dataset_split.json的数据集类"""
+    def __init__(self, split_data, transform=None):
+        self.data = split_data
+        self.transform = transform
+        
+        # 创建类别到索引的映射
+        unique_classes = sorted(set(item['class'] for item in self.data))
+        self.class_to_idx = {cls: idx for idx, cls in enumerate(unique_classes)}
+        self.classes = unique_classes
+        
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        image_path = item['path']
+        class_name = item['class']
+        
+        # 加载图像
+        image = Image.open(image_path).convert('RGB')
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        # 返回图像和类别索引
+        label = self.class_to_idx[class_name]
+        return image, label
+
+
+def setup_ddp():
+    """初始化DDP环境"""
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+    else:
+        print("Not using distributed training")
+        return 0, 1, 0
+    
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend='nccl')
+    
+    return rank, world_size, local_rank
+
+
+def cleanup_ddp():
+    """清理DDP环境"""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def load_dataset_split(split_file):
+    """加载数据集划分文件"""
+    with open(split_file, 'r') as f:
+        split_data = json.load(f)
+    return split_data
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train_data', type=str, required=True)
-    parser.add_argument('--val_data', type=str, required=True)
+    parser.add_argument('--split_file', type=str, default='/kaggle/working/dataset_split.json',
+                       help='数据集划分文件路径')
     parser.add_argument('--output_dir', type=str, default='./calibrated_classifier')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=16)  # 小数据集用小batch
@@ -281,11 +351,27 @@ def main():
     
     args = parser.parse_args()
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # 初始化DDP
+    rank, world_size, local_rank = setup_ddp()
+    is_distributed = world_size > 1
     
-    # 数据准备
+    device = torch.device(f'cuda:{local_rank}' if torch.cuda.is_available() else 'cpu')
+    
+    # 只在主进程创建输出目录
+    if rank == 0:
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    
+    if is_distributed:
+        dist.barrier()  # 等待主进程创建完目录
+    
+    # 加载数据集划分
+    if rank == 0:
+        print(f"Loading dataset split from: {args.split_file}")
+    
+    split_data = load_dataset_split(args.split_file)
+    
+    # 数据增强
     train_transform = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.RandomHorizontalFlip(p=0.5),
@@ -303,29 +389,66 @@ def main():
                            std=[0.229, 0.224, 0.225])
     ])
     
-    train_dataset = ImageFolder(args.train_data, transform=train_transform)
-    val_dataset = ImageFolder(args.val_data, transform=val_transform)
+    # 创建数据集
+    train_dataset = SplitDataset(split_data['train'], transform=train_transform)
+    val_dataset = SplitDataset(split_data['val'], transform=val_transform)
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, 
-                             shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, 
-                           shuffle=False, num_workers=4)
+    if rank == 0:
+        print(f"Train samples: {len(train_dataset)}")
+        print(f"Val samples: {len(val_dataset)}")
+        print(f"Classes: {len(train_dataset.classes)}")
     
-    # 模型和优化器
-    model = DomainAdaptiveClassifier(num_classes=31, dropout_rate=args.dropout)
+    # 分布式采样器
+    if is_distributed:
+        train_sampler = DistributedSampler(train_dataset, 
+                                         num_replicas=world_size, 
+                                         rank=rank, 
+                                         shuffle=True)
+        val_sampler = DistributedSampler(val_dataset, 
+                                       num_replicas=world_size, 
+                                       rank=rank, 
+                                       shuffle=False)
+    else:
+        train_sampler = None
+        val_sampler = None
+    
+    # 数据加载器
+    train_loader = DataLoader(train_dataset, 
+                             batch_size=args.batch_size, 
+                             sampler=train_sampler,
+                             shuffle=(train_sampler is None),
+                             num_workers=2,  # 分布式训练用较少worker
+                             pin_memory=True)
+    
+    val_loader = DataLoader(val_dataset, 
+                           batch_size=args.batch_size, 
+                           sampler=val_sampler,
+                           shuffle=False,
+                           num_workers=2,
+                           pin_memory=True)
+    
+    # 模型初始化
+    num_classes = len(train_dataset.classes)
+    model = DomainAdaptiveClassifier(num_classes=num_classes, dropout_rate=args.dropout)
     model.to(device)
     
-    # 计算总参数量
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"总参数量: {total_params:,}")
-    print(f"可训练参数量: {trainable_params:,}")
+    # 包装为DDP模型
+    if is_distributed:
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
+    
+    # 计算参数量（只在主进程打印）
+    if rank == 0:
+        model_for_counting = model.module if is_distributed else model
+        total_params = sum(p.numel() for p in model_for_counting.parameters())
+        trainable_params = sum(p.numel() for p in model_for_counting.parameters() if p.requires_grad)
+        print(f"总参数量: {total_params:,}")
+        print(f"可训练参数量: {trainable_params:,}")
     
     # 损失函数选择
     if args.use_focal_loss:
         criterion = FocalLoss(gamma=2.0)
     else:
-        criterion = LabelSmoothingLoss(num_classes=31, smoothing=args.label_smoothing)
+        criterion = LabelSmoothingLoss(num_classes=num_classes, smoothing=args.label_smoothing)
     
     val_criterion = nn.CrossEntropyLoss()  # 验证时用标准CE
     
@@ -349,8 +472,13 @@ def main():
     history = []
     
     for epoch in range(args.epochs):
-        print(f"\nEpoch {epoch+1}/{args.epochs}")
-        print(f"Learning rate: {scheduler.get_last_lr()[0]:.6f}")
+        # 设置采样器的epoch（用于shuffle）
+        if is_distributed and train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+        
+        if rank == 0:
+            print(f"\nEpoch {epoch+1}/{args.epochs}")
+            print(f"Learning rate: {scheduler.get_last_lr()[0]:.6f}")
         
         # 训练
         train_loss, train_acc, ce_loss, contrast_loss = train_epoch(
@@ -378,31 +506,42 @@ def main():
             'val_ece': val_ece
         })
         
-        print(f"Train Loss: {train_loss:.4f} (CE: {ce_loss:.4f}, Contrast: {contrast_loss:.4f})")
-        print(f"Train Acc: {train_acc:.4f}")
-        print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
-        print(f"Val ECE: {val_ece:.4f}, Feature Std: {feature_std:.4f}")
+        if rank == 0:
+            print(f"Train Loss: {train_loss:.4f} (CE: {ce_loss:.4f}, Contrast: {contrast_loss:.4f})")
+            print(f"Train Acc: {train_acc:.4f}")
+            print(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
+            print(f"Val ECE: {val_ece:.4f}, Feature Std: {feature_std:.4f}")
         
-        # 保存最佳模型（综合考虑ECE和准确率）
-        score = val_acc - val_ece  # 准确率高且校准好
-        if val_ece < best_ece and val_acc > 0.85:  # 准确率不能太低
-            best_ece = val_ece
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'epoch': epoch + 1,
-                'val_acc': val_acc,
-                'val_ece': val_ece,
-                'args': vars(args)
-            }, output_dir / 'best_calibrated_model.pth')
-            print(f"Best model saved with ECE: {val_ece:.4f}")
+        # 保存最佳模型（只在主进程）
+        if rank == 0:
+            score = val_acc - val_ece
+            if val_ece < best_ece and val_acc > 0.85:
+                best_ece = val_ece
+                
+                # 保存模型时要处理DDP wrapper
+                model_to_save = model.module if is_distributed else model
+                torch.save({
+                    'model_state_dict': model_to_save.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'epoch': epoch + 1,
+                    'val_acc': val_acc,
+                    'val_ece': val_ece,
+                    'num_classes': num_classes,
+                    'class_names': train_dataset.classes,
+                    'args': vars(args)
+                }, Path(args.output_dir) / 'best_calibrated_model.pth')
+                print(f"Best model saved with ECE: {val_ece:.4f}")
     
-    # 保存训练历史
-    with open(output_dir / 'training_history.json', 'w') as f:
-        json.dump(history, f, indent=2)
+    # 保存训练历史（只在主进程）
+    if rank == 0:
+        with open(Path(args.output_dir) / 'training_history.json', 'w') as f:
+            json.dump(history, f, indent=2)
+        
+        print(f"\n训练完成！最佳ECE: {best_ece:.4f}")
+        print(f"模型保存在: {args.output_dir}")
     
-    print(f"\n训练完成！最佳ECE: {best_ece:.4f}")
-    print(f"模型保存在: {output_dir}")
+    # 清理DDP
+    cleanup_ddp()
 
 
 if __name__ == "__main__":
