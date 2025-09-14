@@ -440,7 +440,7 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
 def generate_and_filter_advanced(model, vae, transport, classifier, user_id, 
                                  target_samples=800, batch_size=100, 
                                  confidence_threshold=0.95, margin_threshold=0.2,
-                                 stability_threshold=0.8, diversity_threshold=0.3,
+                                 stability_threshold=0.8, diversity_threshold=0.12,
                                  user_specificity_threshold=0.1, 
                                  conservative_mode=False, cfg_scale=12.0, 
                                  domain_coverage=True,
@@ -729,7 +729,7 @@ def main():
                        help='Decision margin threshold')
     parser.add_argument('--stability_threshold', type=float, default=0.8,
                        help='Augmentation stability threshold')
-    parser.add_argument('--diversity_threshold', type=float, default=0.3,
+    parser.add_argument('--diversity_threshold', type=float, default=0.12,
                        help='Feature diversity threshold')
     parser.add_argument('--user_specificity_threshold', type=float, default=0.1,
                        help='User specificity threshold')
