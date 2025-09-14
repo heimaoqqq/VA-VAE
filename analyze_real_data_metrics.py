@@ -87,8 +87,8 @@ def load_real_data(data_dir, max_samples_per_user=50):
                 break
         
         samples.extend(user_samples)
-        labels.extend([user_id] * len(user_samples))
-        print(f"User_{user_id:02d}: {len(user_samples)} samples")
+        labels.extend([user_id - 1] * len(user_samples))  # ID_1 -> label 0, ID_2 -> label 1, etc.
+        print(f"ID_{user_id}: {len(user_samples)} samples")
     
     print(f"📊 总计加载: {len(samples)} 样本")
     return samples, labels
