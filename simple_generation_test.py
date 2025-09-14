@@ -73,11 +73,15 @@ def load_models(args, device, rank=0):
     
     # 创建transport
     transport = create_transport(
-        config['sample'].get('sampling_method', 'dopri5'),
-        config['sample'].get('num_sampling_steps', 250),
-        config['transport'].get('snr_type', 'uniform'),
-        config['sample'].get('top_p', 0.0),
-        config['sample'].get('top_k', 0.0),
+        config['transport']['path_type'],
+        config['transport']['prediction'],
+        config['transport']['loss_weight'],
+        config['transport']['train_eps'],
+        config['transport']['sample_eps'],
+        use_cosine_loss=config['transport'].get('use_cosine_loss', False),
+        use_lognorm=config['transport'].get('use_lognorm', False),
+        partitial_train=config['transport'].get('partitial_train', None),
+        partial_ratio=config['transport'].get('partial_ratio', 1.0),
     )
     
     # 加载VAE
