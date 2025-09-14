@@ -284,52 +284,75 @@ class SplitDataset(Dataset):
         if debug:
             print(f"Split data type: {type(split_data)}")
             print(f"Split data length: {len(split_data)}")
-            if len(split_data) > 0:
-                print(f"First item type: {type(split_data[0])}")
-                print(f"First item: {split_data[0]}")
         
         # 检查数据格式并转换
         self.data = []
         unique_classes = set()
         
-        for item in split_data:
-            if isinstance(item, dict):
-                # 格式1: [{'path': '...', 'class': '...'}]
-                if 'class' in item and 'path' in item:
-                    self.data.append(item)
-                    unique_classes.add(item['class'])
-                elif 'label' in item and 'path' in item:
-                    # 可能用的是label而不class
-                    self.data.append({'path': item['path'], 'class': item['label']})
-                    unique_classes.add(item['label'])
-                else:
-                    if debug:
-                        print(f"Unknown dict format: {item}")
-            elif isinstance(item, str):
-                # 格式2: ['/path/to/User_01/image1.jpg', ...]
-                # 从路径中提取类别
-                path_parts = Path(item).parts
-                # 寻找User_XX模式
-                user_class = None
-                for part in path_parts:
-                    if part.startswith('User_'):
-                        user_class = part
-                        break
+        if isinstance(split_data, dict):
+            # 格式: {"User_01": ["/path1.jpg", "/path2.jpg"], "User_02": [...]}
+            if debug:
+                print(f"Detected user-grouped format with {len(split_data)} users")
+                print(f"Users: {list(split_data.keys())[:5]}...")
+            
+            for user_id, image_paths in split_data.items():
+                if debug and user_id == list(split_data.keys())[0]:
+                    print(f"First user {user_id} has {len(image_paths)} images")
+                    if len(image_paths) > 0:
+                        print(f"First image: {image_paths[0]}")
                 
-                if user_class:
-                    self.data.append({'path': item, 'class': user_class})
-                    unique_classes.add(user_class)
+                for img_path in image_paths:
+                    self.data.append({'path': img_path, 'class': user_id})
+                    unique_classes.add(user_id)
+        
+        elif isinstance(split_data, list):
+            # 其他格式的列表
+            if debug:
+                print(f"Detected list format")
+                if len(split_data) > 0:
+                    print(f"First item type: {type(split_data[0])}")
+                    print(f"First item: {split_data[0]}")
+            
+            for item in split_data:
+                if isinstance(item, dict):
+                    # 格式1: [{'path': '...', 'class': '...'}]
+                    if 'class' in item and 'path' in item:
+                        self.data.append(item)
+                        unique_classes.add(item['class'])
+                    elif 'label' in item and 'path' in item:
+                        # 可能用的是label而不class
+                        self.data.append({'path': item['path'], 'class': item['label']})
+                        unique_classes.add(item['label'])
+                    else:
+                        if debug:
+                            print(f"Unknown dict format: {item}")
+                elif isinstance(item, str):
+                    # 格式2: ['/path/to/User_01/image1.jpg', ...]
+                    # 从路径中提取类别
+                    path_parts = Path(item).parts
+                    # 寻找User_XX模式
+                    user_class = None
+                    for part in path_parts:
+                        if part.startswith('User_'):
+                            user_class = part
+                            break
+                    
+                    if user_class:
+                        self.data.append({'path': item, 'class': user_class})
+                        unique_classes.add(user_class)
+                    else:
+                        if debug:
+                            print(f"Cannot extract class from path: {item}")
+                elif isinstance(item, list) and len(item) == 2:
+                    # 格式3: [['/path', 'class'], ...]
+                    path, class_name = item
+                    self.data.append({'path': path, 'class': class_name})
+                    unique_classes.add(class_name)
                 else:
                     if debug:
-                        print(f"Cannot extract class from path: {item}")
-            elif isinstance(item, list) and len(item) == 2:
-                # 格式3: [['/path', 'class'], ...]
-                path, class_name = item
-                self.data.append({'path': path, 'class': class_name})
-                unique_classes.add(class_name)
-            else:
-                if debug:
-                    print(f"Unknown item format: {type(item)} - {item}")
+                        print(f"Unknown item format: {type(item)} - {item}")
+        else:
+            raise ValueError(f"Unsupported split_data format: {type(split_data)}")
         
         # 创建类别映射
         self.classes = sorted(unique_classes)
