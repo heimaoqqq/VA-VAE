@@ -477,6 +477,10 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     collected_features = []
     condition_stats = {cond["name"]: 0 for cond in domain_conditions}
     
+    # 创建进度条
+    pbar = tqdm(total=target_samples, desc=f"User_{user_id:02d}", unit="样本", 
+                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    
     with torch.no_grad():
         # 按域条件循环生成
         for condition in domain_conditions:
@@ -608,6 +612,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                             collected_samples.append(save_path)
                             collected_features.append(candidate['features'])
                             batch_accepted += 1
+                            pbar.update(1)  # 更新进度条
                             
                             if len(collected_samples) >= target_samples:
                                 break
@@ -621,11 +626,13 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         
                         total_generated += current_batch_size
                         
-                        # 打印进度（每成功收集100张或完成时）
-                        if (len(collected_samples) > 0 and len(collected_samples) % 100 == 0) or len(collected_samples) >= target_samples:
-                            success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
-                            print(f"User_{user_id:02d}: 已收集 {len(collected_samples)}/{target_samples} | "
-                                  f"生成了 {total_generated} 张 | 成功率: {success_rate:.1f}%")
+                        # 更新进度条的后缀信息
+                        success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
+                        pbar.set_postfix({
+                            '生成': total_generated,
+                            '成功率': f'{success_rate:.1f}%',
+                            '当前域': condition["name"]
+                        })
                     
                     except Exception as e:
                         print(f"❌ 处理批次时出错: {e}")
@@ -634,6 +641,9 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                 else:
                     print("❌ VAE未加载，无法解码")
                     break
+    
+    # 关闭进度条
+    pbar.close()
     
     # 最终统计
     final_success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
