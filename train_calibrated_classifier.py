@@ -143,7 +143,7 @@ class DomainAdaptiveClassifier(nn.Module):
         return similarity
 
 
-def train_epoch(model, train_loader, criterion, optimizer, device, epoch, use_contrastive=True):
+def train_epoch(model, train_loader, criterion, optimizer, device, epoch, rank=0, use_contrastive=True):
     """训练一个epoch，包含对比学习"""
     model.train()
     total_loss = 0
@@ -152,7 +152,10 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, use_co
     correct = 0
     total = 0
     
-    for batch_idx, (images, labels) in enumerate(tqdm(train_loader, desc="Training")):
+    # 只在主进程显示进度条
+    iterator = tqdm(train_loader, desc="Training") if rank == 0 else train_loader
+    
+    for batch_idx, (images, labels) in enumerate(iterator):
         images, labels = images.to(device), labels.to(device)
         
         # 前向传播（更新特征库）
@@ -210,7 +213,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device, epoch, use_co
     return avg_loss, accuracy, avg_ce_loss, avg_contrast_loss
 
 
-def evaluate(model, val_loader, criterion, device):
+def evaluate(model, val_loader, criterion, device, rank=0):
     """评估模型"""
     model.eval()
     total_loss = 0
@@ -221,8 +224,11 @@ def evaluate(model, val_loader, criterion, device):
     all_labels = []
     all_features = []
     
+    # 只在主进程显示进度条
+    iterator = tqdm(val_loader, desc="Evaluating") if rank == 0 else val_loader
+    
     with torch.no_grad():
-        for images, labels in tqdm(val_loader, desc="Evaluating"):
+        for images, labels in iterator:
             images, labels = images.to(device), labels.to(device)
             
             logits, features = model(images)
@@ -354,8 +360,26 @@ class SplitDataset(Dataset):
         else:
             raise ValueError(f"Unsupported split_data format: {type(split_data)}")
         
-        # 创建类别映射
-        self.classes = sorted(unique_classes)
+        # 创建类别映射（数值排序）
+        def sort_ids(class_list):
+            """数值排序ID_1, ID_2, ..., ID_31"""
+            def extract_number(class_name):
+                if class_name.startswith('ID_'):
+                    try:
+                        return int(class_name.split('_')[1])
+                    except (IndexError, ValueError):
+                        return float('inf')
+                elif class_name.startswith('User_'):
+                    try:
+                        return int(class_name.split('_')[1])
+                    except (IndexError, ValueError):
+                        return float('inf')
+                else:
+                    return float('inf')
+            
+            return sorted(class_list, key=extract_number)
+        
+        self.classes = sort_ids(list(unique_classes))
         self.class_to_idx = {cls: idx for idx, cls in enumerate(self.classes)}
         
         if debug:
@@ -520,7 +544,7 @@ def main():
     
     # 包装为DDP模型
     if is_distributed:
-        model = DDP(model, device_ids=[local_rank], find_unused_parameters=True)
+        model = DDP(model, device_ids=[local_rank], find_unused_parameters=False)  # 关闭未使用参数检查
     
     # 计算参数量（只在主进程打印）
     if rank == 0:
@@ -568,12 +592,12 @@ def main():
         
         # 训练
         train_loss, train_acc, ce_loss, contrast_loss = train_epoch(
-            model, train_loader, criterion, optimizer, device, epoch
+            model, train_loader, criterion, optimizer, device, epoch, rank
         )
         
         # 验证
         val_loss, val_acc, val_ece, feature_std = evaluate(
-            model, val_loader, val_criterion, device
+            model, val_loader, val_criterion, device, rank
         )
         
         # 更新学习率
