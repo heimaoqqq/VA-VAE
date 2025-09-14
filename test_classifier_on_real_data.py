@@ -148,7 +148,12 @@ def test_on_real_data(model, dataloader, device):
             
             # 前向传播
             outputs = model(images)
-            probabilities = F.softmax(outputs, dim=1)
+            # DomainAdaptiveClassifier可能返回tuple (logits, features)
+            if isinstance(outputs, tuple):
+                logits = outputs[0]  # 取logits
+            else:
+                logits = outputs
+            probabilities = F.softmax(logits, dim=1)
             max_probs, predictions = torch.max(probabilities, dim=1)
             
             # 转换为numpy
