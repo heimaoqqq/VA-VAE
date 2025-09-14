@@ -485,9 +485,12 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     collected_features = []
     condition_stats = {cond["name"]: 0 for cond in domain_conditions}
     
-    # 创建进度条
-    pbar = tqdm(total=target_samples, desc=f"User_{user_id:02d}", unit="样本", 
-                bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
+    # 创建进度条（只在rank 0显示）
+    if rank == 0:
+        pbar = tqdm(total=target_samples, desc=f"User_{user_id:02d}", unit="样本", 
+                    bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}')
+    else:
+        pbar = None
     
     with torch.no_grad():
         # 按域条件循环生成
@@ -580,11 +583,22 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         batch_candidates = []  # 候选样本
                         
                         # 第一步：基本质量筛选
+                        if rank == 0 and len(collected_samples) < 3:  # 调试前3个样本
+                            print(f"  📊 批次筛选调试 (batch_size: {current_batch_size}):")
+                        
                         for i, metrics in enumerate(metrics_list):
                             # 应用保守模式调整阈值
                             actual_conf_thresh = confidence_threshold * (1.05 if conservative_mode else 1.0)
                             actual_margin_thresh = margin_threshold * (1.1 if conservative_mode else 1.0)
                             actual_stability_thresh = stability_threshold * (1.05 if conservative_mode else 1.0)
+                            
+                            # 调试输出每个样本的指标
+                            if rank == 0 and len(collected_samples) < 3:
+                                print(f"    样本 {i+1}: 正确={metrics['correct']}, 置信度={metrics['confidence']:.3f}(>{actual_conf_thresh:.3f}), "
+                                      f"特异性={metrics['user_specificity']:.3f}(>{user_specificity_threshold}), "
+                                      f"稳定性={metrics['stability']:.3f}(>{actual_stability_thresh:.3f}), "
+                                      f"边界={metrics['margin']:.3f}(>{actual_margin_thresh}), "
+                                      f"有效={visual_quality_scores[i]['is_valid']}")
                             
                             # 核心4指标筛选（按文献重要性排序）
                             if (metrics['correct'] and 
@@ -631,8 +645,14 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                                 max_similarity = np.max(similarities)
                                 diversity_score = 1.0 - max_similarity
                                 
+                                # 调试信息：输出相似度和多样性分数
+                                if rank == 0 and len(collected_samples) < 5:  # 只在前5个样本时输出
+                                    print(f"    候选样本 max_sim: {max_similarity:.3f}, diversity: {diversity_score:.3f}, 阈值: {diversity_threshold}")
+                                
                                 # 如果多样性不足，跳过
                                 if diversity_score < diversity_threshold:
+                                    if rank == 0 and len(collected_samples) < 5:
+                                        print(f"    ❌ 多样性不足，跳过")
                                     continue
                             
                             # 通过所有筛选，保存样本
@@ -641,7 +661,8 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                             collected_samples.append(save_path)
                             collected_features.append(candidate['features'])
                             batch_accepted += 1
-                            pbar.update(1)  # 更新进度条
+                            if pbar:
+                                pbar.update(1)  # 更新进度条
                             
                             if len(collected_samples) >= target_samples:
                                 break
@@ -656,12 +677,13 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         total_generated += current_batch_size
                         
                         # 更新进度条的后缀信息
-                        success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
-                        pbar.set_postfix({
-                            '生成': total_generated,
-                            '成功率': f'{success_rate:.1f}%',
-                            '当前域': condition["name"]
-                        })
+                        if pbar:
+                            success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
+                            pbar.set_postfix({
+                                '已生成': total_generated,
+                                '通过率': f'{success_rate:.1f}%',
+                                '域': condition["name"]
+                            })
                     
                     except Exception as e:
                         print(f"❌ 处理批次时出错: {e}")
@@ -672,7 +694,8 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                     break
     
     # 关闭进度条
-    pbar.close()
+    if pbar:
+        pbar.close()
     
     # 最终统计
     final_success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
