@@ -473,19 +473,11 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     collected_samples = []
     total_generated = 0
     
-    # 添加统计信息
+    # 简化统计信息（只统计成功的）
     stats = {
         'total_generated': 0,
         'total_accepted': 0,
-        'basic_filter_passed': 0,
-        'diversity_rejected': 0,
-        'confidence_failed': 0,
-        'stability_failed': 0,
-        'margin_failed': 0,
-        'user_specificity_failed': 0,
-        'incorrect_predictions': 0,
         'collected_diversities': [],  # 存储接受样本的多样性分数
-        'rejected_diversities': [],   # 存储拒绝样本的多样性分数
         'domain_stats': {cond["name"]: {'generated': 0, 'accepted': 0} for cond in domain_conditions}
     }
     
@@ -608,18 +600,6 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                             actual_margin_thresh = margin_threshold * (1.1 if conservative_mode else 1.0)
                             actual_stability_thresh = stability_threshold * (1.05 if conservative_mode else 1.0)
                             
-                            # 统计各项失败原因
-                            if not metrics['correct']:
-                                stats['incorrect_predictions'] += 1
-                            elif metrics['confidence'] <= actual_conf_thresh:
-                                stats['confidence_failed'] += 1
-                            elif metrics['user_specificity'] <= user_specificity_threshold:
-                                stats['user_specificity_failed'] += 1
-                            elif metrics['stability'] <= actual_stability_thresh:
-                                stats['stability_failed'] += 1
-                            elif metrics['margin'] <= actual_margin_thresh:
-                                stats['margin_failed'] += 1
-                            
                             # 核心4指标筛选（按文献重要性排序）
                             if (metrics['correct'] and 
                                 metrics['confidence'] > actual_conf_thresh and      # 1. 身份一致性(最重要)
@@ -627,8 +607,6 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                                 metrics['stability'] > actual_stability_thresh and  # 3. 预测稳定性
                                 metrics['margin'] > actual_margin_thresh and        # 4. 决策边界
                                 visual_quality_scores[i]['is_valid']):              # 5. 基本有效性
-                                
-                                stats['basic_filter_passed'] += 1
                                 
                                 # 简化的统计异常检测（仅在保守模式下）
                                 if conservative_mode and len(collected_features) > 15:
@@ -670,8 +648,6 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                                 
                                 # 如果多样性不足，跳过
                                 if diversity_score < diversity_threshold:
-                                    stats['diversity_rejected'] += 1
-                                    stats['rejected_diversities'].append(diversity_score)
                                     continue
                             
                             # 通过所有筛选，保存样本
@@ -696,13 +672,13 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         if len(collected_samples) >= target_samples:
                             break
                         
-                        total_generated += current_batch_size
+                        # total_generated += current_batch_size  # 已在stats中统计
                         
                         # 更新进度条的后缀信息
                         if pbar:
-                            success_rate = len(collected_samples) / total_generated * 100 if total_generated > 0 else 0
+                            success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
                             pbar.set_postfix({
-                                '已生成': total_generated,
+                                '已生成': stats['total_generated'],
                                 '通过率': f'{success_rate:.1f}%',
                                 '域': condition["name"]
                             })
@@ -719,51 +695,25 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     if pbar:
         pbar.close()
     
-    # 最终统计报告
+    # 简化统计报告
     final_success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
     
     if rank == 0:  # 只在主进程输出统计
-        print(f"\n📊 User_{user_id:02d} 详细统计报告:")
-        print(f"   🎯 目标完成: {len(collected_samples)}/{target_samples} 样本 ({len(collected_samples)/target_samples*100:.1f}%)")
-        print(f"   🏭 总生成: {stats['total_generated']} 张")
-        print(f"   ✅ 总通过率: {final_success_rate:.1f}%")
+        print(f"\n✅ User_{user_id:02d} 完成: {len(collected_samples)}/{target_samples} 样本 | 生成: {stats['total_generated']} 张 | 通过率: {final_success_rate:.1f}%")
         
-        # 筛选阶段统计
-        basic_pass_rate = stats['basic_filter_passed'] / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
-        diversity_pass_rate = stats['total_accepted'] / stats['basic_filter_passed'] * 100 if stats['basic_filter_passed'] > 0 else 0
-        
-        print(f"   📋 筛选阶段:")
-        print(f"      - 基础筛选通过率: {basic_pass_rate:.1f}% ({stats['basic_filter_passed']}/{stats['total_generated']})")
-        print(f"      - 多样性筛选通过率: {diversity_pass_rate:.1f}% ({stats['total_accepted']}/{stats['basic_filter_passed']})")
-        
-        # 失败原因分析
-        if stats['total_generated'] > 0:
-            print(f"   ❌ 失败原因分布:")
-            print(f"      - 预测错误: {stats['incorrect_predictions']} ({stats['incorrect_predictions']/stats['total_generated']*100:.1f}%)")
-            print(f"      - 置信度不足: {stats['confidence_failed']} ({stats['confidence_failed']/stats['total_generated']*100:.1f}%)")
-            print(f"      - 稳定性不足: {stats['stability_failed']} ({stats['stability_failed']/stats['total_generated']*100:.1f}%)")
-            print(f"      - 边界距离不足: {stats['margin_failed']} ({stats['margin_failed']/stats['total_generated']*100:.1f}%)")
-            print(f"      - 用户特异性不足: {stats['user_specificity_failed']} ({stats['user_specificity_failed']/stats['total_generated']*100:.1f}%)")
-            print(f"      - 多样性不足: {stats['diversity_rejected']} ({stats['diversity_rejected']/stats['total_generated']*100:.1f}%)")
-        
-        # 多样性分析
+        # 多样性统计
         if stats['collected_diversities']:
             avg_diversity = np.mean(stats['collected_diversities'])
-            min_diversity = np.min(stats['collected_diversities'])
-            max_diversity = np.max(stats['collected_diversities'])
-            print(f"   🌈 多样性分析:")
-            print(f"      - 接受样本多样性: 平均={avg_diversity:.3f}, 范围=[{min_diversity:.3f}, {max_diversity:.3f}]")
-            
-        if stats['rejected_diversities']:
-            avg_rejected_diversity = np.mean(stats['rejected_diversities'])
-            print(f"      - 拒绝样本多样性: 平均={avg_rejected_diversity:.3f} (阈值={diversity_threshold})")
+            print(f"   🌈 平均多样性: {avg_diversity:.3f}")
         
-        # 各域统计
-        print(f"   🌐 各域表现:")
+        # 各域表现
+        domain_summary = []
         for domain_name, domain_stat in stats['domain_stats'].items():
             if domain_stat['generated'] > 0:
                 domain_rate = domain_stat['accepted'] / domain_stat['generated'] * 100
-                print(f"      - {domain_name}: {domain_stat['accepted']}/{domain_stat['generated']} ({domain_rate:.1f}%)")
+                domain_summary.append(f"{domain_name}:{domain_rate:.0f}%")
+        if domain_summary:
+            print(f"   🌐 各域: {' | '.join(domain_summary)}")
     
     return len(collected_samples)
 
