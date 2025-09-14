@@ -395,18 +395,17 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
             max_other_prob = torch.max(other_probs).item()
             user_specificity = user_prob - max_other_prob
             
-            # 3. 增强稳定性
+            # 3. 预测稳定性（移除不适合微多普勒的数据增强）
+            # 微多普勒时频图的物理结构不应被翻转或旋转破坏
+            # 使用轻微噪声扰动代替几何变换
             aug_preds = []
             for _ in range(3):
-                aug_transform = transforms.Compose([
-                    transforms.RandomHorizontalFlip(p=0.5),
-                    transforms.RandomRotation(degrees=5),
-                    transforms.Resize((256, 256)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-                ])
-                aug_tensor = aug_transform(img).unsqueeze(0).to(device)
-                aug_outputs = classifier(aug_tensor)
+                # 仅添加轻微噪声，不改变时频图的物理意义
+                noise_scale = 0.01
+                noisy_tensor = img_tensor + torch.randn_like(img_tensor) * noise_scale
+                noisy_tensor = torch.clamp(noisy_tensor, 0, 1)  # 确保在有效范围内
+                
+                aug_outputs = classifier(noisy_tensor)
                 aug_pred = torch.argmax(aug_outputs, dim=1)
                 aug_preds.append(aug_pred.item())
             
