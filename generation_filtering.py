@@ -6,6 +6,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+
+# 抑制torch._dynamo错误，回退到eager模式
+try:
+    import torch._dynamo
+    torch._dynamo.config.suppress_errors = True
+except ImportError:
+    pass
 from torch.nn.parallel import DistributedDataParallel as DDP
 import sys
 import os
