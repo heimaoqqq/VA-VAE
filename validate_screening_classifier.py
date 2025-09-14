@@ -40,11 +40,12 @@ class ScreeningClassifierValidator:
         
         # 收集预测概率和真实标签
         for user_id in range(31):
-            user_dir = Path(test_data_dir) / f"User_{user_id:02d}"
+            # 真实数据格式：ID_1到ID_31，jpg格式
+            user_dir = Path(test_data_dir) / f"ID_{user_id + 1}"
             if not user_dir.exists():
                 continue
             
-            for img_file in list(user_dir.glob("*.png"))[:20]:  # 每用户取20个样本
+            for img_file in list(user_dir.glob("*.jpg"))[:50]:  # 每用户取50个样本
                 img = Image.open(img_file).convert('RGB')
                 img_tensor = self.transform(img).unsqueeze(0).to(self.device)
                 
@@ -113,12 +114,23 @@ class ScreeningClassifierValidator:
         """获取数据集的置信度分布"""
         confidences = []
         
+        # 判断是真实数据还是合成数据
+        is_real_data = "真实" in desc
+        
         for user_id in range(31):
-            user_dir = Path(data_dir) / f"User_{user_id:02d}"
+            if is_real_data:
+                # 真实数据格式：ID_1到ID_31，jpg格式
+                user_dir = Path(data_dir) / f"ID_{user_id + 1}"
+                file_pattern = "*.jpg"
+            else:
+                # 合成数据格式：User_00到User_30，png格式
+                user_dir = Path(data_dir) / f"User_{user_id:02d}"
+                file_pattern = "*.png"
+            
             if not user_dir.exists():
                 continue
             
-            for img_file in tqdm(list(user_dir.glob("*.png"))[:30], 
+            for img_file in tqdm(list(user_dir.glob(file_pattern))[:50], 
                                desc=f"处理{desc}", leave=False):
                 img = Image.open(img_file).convert('RGB')
                 img_tensor = self.transform(img).unsqueeze(0).to(self.device)
@@ -190,6 +202,7 @@ class ScreeningClassifierValidator:
         }
         
         for user_id in range(31):
+            # 合成数据格式：User_00到User_30，png格式
             user_dir = Path(synthetic_data_dir) / f"User_{user_id:02d}"
             if not user_dir.exists():
                 continue
