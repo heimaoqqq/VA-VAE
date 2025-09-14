@@ -282,7 +282,8 @@ def load_classifier(checkpoint_path, device):
     
     print(f"✅ 分类器加载完成: {checkpoint_path}")
     if 'epoch' in checkpoint:
-        print(f"📊 Epoch: {checkpoint['epoch']}, Best Acc: {checkpoint.get('best_acc', 0):.2f}%")
+        val_acc = checkpoint.get('val_acc', 0) * 100  # 转换为百分比
+        print(f"📊 Epoch: {checkpoint['epoch']}, Val Acc: {val_acc:.2f}%, ECE: {checkpoint.get('val_ece', 0):.4f}")
     
     return model
 
@@ -659,7 +660,7 @@ def main():
                        default='/kaggle/input/50000-pt/0050000.pt', 
                        help='DiT model checkpoint path')
     parser.add_argument('--classifier_checkpoint', type=str,
-                       default='./improved_classifier/best_improved_classifier.pth',
+                       default='./calibrated_classifier/best_calibrated_model.pth',
                        help='Classifier checkpoint path')
     parser.add_argument('--config', type=str, 
                        default='configs/dit_s_microdoppler.yaml', 
