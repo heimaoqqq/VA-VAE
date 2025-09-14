@@ -477,12 +477,12 @@ def main():
     
     split_data = load_dataset_split(args.split_file)
     
-    # 数据增强
+    # 数据增强 - 针对微多普勒时频图优化，移除有害变换
     train_transform = transforms.Compose([
         transforms.Resize((256, 256)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        # 移除RandomHorizontalFlip - 破坏多普勒频移方向
+        # 移除RandomRotation - 破坏时频轴对应关系  
+        # 移除ColorJitter - 影响信号强度表示
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                            std=[0.229, 0.224, 0.225])
