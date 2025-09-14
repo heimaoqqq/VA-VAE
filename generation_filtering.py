@@ -439,9 +439,9 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
 
 def generate_and_filter_advanced(model, vae, transport, classifier, user_id, 
                                  target_samples=800, batch_size=100, 
-                                 confidence_threshold=0.95, margin_threshold=0.2,
-                                 stability_threshold=0.8, diversity_threshold=0.1,
-                                 user_specificity_threshold=0.1, 
+                                 confidence_threshold=0.985, margin_threshold=0.985,
+                                 stability_threshold=0.85, diversity_threshold=0.700,
+                                 user_specificity_threshold=0.985, 
                                  conservative_mode=False, cfg_scale=12.0, 
                                  domain_coverage=True,
                                  output_dir='./filtered_samples', device=None, rank=0,
@@ -450,14 +450,12 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     
     # 域覆盖策略：多样化生成条件
     if domain_coverage:
-        # 定义不同的生成条件组合（覆盖不同域）
+        # 简化为单条件避免混乱
         domain_conditions = [
-            {"cfg": 10.0, "steps": 250, "name": "low_guidance"},     # 低引导，更多样
-            {"cfg": 12.0, "steps": 300, "name": "standard"},         # 标准设置
-            {"cfg": 15.0, "steps": 400, "name": "high_guidance"},    # 高引导，更精确
+            {"cfg": 12.0, "steps": 300, "name": "standard"},         # 仅使用标准设置
         ]
         samples_per_condition = target_samples // len(domain_conditions)
-        print(f"🌐 域覆盖模式: {len(domain_conditions)}种生成条件，每种{samples_per_condition}张")
+        pass  # 移除域覆盖信息输出
     else:
         # 单一条件生成
         domain_conditions = [{"cfg": cfg_scale, "steps": 300, "name": "single"}]
@@ -481,25 +479,24 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
         'domain_stats': {cond["name"]: {'generated': 0, 'accepted': 0} for cond in domain_conditions}
     }
     
-    if rank == 0:
-        print(f"🎯 开始为User_{user_id:02d}生成样本，目标: {target_samples}张")
-        print(f"📊 统一筛选标准（按文献重要性排序）:")
-        print(f"   1. 身份一致性(置信度): >{confidence_threshold:.2f}")
-        print(f"   2. 用户特异性: >{user_specificity_threshold:.2f}")
-        print(f"   3. 预测稳定性: >{stability_threshold:.2f}")
-        print(f"   4. 决策边界: >{margin_threshold:.2f}")
-        print(f"   5. 特征多样性: >{diversity_threshold:.2f} (max_sim≤0.9)")
-    else:
-        print(f"[GPU{rank}] 🎯 User_{user_id:02d} 目标: {target_samples}张")
+    # 移除print输出，避免进度条滚动
+    pass
     
     # 存储已收集的特征用于多样性评估
     collected_features = []
     condition_stats = {cond["name"]: 0 for cond in domain_conditions}
     
-    # 每个GPU都显示自己的进度条
-    pbar = tqdm(total=target_samples, desc=f"[GPU{rank}]User_{user_id:02d}", unit="样本", 
-                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}', 
-                position=rank, leave=False, dynamic_ncols=True)
+    # 使用简单的状态输出而不是tqdm进度条
+    import time
+    last_update = time.time()
+    
+    def update_progress(current, total, stats):
+        nonlocal last_update
+        now = time.time()
+        if now - last_update > 2.0 or current >= total:  # 每2秒更新一次
+            success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
+            print(f"\r[GPU{rank}]User_{user_id:02d}: {current}/{total} | 生成:{stats['total_generated']} | 通过:{success_rate:.1f}%", end='', flush=True)
+            last_update = now
     
     with torch.no_grad():
         # 按域条件循环生成
@@ -647,24 +644,15 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                                 similarities = cosine_similarity(candidate_features, collected_array)[0]
                                 max_similarity = np.max(similarities)
                                 diversity_score = 1.0 - max_similarity
+                            
+                            # 应用多样性阈值
+                            if diversity_score >= diversity_threshold:
+                                collected_samples.append(candidate['image'])
+                                collected_features.append(candidate['features'])
+                                batch_accepted += 1
                                 
-                                # 如果多样性不足，跳过
-                                if diversity_score < diversity_threshold:
-                                    continue
-                            
-                            # 通过所有筛选，保存样本
-                            stats['total_accepted'] += 1
-                            stats['collected_diversities'].append(diversity_score)
-                            stats['domain_stats'][condition["name"]]['accepted'] += 1
-                            save_path = user_dir / f"sample_{len(collected_samples):06d}.png"
-                            candidate['image'].save(save_path)
-                            collected_samples.append(save_path)
-                            collected_features.append(candidate['features'])
-                            batch_accepted += 1
-                            pbar.update(1)  # 更新进度条
-                            
-                            if len(collected_samples) >= target_samples:
-                                break
+                                if len(collected_samples) >= target_samples:
+                                    break
                         
                         # 更新条件统计
                         condition_collected += batch_accepted
@@ -673,44 +661,25 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         if len(collected_samples) >= target_samples:
                             break
                         
-                        # total_generated += current_batch_size  # 已在stats中统计
-                        
-                        # 更新进度条的后缀信息（使用简短域名）
-                        success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
-                        domain_map = {"low_guidance": "Low", "standard": "Std", "high_guidance": "High", "single": "Single"}
-                        domain_short = domain_map.get(condition["name"], condition["name"][:3])
-                        pbar.set_postfix_str(f'生成{stats["total_generated"]} 通过{success_rate:.1f}% {domain_short}')
+                        # 使用简单的状态更新
+                        update_progress(len(collected_samples), target_samples, stats)
                     
                     except Exception as e:
-                        print(f"[GPU{rank}] ❌ 处理批次时出错: {e}")
-                        import traceback
-                        traceback.print_exc()
+                        # 静默处理错误，避免干扰进度条
+                        pass
                 else:
-                    print(f"[GPU{rank}] ❌ VAE未加载，无法解码")
+                    # 静默处理VAE错误
+                    pass
                     break
     
-    # 关闭进度条
-    pbar.close()
+    # 完成时输出最终状态
+    print()  # 换行
     
     # 简化统计报告
     final_success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
     
-    # 每个GPU输出自己的统计
-    print(f"\n[GPU{rank}] ✅ User_{user_id:02d} 完成: {len(collected_samples)}/{target_samples} 样本 | 生成: {stats['total_generated']} 张 | 通过率: {final_success_rate:.1f}%")
-    
-    # 多样性统计
-    if stats['collected_diversities']:
-        avg_diversity = np.mean(stats['collected_diversities'])
-        print(f"[GPU{rank}]    🌈 平均多样性: {avg_diversity:.3f}")
-    
-    # 各域表现
-    domain_summary = []
-    for domain_name, domain_stat in stats['domain_stats'].items():
-        if domain_stat['generated'] > 0:
-            domain_rate = domain_stat['accepted'] / domain_stat['generated'] * 100
-            domain_summary.append(f"{domain_name}:{domain_rate:.0f}%")
-    if domain_summary:
-        print(f"[GPU{rank}]    🌐 各域: {' | '.join(domain_summary)}")
+    # 完全移除所有文本输出，只在进度条后缀显示关键信息
+    pass
     
     return len(collected_samples)
 
@@ -733,16 +702,17 @@ def main():
                        help='Target number of samples per user')
     parser.add_argument('--batch_size', type=int, default=100, 
                        help='Batch size for generation')
-    parser.add_argument('--confidence_threshold', type=float, default=0.95, 
-                       help='Confidence threshold for filtering')
-    parser.add_argument('--margin_threshold', type=float, default=0.2,
-                       help='Decision margin threshold')
-    parser.add_argument('--stability_threshold', type=float, default=0.8,
-                       help='Augmentation stability threshold')
-    parser.add_argument('--diversity_threshold', type=float, default=0.1,
-                       help='Feature diversity threshold (1.0 - max_similarity)')
-    parser.add_argument('--user_specificity_threshold', type=float, default=0.1,
-                       help='User specificity threshold')
+    # 合成样本筛选阈值（平衡策略-优于75%真实样本质量）
+    parser.add_argument('--confidence_threshold', type=float, default=0.985,
+                       help='高于75%真实样本的置信度要求')
+    parser.add_argument('--margin_threshold', type=float, default=0.985,
+                       help='高于75%真实样本的决策边界要求')
+    parser.add_argument('--stability_threshold', type=float, default=0.85,
+                       help='预测稳定性要求')
+    parser.add_argument('--diversity_threshold', type=float, default=0.700,
+                       help='特征多样性阈值(1-相似度)')
+    parser.add_argument('--user_specificity_threshold', type=float, default=0.985,
+                       help='高于75%真实样本的用户特异性要求')
     # 移除visual_quality_threshold参数
     parser.add_argument('--conservative_mode', action='store_true',
                        help='Enable conservative filtering (stricter thresholds)')
@@ -810,11 +780,11 @@ def main():
     
     my_users = user_list[start_idx:end_idx]
     
-    if rank == 0:
-        print(f"🔄 分布式处理: {world_size} GPUs")
-        print(f"📊 GPU分配: 每个GPU处理约{users_per_gpu}个用户")
+    # 移除分布式信息输出
+    pass
     
-    print(f"GPU {rank}: 处理用户 {my_users}")
+    # 移除用户分配信息输出
+    pass
     
     # 每个GPU处理自己分配的用户
     for user_id in my_users:
