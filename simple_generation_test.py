@@ -86,9 +86,15 @@ def load_models(args, device, rank=0):
     
     # 加载VAE
     print(f"🔄 [GPU{rank}] 加载VA-VAE...")
-    vae = SimplifiedVAVAE.from_pretrained('./VA-VAE-checkpoint')
-    vae = vae.to(device)
-    vae.eval()
+    try:
+        vae = SimplifiedVAVAE(config['vae']['model_name']).to(device)
+        vae.eval()
+        if rank == 0:
+            print(f"✅ VAE加载完成: {config['vae']['model_name']}")
+    except Exception as e:
+        if rank == 0:
+            print(f"⚠️ VAE加载失败: {e}")
+        vae = None
     
     return model, transport, vae
 
