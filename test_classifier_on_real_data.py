@@ -90,7 +90,7 @@ class RealMicroDopplerDataset(Dataset):
 
 def load_classifier(model_path, device):
     """加载训练好的分类器"""
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
     # 导入ImprovedClassifier类
     import sys
