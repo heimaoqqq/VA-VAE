@@ -452,9 +452,9 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     if domain_coverage:
         # 定义不同的生成条件组合（覆盖不同域）
         domain_conditions = [
-            {"cfg": cfg_scale * 0.7, "steps": 200, "name": "low_guidance"},     # 低引导，更多样
-            {"cfg": cfg_scale, "steps": 300, "name": "standard"},              # 标准设置
-            {"cfg": cfg_scale * 1.3, "steps": 400, "name": "high_guidance"},   # 高引导，更精确
+            {"cfg": 10.0, "steps": 250, "name": "low_guidance"},     # 低引导，更多样
+            {"cfg": 12.0, "steps": 300, "name": "standard"},         # 标准设置
+            {"cfg": 15.0, "steps": 400, "name": "high_guidance"},    # 高引导，更精确
         ]
         samples_per_condition = target_samples // len(domain_conditions)
         print(f"🌐 域覆盖模式: {len(domain_conditions)}种生成条件，每种{samples_per_condition}张")
