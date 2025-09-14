@@ -61,12 +61,13 @@ class ScreeningClassifierValidator:
                 with torch.no_grad():
                     output = self.classifier(img_tensor)
                     prob = torch.softmax(output, dim=1)
-                    max_prob, pred = torch.max(prob, dim=1)
                     
+                    # 多分类校准：用最大概率（模型置信度）
+                    max_prob, pred = torch.max(prob, dim=1)  # 最高置信度和预测类别
                     pred_label = pred.item()
                     is_correct = (pred_label == class_id)
                     
-                    all_probs.append(max_prob.item())
+                    all_probs.append(max_prob.item())  # 用最大概率做校准
                     all_labels.append(int(is_correct))
                     
                     # 统计
@@ -275,7 +276,7 @@ class ScreeningClassifierValidator:
                             error_patterns['high_confidence_errors'].append(error_info)
                         
                         # 记录混淆对
-                        pair = (user_id, pred.item())
+                        pair = (class_id, pred.item())
                         if pair not in error_patterns['confusion_pairs']:
                             error_patterns['confusion_pairs'][pair] = 0
                         error_patterns['confusion_pairs'][pair] += 1
