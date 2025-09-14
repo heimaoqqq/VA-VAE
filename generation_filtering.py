@@ -268,7 +268,7 @@ def load_classifier(checkpoint_path, device):
     model = MicroDopplerModel(num_classes=31)
     
     # 加载权重
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     model.eval()
