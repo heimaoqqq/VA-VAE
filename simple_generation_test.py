@@ -102,6 +102,17 @@ def generate_samples(model, vae, transport, user_id, num_samples, batch_size, de
     """直接生成样本，无任何筛选"""
     print(f"🔄 [GPU{rank}] 为用户{user_id}生成{num_samples}个样本...")
     
+    # 创建采样器和采样函数
+    sampler = Sampler(transport)
+    sample_fn = sampler.sample_ode(
+        sampling_method="dopri5",      # 高精度ODE求解器
+        num_steps=250,                  # 采样步数
+        atol=1e-6,                     # 绝对误差容限
+        rtol=1e-3,                     # 相对误差容限
+        reverse=False,                 # 不反向采样
+        timestep_shift=0.1             # 时间步偏移
+    )
+    
     generated_images = []
     total_generated = 0
     
@@ -112,17 +123,12 @@ def generate_samples(model, vae, transport, user_id, num_samples, batch_size, de
         y = torch.full((current_batch_size,), user_id, dtype=torch.long, device=device)
         
         # 生成latent
-        latents = torch.randn(current_batch_size, 32, 16, 16, device=device)
+        z = torch.randn(current_batch_size, 32, 16, 16, device=device)
         
         # DiT生成
         with torch.no_grad():
-            samples = transport.sample_ode(
-                model.forward_with_cfg,
-                latents,
-                model_kwargs={"y": y},
-                cfg_scale=12.0,
-                sample_steps=50
-            )
+            samples = sample_fn(z, model, y=y)
+            samples = samples[-1]  # 获取最终时间步的样本
         
         # VAE解码
         if vae is not None:
