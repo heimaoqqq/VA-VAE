@@ -368,6 +368,49 @@ def main():
     
     print(f"\n✅ 分析完成！结果保存到: {output_dir}")
     print(f"📊 分析了 {len(images)} 个真实样本，分类准确率: {results['accuracy']:.3f}")
+    
+    # 详细分析置信度低的原因
+    print("\n" + "="*60)
+    print("🔍 置信度分析")
+    print("="*60)
+    
+    correct_mask = np.array(metrics['predicted_user']) == np.array(metrics['true_user'])
+    correct_conf = np.array(metrics['confidence'])[correct_mask]
+    wrong_conf = np.array(metrics['confidence'])[~correct_mask]
+    
+    print(f"✅ 正确预测样本置信度: 均值={np.mean(correct_conf):.3f}, 中位数={np.median(correct_conf):.3f}")
+    print(f"❌ 错误预测样本置信度: 均值={np.mean(wrong_conf):.3f}, 中位数={np.median(wrong_conf):.3f}")
+    print(f"📊 高置信度(>0.8)样本占比: {np.mean(np.array(metrics['confidence']) > 0.8)*100:.1f}%")
+    print(f"📊 中等置信度(0.5-0.8)样本占比: {np.mean((np.array(metrics['confidence']) > 0.5) & (np.array(metrics['confidence']) <= 0.8))*100:.1f}%")
+    print(f"📊 低置信度(<0.5)样本占比: {np.mean(np.array(metrics['confidence']) < 0.5)*100:.1f}%")
+    
+    # 分析混淆情况
+    predicted = np.array(metrics['predicted_user'])
+    true_labels = np.array(metrics['true_user'])
+    
+    # 计算最容易混淆的用户对
+    confusion_pairs = {}
+    for i in range(len(predicted)):
+        if predicted[i] != true_labels[i]:
+            pair = tuple(sorted([true_labels[i], predicted[i]]))
+            confusion_pairs[pair] = confusion_pairs.get(pair, 0) + 1
+    
+    if confusion_pairs:
+        top_confusions = sorted(confusion_pairs.items(), key=lambda x: x[1], reverse=True)[:5]
+        print(f"\n🔄 最容易混淆的用户对（前5）:")
+        for (user1, user2), count in top_confusions:
+            print(f"   User {user1+1} ↔ User {user2+1}: {count} 次混淆")
+    
+    # 置信度低的可能原因分析
+    print(f"\n💡 置信度低的可能原因:")
+    if results['accuracy'] < 0.6:
+        print("   1. 🎯 分类器性能不足 - 准确率过低导致不确定性增加")
+    if np.mean(np.array(metrics['confidence']) < 0.5) > 0.7:
+        print("   2. 👥 用户间相似性过高 - 微多普勒特征差异微小")
+    if len(confusion_pairs) > 10:
+        print("   3. 🔄 广泛的类间混淆 - 多个用户特征重叠")
+    print("   4. 📏 模型校准问题 - 可能需要温度缩放或重新校准")
+    print("   5. 🏗️ 架构限制 - ResNet18可能不足以捕获微多普勒细微差异")
 
 if __name__ == '__main__':
     main()
