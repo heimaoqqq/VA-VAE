@@ -75,8 +75,8 @@ def load_real_data(data_dir, max_samples_per_user=50):
     
     print(f"🔍 扫描真实数据目录: {data_dir}")
     
-    for user_id in range(31):
-        user_dir = data_dir / f"User_{user_id:02d}"
+    for user_id in range(1, 32):  # ID_1 到 ID_31
+        user_dir = data_dir / f"ID_{user_id}"
         if not user_dir.exists():
             continue
             
