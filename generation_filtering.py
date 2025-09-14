@@ -544,16 +544,14 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         z, 
                         model.forward_with_cfg, 
                         **model_kwargs, 
-                        cfg_scale=current_cfg, 
-                        verbose=False
+                        cfg_scale=current_cfg
                     )[0]
                 else:
                     # 不使用CFG
                     samples = current_sample_fn(
                         z, 
                         model.forward, 
-                        y=y, 
-                        verbose=False
+                        y=y
                     )[0]
                 
                 # VAE解码
