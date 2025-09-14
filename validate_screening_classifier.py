@@ -39,9 +39,10 @@ class ScreeningClassifierValidator:
         all_labels = []
         
         # 收集预测概率和真实标签
-        for user_id in range(31):
+        for class_id in range(31):  # class_id: 0-30
             # 真实数据格式：ID_1到ID_31，jpg格式
-            user_dir = Path(test_data_dir) / f"ID_{user_id + 1}"
+            # ID_1对应class_id=0, ID_2对应class_id=1, ..., ID_31对应class_id=30
+            user_dir = Path(test_data_dir) / f"ID_{class_id + 1}"
             if not user_dir.exists():
                 continue
             
@@ -55,7 +56,8 @@ class ScreeningClassifierValidator:
                     max_prob, pred = torch.max(prob, dim=1)
                     
                     all_probs.append(max_prob.item())
-                    all_labels.append(int(pred.item() == user_id))
+                    # 正确的标签映射：ID_{class_id+1}的真实标签是class_id
+                    all_labels.append(int(pred.item() == class_id))
         
         # 计算校准曲线
         fraction_positives, mean_predicted = calibration_curve(
@@ -117,14 +119,16 @@ class ScreeningClassifierValidator:
         # 判断是真实数据还是合成数据
         is_real_data = "真实" in desc
         
-        for user_id in range(31):
+        for class_id in range(31):  # class_id: 0-30
             if is_real_data:
                 # 真实数据格式：ID_1到ID_31，jpg格式
-                user_dir = Path(data_dir) / f"ID_{user_id + 1}"
+                # ID_1对应class_id=0, ID_2对应class_id=1, ...
+                user_dir = Path(data_dir) / f"ID_{class_id + 1}"
                 file_pattern = "*.jpg"
             else:
                 # 合成数据格式：User_00到User_30，png格式
-                user_dir = Path(data_dir) / f"User_{user_id:02d}"
+                # User_00对应class_id=0, User_01对应class_id=1, ...
+                user_dir = Path(data_dir) / f"User_{class_id:02d}"
                 file_pattern = "*.png"
             
             if not user_dir.exists():
@@ -201,9 +205,10 @@ class ScreeningClassifierValidator:
             'confusion_pairs': {}  # 易混淆的用户对
         }
         
-        for user_id in range(31):
+        for class_id in range(31):  # class_id: 0-30
             # 合成数据格式：User_00到User_30，png格式
-            user_dir = Path(synthetic_data_dir) / f"User_{user_id:02d}"
+            # User_00对应class_id=0, User_01对应class_id=1, ...
+            user_dir = Path(synthetic_data_dir) / f"User_{class_id:02d}"
             if not user_dir.exists():
                 continue
             
@@ -216,10 +221,10 @@ class ScreeningClassifierValidator:
                     prob = torch.softmax(output, dim=1)
                     conf, pred = torch.max(prob, dim=1)
                     
-                    if pred.item() != user_id:
+                    if pred.item() != class_id:
                         # 记录错误
                         error_info = {
-                            'true_label': user_id,
+                            'true_label': class_id,
                             'predicted': pred.item(),
                             'confidence': conf.item()
                         }
