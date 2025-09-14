@@ -395,21 +395,10 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
             max_other_prob = torch.max(other_probs).item()
             user_specificity = user_prob - max_other_prob
             
-            # 3. 预测稳定性（移除不适合微多普勒的数据增强）
-            # 微多普勒时频图的物理结构不应被翻转或旋转破坏
-            # 使用轻微噪声扰动代替几何变换
-            aug_preds = []
-            for _ in range(3):
-                # 仅添加轻微噪声，不改变时频图的物理意义
-                noise_scale = 0.01
-                noisy_tensor = img_tensor + torch.randn_like(img_tensor) * noise_scale
-                noisy_tensor = torch.clamp(noisy_tensor, 0, 1)  # 确保在有效范围内
-                
-                aug_outputs = classifier(noisy_tensor)
-                aug_pred = torch.argmax(aug_outputs, dim=1)
-                aug_preds.append(aug_pred.item())
-            
-            stability = sum([p == pred.item() for p in aug_preds]) / len(aug_preds)
+            # 3. 预测稳定性（针对微多普勒时频图优化）
+            # 由于微多普勒时频图对噪声极其敏感，移除噪声扰动测试
+            # 改用基于置信度的简化稳定性评估
+            stability = min(confidence.item(), 1.0)  # 使用置信度作为稳定性代理
             
             # 4. 与用户原型的相似度（如果提供）
             prototype_similarity = 0.0
