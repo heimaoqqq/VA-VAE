@@ -521,26 +521,47 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                 # 使用当前域条件生成样本
                 current_cfg = condition["cfg"]
                 if current_cfg > 1.0:
-                    # 使用CFG
-                    model_kwargs = {"y": y}
-                    samples = current_sample_fn(
-                        z, 
-                        model.forward_with_cfg, 
-                        **model_kwargs, 
-                        cfg_scale=current_cfg
-                    )[0]
+                    # CFG采样（按照generate_and_filter_samples.py的实现）
+                    z_cfg = torch.cat([z, z], 0)  # 复制噪声tensor
+                    y_null = torch.tensor([31] * current_batch_size, device=device)
+                    y_cfg = torch.cat([y, y_null], 0)
+                    
+                    cfg_interval_start = 0.11
+                    model_kwargs = dict(y=y_cfg, cfg_scale=current_cfg, cfg_interval=True, cfg_interval_start=cfg_interval_start)
+                    
+                    if hasattr(model, 'forward_with_cfg'):
+                        samples = current_sample_fn(z_cfg, model.forward_with_cfg, **model_kwargs)
+                    else:
+                        def model_fn_cfg(x, t, **kwargs):
+                            pred = model(x, t, **kwargs)
+                            pred_cond, pred_uncond = pred.chunk(2, dim=0)
+                            return pred_uncond + current_cfg * (pred_cond - pred_uncond)
+                        samples = current_sample_fn(z_cfg, model_fn_cfg, **model_kwargs)
+                    
+                    samples = samples[-1]
+                    samples, _ = samples.chunk(2, dim=0)  # 只保留conditional样本
                 else:
                     # 不使用CFG
-                    samples = current_sample_fn(
-                        z, 
-                        model.forward, 
-                        y=y
-                    )[0]
+                    samples = current_sample_fn(z, model, **dict(y=y))
+                    samples = samples[-1]
+                
+                # 反归一化（按照generate_and_filter_samples.py的实现）
+                latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
+                if os.path.exists(latent_stats_path):
+                    stats = torch.load(latent_stats_path, map_location=device)
+                    mean = stats['mean'].to(device)
+                    std = stats['std'].to(device)
+                    latent_multiplier = 1.0
+                    samples_denorm = (samples * std) / latent_multiplier + mean
+                else:
+                    # 备用：无反归一化
+                    print("⚠️ 无法加载latent统计，使用原始样本")
+                    samples_denorm = samples
                 
                 # VAE解码
                 if vae is not None:
                     try:
-                        decoded_images = vae.decode_to_images(samples)
+                        decoded_images = vae.decode_to_images(samples_denorm)
                         images_pil = [Image.fromarray(img) for img in decoded_images]
                         
                         # 计算用户特定指标
