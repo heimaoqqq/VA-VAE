@@ -26,11 +26,12 @@ class RealMicroDopplerDataset(Dataset):
         self.transform = transform
         self.samples = []
         
-        # 扫描所有ID_*或User_*目录
+        # 扫描所有ID_*、User_*或user_*目录
         print(f"Scanning directory: {self.data_dir}")
         id_dirs = list(self.data_dir.glob("ID_*"))
-        user_dirs = list(self.data_dir.glob("User_*"))
-        all_dirs = id_dirs + user_dirs
+        user_dirs_upper = list(self.data_dir.glob("User_*"))
+        user_dirs_lower = list(self.data_dir.glob("user_*"))
+        all_dirs = id_dirs + user_dirs_upper + user_dirs_lower
         print(f"Found directories: {[d.name for d in all_dirs]}")
         
         for user_dir in sorted(all_dirs):
@@ -40,6 +41,9 @@ class RealMicroDopplerDataset(Dataset):
                     user_id = int(user_dir.name.split('_')[1]) - 1
                 elif user_dir.name.startswith("User_"):
                     # User_00 -> user_id 0, User_01 -> user_id 1, etc.
+                    user_id = int(user_dir.name.split('_')[1])
+                elif user_dir.name.startswith("user_"):
+                    # user_00 -> user_id 0, user_01 -> user_id 1, etc.
                     user_id = int(user_dir.name.split('_')[1])
                 else:
                     continue
