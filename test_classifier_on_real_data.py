@@ -118,7 +118,10 @@ def load_classifier(model_path, device):
     model.eval()
     
     print(f"Loaded classifier from {model_path}")
-    print(f"Training validation accuracy: {checkpoint['best_val_acc']:.2f}%")
+    if 'best_val_acc' in checkpoint:
+        print(f"Training validation accuracy: {checkpoint['best_val_acc']:.2f}%")
+    else:
+        print("Training validation accuracy: Not available in checkpoint")
     
     return model, checkpoint
 
