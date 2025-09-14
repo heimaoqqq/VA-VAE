@@ -518,8 +518,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                 num_steps=condition["steps"],
                 atol=1e-6,
                 rtol=1e-3,
-                reverse=False,
-                time_shifting_factor=None
+                reverse=False
             )
             
             print(f"🌍 生成域: {condition['name']} (CFG={condition['cfg']:.1f}, Steps={condition['steps']})")
