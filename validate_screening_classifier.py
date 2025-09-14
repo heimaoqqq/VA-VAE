@@ -39,12 +39,20 @@ class ScreeningClassifierValidator:
         all_labels = []
         
         # 收集预测概率和真实标签
+        total_samples = 0
+        correct_predictions = 0
+        prediction_samples = []
+        
         for class_id in range(31):  # class_id: 0-30
             # 真实数据格式：ID_1到ID_31，jpg格式
             # ID_1对应class_id=0, ID_2对应class_id=1, ..., ID_31对应class_id=30
             user_dir = Path(test_data_dir) / f"ID_{class_id + 1}"
             if not user_dir.exists():
+                print(f"   ⚠️ 目录不存在: {user_dir}")
                 continue
+            
+            user_samples = 0
+            user_correct = 0
             
             for img_file in list(user_dir.glob("*.jpg"))[:50]:  # 每用户取50个样本
                 img = Image.open(img_file).convert('RGB')
@@ -55,9 +63,41 @@ class ScreeningClassifierValidator:
                     prob = torch.softmax(output, dim=1)
                     max_prob, pred = torch.max(prob, dim=1)
                     
+                    pred_label = pred.item()
+                    is_correct = (pred_label == class_id)
+                    
                     all_probs.append(max_prob.item())
-                    # 正确的标签映射：ID_{class_id+1}的真实标签是class_id
-                    all_labels.append(int(pred.item() == class_id))
+                    all_labels.append(int(is_correct))
+                    
+                    # 统计
+                    total_samples += 1
+                    user_samples += 1
+                    if is_correct:
+                        correct_predictions += 1
+                        user_correct += 1
+                    
+                    # 记录前几个样本用于调试
+                    if len(prediction_samples) < 10:
+                        prediction_samples.append({
+                            'class_id': class_id,
+                            'file': img_file.name,
+                            'predicted': pred_label,
+                            'confidence': max_prob.item(),
+                            'correct': is_correct
+                        })
+            
+            if user_samples > 0 and class_id < 5:  # 只显示前5个用户
+                user_acc = user_correct / user_samples
+                print(f"   ID_{class_id + 1}: {user_samples}样本, 准确率={user_acc:.3f}")
+        
+        # 打印调试信息
+        overall_acc = correct_predictions / total_samples if total_samples > 0 else 0
+        print(f"   📈 总样本数: {total_samples}")
+        print(f"   📈 总体准确率: {overall_acc:.3f}")
+        print(f"   📈 前10个预测样例:")
+        
+        for sample in prediction_samples:
+            print(f"      ID_{sample['class_id']+1}/{sample['file']}: 预测={sample['predicted']}, 置信度={sample['confidence']:.3f}, 正确={sample['correct']}")
         
         # 计算校准曲线
         fraction_positives, mean_predicted = calibration_curve(
