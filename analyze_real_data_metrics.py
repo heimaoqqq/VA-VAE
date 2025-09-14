@@ -75,23 +75,49 @@ def load_real_data(data_dir, max_samples_per_user=100):
     
     print(f"🔍 扫描真实数据目录: {data_dir}")
     
+    # 创建和训练时一致的标签映射
+    all_classes = []
+    
+    for user_id in range(1, 32):  # ID_1 到 ID_31
+        user_dir = data_dir / f"ID_{user_id}"
+        if not user_dir.exists():
+            continue
+        all_classes.append(f"ID_{user_id}")
+            
+    # 数值排序（与训练一致）
+    def sort_ids(class_list):
+        def extract_number(class_name):
+            if class_name.startswith('ID_'):
+                try:
+                    return int(class_name.split('_')[1])
+                except (IndexError, ValueError):
+                    return float('inf')
+            return float('inf')
+        return sorted(class_list, key=extract_number)
+    
+    sorted_classes = sort_ids(all_classes)
+    class_to_idx = {cls: idx for idx, cls in enumerate(sorted_classes)}
+    print(f"✅ 标签映射: {class_to_idx}")
+    
     for user_id in range(1, 32):  # ID_1 到 ID_31
         user_dir = data_dir / f"ID_{user_id}"
         if not user_dir.exists():
             continue
             
         user_samples = []
-        # 加载所有jpg文件，不受max_samples_per_user限制（实际文件数约150）
+        # 加载所有jpg文件
         for img_path in user_dir.glob("*.jpg"):
             user_samples.append(str(img_path))
         
-        # 如果文件数超过限制才截取，否则全部加载
+        # 如果文件数超过限制才截取
         if len(user_samples) > max_samples_per_user:
             user_samples = user_samples[:max_samples_per_user]
         
         samples.extend(user_samples)
-        labels.extend([user_id - 1] * len(user_samples))  # ID_1 -> label 0, ID_2 -> label 1, etc.
-        print(f"ID_{user_id}: {len(user_samples)} samples")
+        class_name = f"ID_{user_id}"
+        correct_label = class_to_idx[class_name]
+        labels.extend([correct_label] * len(user_samples))
+        print(f"ID_{user_id}: {len(user_samples)} samples -> label {correct_label} ({class_name})")
     
     print(f"📊 总计加载: {len(samples)} 样本")
     return samples, labels
@@ -100,9 +126,10 @@ def calculate_metrics_batch(classifier, images, labels, device):
     """批量计算所有筛选指标"""
     classifier.eval()
     
-    # 数据预处理
+    # 修夏：使用和训练一致的预处理
+    print("✅ 使用训练时一致的预处理: 256x256 + ImageNet normalization")
     transform = transforms.Compose([
-        transforms.Resize((64, 64)),
+        transforms.Resize((256, 256)),  # 修夏: 与训练时一致
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
@@ -116,8 +143,16 @@ def calculate_metrics_batch(classifier, images, labels, device):
         'features': []
     }
     
+    # 添加调试信息
+    print(f"📊 标签分布: {sorted(set(labels))}")
+    print(f"📊 标签范围: {min(labels)} - {max(labels)} (应该是 0-30)")
+    print(f"📊 总类别数: {len(set(labels))} (应该是 31)")
+    
+    # 测试几个样本看预测结果
+    debug_predictions = []
+    
     with torch.no_grad():
-        for img_path, true_label in tqdm(zip(images, labels), total=len(images), desc="计算指标"):
+        for idx, (img_path, true_label) in enumerate(tqdm(zip(images, labels), total=len(images), desc="计算指标")):
             try:
                 # 加载并预处理图像
                 img = Image.open(img_path).convert('RGB')
@@ -150,10 +185,44 @@ def calculate_metrics_batch(classifier, images, labels, device):
                 batch_metrics['true_user'].append(true_label)
                 batch_metrics['features'].append(features.cpu().numpy().flatten())
                 
+                # 调试前10个样本
+                if idx < 10:
+                    debug_predictions.append({
+                        'file': img_path.split('/')[-1],
+                        'true_label': true_label,
+                        'predicted': predicted_user,
+                        'confidence': confidence,
+                        'top3_probs': torch.topk(probs, 3)[0].cpu().numpy().flatten(),
+                        'top3_users': torch.topk(probs, 3)[1].cpu().numpy().flatten()
+                    })
+                
             except Exception as e:
                 print(f"⚠️ 处理图像 {img_path} 时出错: {e}")
                 continue
     
+    # 输出调试信息
+    print("\n🔍 前10个样本的预测调试信息:")
+    for i, debug in enumerate(debug_predictions):
+        print(f"样本{i+1}: {debug['file']}")
+        # 根据标签映射找到对应的ID
+        true_id = [k for k, v in class_to_idx.items() if v == debug['true_label']][0] if debug['true_label'] in class_to_idx.values() else f"Unknown({debug['true_label']})"
+        pred_id = [k for k, v in class_to_idx.items() if v == debug['predicted']][0] if debug['predicted'] in class_to_idx.values() else f"Unknown({debug['predicted']})"
+        print(f"  真实标签: {debug['true_label']} ({true_id})")
+        print(f"  预测标签: {debug['predicted']} ({pred_id})")
+        print(f"  置信度: {debug['confidence']:.3f}")
+        print(f"  Top3概率: {debug['top3_probs']}")
+        top3_ids = []
+        for user_idx in debug['top3_users']:
+            if user_idx in class_to_idx.values():
+                user_id = [k for k, v in class_to_idx.items() if v == user_idx][0]
+                top3_ids.append(user_id)
+            else:
+                top3_ids.append(f"Unknown({user_idx})")
+        print(f"  Top3用户: {debug['top3_users']} ({top3_ids})")
+        print("")
+    
+    # 把 class_to_idx 传递给其他函数使用
+    batch_metrics['class_to_idx'] = class_to_idx
     return batch_metrics
 
 def analyze_diversity(features):
@@ -399,7 +468,10 @@ def main():
         top_confusions = sorted(confusion_pairs.items(), key=lambda x: x[1], reverse=True)[:5]
         print(f"\n🔄 最容易混淆的用户对（前5）:")
         for (user1, user2), count in top_confusions:
-            print(f"   User {user1+1} ↔ User {user2+1}: {count} 次混淆")
+            # 根据标签映射找到ID
+            id1 = [k for k, v in class_to_idx.items() if v == user1][0] if user1 in class_to_idx.values() else f"Unknown({user1})"
+            id2 = [k for k, v in class_to_idx.items() if v == user2][0] if user2 in class_to_idx.values() else f"Unknown({user2})"
+            print(f"   {id1} ↔ {id2}: {count} 次混淆")
     
     # 置信度低的可能原因分析
     print(f"\n💡 置信度低的可能原因:")
