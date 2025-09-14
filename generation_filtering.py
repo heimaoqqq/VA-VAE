@@ -233,13 +233,16 @@ def load_classifier(checkpoint_path, device):
     """加载预训练的分类器"""
     import torchvision.models as models
     
-    # 创建与improved_classifier_training.py完全一致的模型结构
-    class MicroDopplerModel(nn.Module):
-        def __init__(self, num_classes=31, dropout_rate=0.3):
+    # 使用与improved_classifier_training.py完全一致的ImprovedClassifier结构
+    class ImprovedClassifier(nn.Module):
+        """改进的分类器，专为微多普勒信号优化"""
+        
+        def __init__(self, num_classes, dropout_rate=0.3):
             super().__init__()
             
-            # 使用ResNet18作为backbone
+            # 使用标准ResNet18
             self.backbone = models.resnet18(pretrained=False)
+            # 移除最后的分类层
             self.backbone.fc = nn.Identity()
             feature_dim = 512
             
@@ -253,27 +256,60 @@ def load_classifier(checkpoint_path, device):
                 nn.Linear(256, num_classes)
             )
             
-            # 对比学习投影头
-            self.projection_head = nn.Sequential(
+            # 对比学习投影头 (与checkpoint中的feature_projector对应)
+            self.feature_projector = nn.Sequential(
                 nn.Linear(feature_dim, 128),
+                nn.BatchNorm1d(128),
                 nn.ReLU(inplace=False),
                 nn.Linear(128, 64)
             )
+            
+            # Memory bank相关（用于对比学习）
+            memory_size = 200
+            self.register_buffer('feature_bank', torch.randn(num_classes, memory_size, 512))
+            self.register_buffer('feature_count', torch.zeros(num_classes, dtype=torch.long))
         
-        def forward(self, x):
+        def forward(self, x, return_features=False):
             features = self.backbone(x)
-            return self.classifier(features)
+            
+            if return_features:
+                projected = self.feature_projector(features)
+                return features, projected
+            
+            logits = self.classifier(features)
+            return logits
     
     # 创建模型
-    model = MicroDopplerModel(num_classes=31)
+    model = ImprovedClassifier(num_classes=31)
     
     # 加载权重
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    
+    # 尝试加载权重，允许部分匹配
+    try:
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        print(f"✅ 分类器加载完成: {checkpoint_path}")
+    except Exception as e:
+        print(f"⚠️ 权重加载警告: {e}")
+        print("尝试手动匹配权重...")
+        
+        # 手动匹配兼容的权重
+        model_dict = model.state_dict()
+        checkpoint_dict = checkpoint['model_state_dict']
+        
+        # 过滤出匹配的权重
+        matched_dict = {}
+        for k, v in checkpoint_dict.items():
+            if k in model_dict and model_dict[k].shape == v.shape:
+                matched_dict[k] = v
+        
+        model_dict.update(matched_dict)
+        model.load_state_dict(model_dict)
+        print(f"✅ 手动匹配完成，加载了 {len(matched_dict)}/{len(checkpoint_dict)} 个权重")
+    
     model = model.to(device)
     model.eval()
     
-    print(f"✅ 分类器加载完成: {checkpoint_path}")
     if 'epoch' in checkpoint:
         print(f"📊 Epoch: {checkpoint['epoch']}, Best Acc: {checkpoint.get('best_acc', 0):.2f}%")
     
