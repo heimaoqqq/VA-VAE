@@ -463,6 +463,12 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
         'total_generated': 0,
         'total_accepted': 0,
         'collected_diversities': [],  # 存储接受样本的多样性分数
+        'collected_metrics': {  # 存储接受样本的详细指标
+            'confidences': [],
+            'user_specificities': [],
+            'margins': [],
+            'diversities': []
+        },
         'domain_stats': {cond["name"]: {'generated': 0, 'accepted': 0} for cond in domain_conditions}
     }
     
@@ -480,7 +486,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
     def update_progress(current, total, stats):
         nonlocal last_update
         now = time.time()
-        if now - last_update > 2.0 or current >= total:  # 每2秒更新一次
+        if now - last_update > 2.0:  # 每2秒更新一次，但不在这里显示100/100
             success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
             print(f"\r[GPU{rank}]User_{user_id:02d}: {current}/{total} | 生成:{stats['total_generated']} | 通过:{success_rate:.1f}%", end='', flush=True)
             last_update = now
@@ -638,6 +644,17 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                                 collected_features.append(candidate['features'])
                                 batch_accepted += 1
                                 
+                                # 保存图像到磁盘
+                                img_filename = f"sample_{len(collected_samples):04d}_conf{candidate['metrics']['confidence']:.3f}_spec{candidate['metrics']['user_specificity']:.3f}.png"
+                                img_path = user_dir / img_filename
+                                candidate['image'].save(img_path)
+                                
+                                # 记录该样本的指标用于后续统计
+                                stats['collected_metrics']['confidences'].append(candidate['metrics']['confidence'])
+                                stats['collected_metrics']['user_specificities'].append(candidate['metrics']['user_specificity'])
+                                stats['collected_metrics']['margins'].append(candidate['metrics']['margin'])
+                                stats['collected_metrics']['diversities'].append(diversity_score)
+                                
                                 if len(collected_samples) >= target_samples:
                                     break
                         
@@ -650,6 +667,12 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                         
                         # 使用简单的状态更新
                         update_progress(len(collected_samples), target_samples, stats)
+                        
+                        # 检查是否完成目标
+                        if len(collected_samples) >= target_samples:
+                            # 最终更新显示100/100
+                            success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
+                            print(f"\r[GPU{rank}]User_{user_id:02d}: {len(collected_samples)}/{target_samples} | 生成:{stats['total_generated']} | 通过:{success_rate:.1f}%", flush=True)
                     
                     except Exception as e:
                         # 静默处理错误，避免干扰进度条
@@ -659,14 +682,23 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                     pass
                     break
     
-    # 完成时输出最终状态
+    # 完成时输出最终状态和统计信息
     print()  # 换行
     
-    # 简化统计报告
-    final_success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
-    
-    # 完全移除所有文本输出，只在进度条后缀显示关键信息
-    pass
+    # 输出用户完成统计
+    if len(collected_samples) > 0:
+        metrics = stats['collected_metrics']
+        avg_confidence = sum(metrics['confidences']) / len(metrics['confidences']) if metrics['confidences'] else 0
+        avg_user_spec = sum(metrics['user_specificities']) / len(metrics['user_specificities']) if metrics['user_specificities'] else 0
+        avg_margin = sum(metrics['margins']) / len(metrics['margins']) if metrics['margins'] else 0
+        avg_diversity = sum(metrics['diversities']) / len(metrics['diversities']) if metrics['diversities'] else 0
+        
+        final_success_rate = len(collected_samples) / stats['total_generated'] * 100 if stats['total_generated'] > 0 else 0
+        
+        print(f"[GPU{rank}] ✅ User_{user_id:02d} 完成统计:")
+        print(f"  📊 收集样本: {len(collected_samples)}/{target_samples} | 总生成: {stats['total_generated']} | 通过率: {final_success_rate:.1f}%")
+        print(f"  📈 平均指标: 置信度={avg_confidence:.3f} | 用户特异性={avg_user_spec:.3f} | 决策边界={avg_margin:.3f} | 多样性={avg_diversity:.3f}")
+        print()
     
     return len(collected_samples)
 
