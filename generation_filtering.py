@@ -381,7 +381,14 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
         with torch.no_grad():
             # 获取分类器输出和特征
             outputs = classifier(img_tensor)
-            probs = F.softmax(outputs, dim=1)
+            
+            # 处理分类器输出格式（可能是tuple）
+            if isinstance(outputs, tuple):
+                logits = outputs[0]  # 通常第一个元素是logits
+            else:
+                logits = outputs
+            
+            probs = F.softmax(logits, dim=1)
             features = classifier.backbone(img_tensor)
             
             # 1. 基本指标
