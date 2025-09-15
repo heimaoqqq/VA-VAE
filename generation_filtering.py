@@ -393,7 +393,8 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
             user_prob = probs[0, user_id].item()
             other_probs = torch.cat([probs[0, :user_id], probs[0, user_id+1:]])
             max_other_prob = torch.max(other_probs).item()
-            user_specificity = user_prob - max_other_prob
+            # 修复：使用比例而非差值，避免过度严格
+            user_specificity = user_prob / (user_prob + max_other_prob) if (user_prob + max_other_prob) > 0 else 0.0
             
             # 3. 预测稳定性（针对微多普勒时频图优化）
             # 由于微多普勒时频图对噪声极其敏感，移除噪声扰动测试
@@ -687,8 +688,8 @@ def main():
     # stability_threshold 已移除，因为与confidence重复
     parser.add_argument('--diversity_threshold', type=float, default=0.1,
                        help='特征多样性阈值（防污染级：75%分位数以上，超高多样性）')
-    parser.add_argument('--user_specificity_threshold', type=float, default=0.7,
-                       help='用户特异性要求（适度严格：略高于均值0.668，平衡质量与通过率）')
+    parser.add_argument('--user_specificity_threshold', type=float, default=0.65,
+                       help='用户特异性要求（修正为比例：0.65表示目标用户概率占总和65%以上）')
     # 移除visual_quality_threshold参数
     parser.add_argument('--conservative_mode', action='store_true',
                        help='Enable conservative filtering (stricter thresholds)')
