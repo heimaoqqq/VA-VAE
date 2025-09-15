@@ -551,7 +551,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                     samples = samples[-1]
                 
                 # 反归一化（按照generate_and_filter_samples.py的实现）
-                latent_stats_path = '/kaggle/working/VA-VAE/latents_safetensors/train/latent_stats.pt'
+                latent_stats_path = '/kaggle/input/latent-stats-pt/latent_stats.pt'
                 if os.path.exists(latent_stats_path):
                     latent_stats = torch.load(latent_stats_path, map_location=device)
                     mean = latent_stats['mean'].to(device)
