@@ -78,21 +78,33 @@ def compute_user_specificity_from_samples(samples_dir, classifier, device):
         print("❌ 未找到user_XX格式的文件夹！")
         print("   请确认文件夹命名格式为: user_00, user_01, user_02...")
     
+    total_images_processed = 0
+    total_images_found = 0
+    
     for user_folder in tqdm(user_folders, desc="处理用户"):
         try:
             user_id = int(user_folder.name.split('_')[1])
         except:
+            print(f"⚠️  无法解析用户ID: {user_folder.name}")
             continue
             
         # 获取该用户的所有图像
         image_files = list(user_folder.glob('*.png')) + list(user_folder.glob('*.jpg'))
+        total_images_found += len(image_files)
         
         if len(image_files) == 0:
+            print(f"⚠️  用户{user_id}没有找到图像文件")
             continue
+            
+        print(f"📷 用户{user_id}: 找到{len(image_files)}张图像")
             
         # 随机选择最多50张图像进行分析（避免内存问题）
         if len(image_files) > 50:
             image_files = np.random.choice(image_files, 50, replace=False).tolist()
+            print(f"   → 随机选择{len(image_files)}张进行分析")
+        
+        user_processed = 0
+        user_errors = 0
         
         for img_path in image_files:
             try:
@@ -122,16 +134,33 @@ def compute_user_specificity_from_samples(samples_dir, classifier, device):
                     all_max_other_probs.append(max_other_prob)
                     all_correct.append(pred.item() == user_id)
                     
+                    user_processed += 1
+                    total_images_processed += 1
+                    
             except Exception as e:
-                continue
+                user_errors += 1
+                if user_errors <= 3:  # 只显示前3个错误
+                    print(f"   ❌ 处理图像出错 {img_path.name}: {str(e)[:50]}...")
+        
+        if user_processed > 0:
+            print(f"   ✅ 成功处理{user_processed}张图像")
+        if user_errors > 0:
+            print(f"   ⚠️  {user_errors}张图像处理失败")
     
-    return {
+    print(f"\n📊 总体统计:")
+    print(f"   找到图像总数: {total_images_found}")
+    print(f"   成功处理: {total_images_processed}")
+    print(f"   最终数据点: {len(all_specificities_ratio)}")
+    
+    result = {
         'diff_mode': np.array(all_specificities_diff),
         'ratio_mode': np.array(all_specificities_ratio),
         'user_probs': np.array(all_user_probs),
         'max_other_probs': np.array(all_max_other_probs),
         'correct': np.array(all_correct)
     }
+    
+    return result
 
 def analyze_threshold_performance(data):
     """分析不同阈值的性能"""
