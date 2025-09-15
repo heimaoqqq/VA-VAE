@@ -61,10 +61,22 @@ def compute_user_specificity_from_samples(samples_dir, classifier, device):
     
     samples_path = Path(samples_dir)
     
+    # 调试：检查目录是否存在
+    if not samples_path.exists():
+        print(f"❌ 样本目录不存在: {samples_path}")
+        return {'diff_mode': np.array([]), 'ratio_mode': np.array([]), 'user_probs': np.array([]), 'max_other_probs': np.array([]), 'correct': np.array([])}
+    
+    # 调试：列出目录内容
+    all_items = list(samples_path.iterdir())
+    print(f"📂 目录内容: {[item.name for item in all_items[:10]]}...")  # 只显示前10个
+    
     # 遍历所有用户文件夹
-    user_folders = [f for f in samples_path.iterdir() if f.is_dir() and f.name.startswith('User_')]
+    user_folders = [f for f in samples_path.iterdir() if f.is_dir() and f.name.startswith('user_')]
     
     print(f"🔍 分析 {len(user_folders)} 个用户的样本...")
+    if len(user_folders) == 0:
+        print("❌ 未找到user_XX格式的文件夹！")
+        print("   请确认文件夹命名格式为: user_00, user_01, user_02...")
     
     for user_folder in tqdm(user_folders, desc="处理用户"):
         try:
@@ -78,9 +90,9 @@ def compute_user_specificity_from_samples(samples_dir, classifier, device):
         if len(image_files) == 0:
             continue
             
-        # 随机选择最多100张图像进行分析（避免内存问题）
-        if len(image_files) > 100:
-            image_files = np.random.choice(image_files, 100, replace=False)
+        # 随机选择最多50张图像进行分析（避免内存问题）
+        if len(image_files) > 50:
+            image_files = np.random.choice(image_files, 50, replace=False).tolist()
         
         for img_path in image_files:
             try:
@@ -124,10 +136,20 @@ def compute_user_specificity_from_samples(samples_dir, classifier, device):
 def analyze_threshold_performance(data):
     """分析不同阈值的性能"""
     
+    # 检查是否有数据
+    if len(data['correct']) == 0:
+        print("❌ 没有找到任何样本数据！")
+        print("   请检查样本目录路径和文件夹命名格式")
+        return np.array([])
+    
     # 只分析正确预测的样本
-    correct_mask = data['correct']
+    correct_mask = data['correct'].astype(bool)
     ratio_correct = data['ratio_mode'][correct_mask]
     diff_correct = data['diff_mode'][correct_mask]
+    
+    if len(ratio_correct) == 0:
+        print("❌ 没有找到正确预测的样本！")
+        return np.array([])
     
     print(f"📊 基于 {len(ratio_correct)} 个正确预测样本的分析:")
     
