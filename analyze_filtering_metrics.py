@@ -198,7 +198,6 @@ def analyze_user_samples(sample_dir, classifier, user_id, device):
     confidences = [m['confidence'] for m in sample_metrics]
     margins = [m['margin'] for m in sample_metrics]
     user_specificities = [m['user_specificity'] for m in sample_metrics]
-    stabilities = [m['stability'] for m in sample_metrics]
     correct_predictions = [m['correct'] for m in sample_metrics]
     
     results = {
@@ -241,17 +240,6 @@ def analyze_user_samples(sample_dir, classifier, user_id, device):
                     '75': np.percentile(user_specificities, 75)
                 }
             },
-            'stability': {
-                'mean': np.mean(stabilities),
-                'std': np.std(stabilities),
-                'min': np.min(stabilities),
-                'max': np.max(stabilities),
-                'percentiles': {
-                    '25': np.percentile(stabilities, 25),
-                    '50': np.percentile(stabilities, 50),
-                    '75': np.percentile(stabilities, 75)
-                }
-            },
             'batch_diversity': batch_diversity,
             'filtering_diversity': {
                 'mean': np.mean(filtering_diversity_scores),
@@ -271,7 +259,6 @@ def analyze_user_samples(sample_dir, classifier, user_id, device):
             'confidences': confidences,
             'margins': margins,
             'user_specificities': user_specificities,
-            'stabilities': stabilities,
             'filtering_diversity_scores': filtering_diversity_scores
         }
     }
@@ -288,7 +275,7 @@ def plot_metrics_distribution(results_list, output_dir):
     all_confidences = []
     all_margins = []
     all_user_specificities = []
-    all_stabilities = []
+    all_filtering_diversity = []
     user_ids = []
     
     for result in results_list:
@@ -300,7 +287,7 @@ def plot_metrics_distribution(results_list, output_dir):
         all_confidences.extend(raw_data['confidences'])
         all_margins.extend(raw_data['margins'])
         all_user_specificities.extend(raw_data['user_specificities'])
-        all_stabilities.extend(raw_data['stabilities'])
+        all_filtering_diversity.extend(raw_data['filtering_diversity_scores'])
         user_ids.extend([result['user_id']] * n_samples)
     
     # 创建图表
