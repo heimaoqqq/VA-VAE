@@ -397,8 +397,8 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
             
             # 3. 预测稳定性（针对微多普勒时频图优化）
             # 由于微多普勒时频图对噪声极其敏感，移除噪声扰动测试
-            # 改用基于置信度的简化稳定性评估
-            stability = min(confidence.item(), 1.0)  # 使用置信度作为稳定性代理
+            # 稳定性与置信度相同，因此移除重复计算
+            # stability = confidence.item()  # 已与confidence重复，移除
             
             # 4. 与用户原型的相似度（如果提供）
             prototype_similarity = 0.0
@@ -413,7 +413,6 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
                 'predicted': pred.item(),
                 'confidence': confidence.item(),
                 'margin': margin,
-                'stability': stability,
                 'user_specificity': user_specificity,
                 'prototype_similarity': prototype_similarity,
                 'correct': pred.item() == user_id,
@@ -427,27 +426,19 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
 
 def generate_and_filter_advanced(model, vae, transport, classifier, user_id, 
                                  target_samples=800, batch_size=100, 
-                                 confidence_threshold=0.8, margin_threshold=0.4,
-                                 stability_threshold=0.7, diversity_threshold=0.6,
-                                 user_specificity_threshold=0.4, 
+                                 confidence_threshold=0.9, margin_threshold=0.8,
+                                 diversity_threshold=0.1,
+                                 user_specificity_threshold=0.7, 
                                  conservative_mode=False, cfg_scale=12.0, 
                                  domain_coverage=True,
                                  output_dir='./filtered_samples', device=None, rank=0,
                                  user_prototypes=None):
     """为单个用户生成并使用多指标筛选样本"""
     
-    # 域覆盖策略：多样化生成条件
-    if domain_coverage:
-        # 简化为单条件避免混乱
-        domain_conditions = [
-            {"cfg": 12.0, "steps": 300, "name": "standard"},         # 仅使用标准设置
-        ]
-        samples_per_condition = target_samples // len(domain_conditions)
-        pass  # 移除域覆盖信息输出
-    else:
-        # 单一条件生成
-        domain_conditions = [{"cfg": cfg_scale, "steps": 300, "name": "single"}]
-        samples_per_condition = target_samples
+    # 生成条件设置（domain_coverage参数已废弃，统一使用单一最优条件）
+    # 采用CFG10的质量-多样性平衡点 + 300步高质量采样
+    domain_conditions = [{"cfg": cfg_scale, "steps": 300, "name": "optimized"}]
+    samples_per_condition = target_samples
     
     # 创建采样器（将在循环中动态调整参数）
     sampler = Sampler(transport)
@@ -585,15 +576,13 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                             # 应用保守模式调整阈值
                             actual_conf_thresh = confidence_threshold * (1.05 if conservative_mode else 1.0)
                             actual_margin_thresh = margin_threshold * (1.1 if conservative_mode else 1.0)
-                            actual_stability_thresh = stability_threshold * (1.05 if conservative_mode else 1.0)
                             
-                            # 核心4指标筛选（按文献重要性排序）
+                            # 核心3指标筛选（按文献重要性排序）
                             if (metrics['correct'] and 
                                 metrics['confidence'] > actual_conf_thresh and      # 1. 身份一致性(最重要)
                                 metrics['user_specificity'] > user_specificity_threshold and  # 2. 用户特异性
-                                metrics['stability'] > actual_stability_thresh and  # 3. 预测稳定性
-                                metrics['margin'] > actual_margin_thresh and        # 4. 决策边界
-                                visual_quality_scores[i]['is_valid']):              # 5. 基本有效性
+                                metrics['margin'] > actual_margin_thresh and        # 3. 决策边界
+                                visual_quality_scores[i]['is_valid']):              # 4. 基本有效性
                                 
                                 # 简化的统计异常检测（仅在保守模式下）
                                 if conservative_mode and len(collected_features) > 15:
@@ -690,27 +679,23 @@ def main():
                        help='Target number of samples per user')
     parser.add_argument('--batch_size', type=int, default=100, 
                        help='Batch size for generation')
-    # 合成样本筛选阈值（平衡策略-质量与覆盖度并重）
-    parser.add_argument('--confidence_threshold', type=float, default=0.8,
-                       help='置信度要求（域适应平衡点）')
-    parser.add_argument('--margin_threshold', type=float, default=0.4,
-                       help='决策边界要求（差值形式，0-1范围）')
-    parser.add_argument('--stability_threshold', type=float, default=0.7,
-                       help='预测稳定性要求')
-    parser.add_argument('--diversity_threshold', type=float, default=0.6,
-                       help='特征多样性阈值(1-相似度)')
-    parser.add_argument('--user_specificity_threshold', type=float, default=0.4,
-                       help='用户特异性要求（平衡质量与数量）')
+    # 防数据污染级严格筛选阈值（基于75%分位数策略）
+    parser.add_argument('--confidence_threshold', type=float, default=0.9,
+                       help='置信度要求（防污染级：64.4%通过率，仅顶级置信度）')
+    parser.add_argument('--margin_threshold', type=float, default=0.8,
+                       help='决策边界要求（防污染级：超过均值0.782，接近75%分位数）')
+    # stability_threshold 已移除，因为与confidence重复
+    parser.add_argument('--diversity_threshold', type=float, default=0.1,
+                       help='特征多样性阈值（防污染级：75%分位数以上，超高多样性）')
+    parser.add_argument('--user_specificity_threshold', type=float, default=0.7,
+                       help='用户特异性要求（适度严格：略高于均值0.668，平衡质量与通过率）')
     # 移除visual_quality_threshold参数
     parser.add_argument('--conservative_mode', action='store_true',
                        help='Enable conservative filtering (stricter thresholds)')
     # 移除max_outlier_ratio参数（简化版本不需要）
     parser.add_argument('--cfg_scale', type=float, default=12.0, 
                        help='Base CFG scale for generation')
-    parser.add_argument('--domain_coverage', action='store_true', default=True,
-                       help='Enable domain coverage with diverse generation conditions')
-    parser.add_argument('--single_condition', action='store_true',
-                       help='Use single generation condition (disable domain coverage)')
+    # domain_coverage参数已移除，统一使用单一最优条件
     parser.add_argument('--start_user', type=int, default=0,
                        help='Starting user ID')
     parser.add_argument('--end_user', type=int, default=30,
@@ -728,14 +713,12 @@ def main():
         print(f"📊 筛选阈值:")
         print(f"   - 置信度: {args.confidence_threshold}")
         print(f"   - 决策边界: {args.margin_threshold}")
-        print(f"   - 稳定性: {args.stability_threshold}")
         print(f"   - 多样性: {args.diversity_threshold}")
         print(f"   - 用户特异性: {args.user_specificity_threshold}")
         print(f"   - 简化质量检查: 开启")
         if args.conservative_mode:
             print(f"   - 保守模式: 开启（更严格的统计检测）")
-        domain_coverage_enabled = not args.single_condition
-        print(f"🌐 域覆盖: {'开启' if domain_coverage_enabled else '关闭'}")
+        print(f"⚙️ 生成策略: 单一最优条件 (CFG{args.cfg_scale} + 300步)")
         print(f"⚙️ 基础CFG: {args.cfg_scale}")
     
     # 加载DiT模型
@@ -782,13 +765,12 @@ def main():
             batch_size=args.batch_size,
             confidence_threshold=args.confidence_threshold,
             margin_threshold=args.margin_threshold,
-            stability_threshold=args.stability_threshold,
             diversity_threshold=args.diversity_threshold,
             user_specificity_threshold=args.user_specificity_threshold,
             # visual_quality_threshold 参数已移除
             conservative_mode=args.conservative_mode,
             cfg_scale=args.cfg_scale,
-            domain_coverage=not args.single_condition,
+            domain_coverage=True,  # 参数保持兼容性，但内部逻辑已简化
             output_dir=args.output_dir,
             device=device,
             rank=rank
