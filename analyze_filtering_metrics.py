@@ -97,23 +97,9 @@ def compute_sample_metrics(image_path, classifier, user_id, device):
         max_other_prob = torch.max(other_probs).item()
         user_specificity = user_prob - max_other_prob
         
-        # 4. 稳定性 (使用轻微噪声扰动)
-        stability_scores = []
-        for _ in range(3):
-            noise_scale = 0.01
-            noisy_tensor = img_tensor + torch.randn_like(img_tensor) * noise_scale
-            noisy_tensor = torch.clamp(noisy_tensor, 0, 1)
-            
-            noisy_outputs = classifier(noisy_tensor)
-            if isinstance(noisy_outputs, tuple):
-                noisy_logits = noisy_outputs[0]
-            else:
-                noisy_logits = noisy_outputs
-            
-            noisy_pred = torch.argmax(noisy_logits, dim=1)
-            stability_scores.append(noisy_pred.item() == pred.item())
-        
-        stability = np.mean(stability_scores)
+        # 4. 稳定性 (针对微多普勒时频图优化，移除噪声扰动)
+        # 微多普勒时频图对噪声极其敏感，使用置信度作为稳定性代理
+        stability = min(confidence, 1.0)
         
         # 5. 提取特征用于多样性计算
         features = extract_features(img_tensor, classifier)
