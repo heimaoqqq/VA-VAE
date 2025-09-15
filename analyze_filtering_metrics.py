@@ -317,12 +317,12 @@ def plot_metrics_distribution(results_list, output_dir):
     axes[1, 0].set_title('用户特异性分布')
     axes[1, 0].legend()
     
-    # 4. 稳定性分布
-    axes[1, 1].hist(all_stabilities, bins=20, alpha=0.7, edgecolor='black')
-    axes[1, 1].axvline(0.6, color='red', linestyle='--', label='推荐阈值: 0.6')
-    axes[1, 1].set_xlabel('稳定性')
+    # 4. 筛选多样性分布
+    axes[1, 1].hist(all_filtering_diversity, bins=20, alpha=0.7, edgecolor='black')
+    axes[1, 1].axvline(0.05, color='red', linestyle='--', label='预估阈值: 0.05')
+    axes[1, 1].set_xlabel('筛选多样性 (1-max_similarity)')
     axes[1, 1].set_ylabel('频次')
-    axes[1, 1].set_title('稳定性分布')
+    axes[1, 1].set_title('筛选多样性分布')
     axes[1, 1].legend()
     
     plt.tight_layout()
@@ -349,7 +349,8 @@ def print_summary_report(results_list):
         'confidence': [],
         'margin': [],
         'user_specificity': [],
-        'batch_diversity': []
+        'batch_diversity': [],
+        'filtering_diversity': []
     }
     
     for result in valid_results:
@@ -357,6 +358,7 @@ def print_summary_report(results_list):
         all_metrics['margin'].extend(result['raw_data']['margins'])
         all_metrics['user_specificity'].extend(result['raw_data']['user_specificities'])
         all_metrics['batch_diversity'].append(result['metrics']['batch_diversity'])
+        all_metrics['filtering_diversity'].extend(result['raw_data']['filtering_diversity_scores'])
     
     print(f"\n📈 总体指标统计 (基于 {sum(r['total_samples'] for r in valid_results)} 个样本):")
     
@@ -376,7 +378,8 @@ def print_summary_report(results_list):
     thresholds = {
         'confidence': [0.7, 0.75, 0.8, 0.85, 0.9],
         'margin': [0.2, 0.3, 0.4, 0.5],
-        'user_specificity': [0.1, 0.2, 0.3, 0.4]
+        'user_specificity': [0.1, 0.2, 0.3, 0.4],
+        'filtering_diversity': [0.01, 0.02, 0.03, 0.04, 0.05]
     }
     
     for metric_name, threshold_list in thresholds.items():
