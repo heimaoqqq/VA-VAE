@@ -112,7 +112,7 @@ def compute_sample_metrics(image_path, classifier, user_id, device):
 
 
 def compute_batch_diversity(features_list):
-    """计算批次内特征多样性"""
+    """计算批次内特征多样性（基于平均相似度）"""
     if len(features_list) < 2:
         return 0.0
     
@@ -126,6 +126,29 @@ def compute_batch_diversity(features_list):
     
     diversity_score = 1.0 - avg_similarity
     return diversity_score
+
+
+def compute_filtering_diversity_scores(features_list):
+    """计算筛选式多样性分数（模拟generation_filtering.py逻辑）
+    
+    对每个样本，计算其与其他所有样本的最大相似度，
+    然后返回 1 - max_similarity 作为该样本的diversity_score
+    """
+    if len(features_list) < 2:
+        return [1.0] * len(features_list)
+    
+    features_array = np.array(features_list)
+    cosine_sim_matrix = cosine_similarity(features_array)
+    
+    diversity_scores = []
+    for i in range(len(features_list)):
+        # 获取第i个样本与其他样本的相似度
+        similarities = np.concatenate([cosine_sim_matrix[i][:i], cosine_sim_matrix[i][i+1:]])
+        max_similarity = np.max(similarities) if len(similarities) > 0 else 0.0
+        diversity_score = 1.0 - max_similarity
+        diversity_scores.append(diversity_score)
+    
+    return diversity_scores
 
 
 def analyze_user_samples(sample_dir, classifier, user_id, device):
@@ -167,6 +190,9 @@ def analyze_user_samples(sample_dir, classifier, user_id, device):
     
     # 计算批次多样性
     batch_diversity = compute_batch_diversity(features_list)
+    
+    # 计算筛选式多样性分数
+    filtering_diversity_scores = compute_filtering_diversity_scores(features_list)
     
     # 统计结果
     confidences = [m['confidence'] for m in sample_metrics]
@@ -226,13 +252,27 @@ def analyze_user_samples(sample_dir, classifier, user_id, device):
                     '75': np.percentile(stabilities, 75)
                 }
             },
-            'batch_diversity': batch_diversity
+            'batch_diversity': batch_diversity,
+            'filtering_diversity': {
+                'mean': np.mean(filtering_diversity_scores),
+                'std': np.std(filtering_diversity_scores),
+                'min': np.min(filtering_diversity_scores),
+                'max': np.max(filtering_diversity_scores),
+                'percentiles': {
+                    '25': np.percentile(filtering_diversity_scores, 25),
+                    '50': np.percentile(filtering_diversity_scores, 50),
+                    '75': np.percentile(filtering_diversity_scores, 75),
+                    '90': np.percentile(filtering_diversity_scores, 90),
+                    '95': np.percentile(filtering_diversity_scores, 95)
+                }
+            }
         },
         'raw_data': {
             'confidences': confidences,
             'margins': margins,
             'user_specificities': user_specificities,
-            'stabilities': stabilities
+            'stabilities': stabilities,
+            'filtering_diversity_scores': filtering_diversity_scores
         }
     }
     
