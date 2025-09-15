@@ -403,11 +403,7 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
             # 统一为差值法（与analyze_filtering_metrics.py一致）
             user_specificity = user_prob - max_other_prob  # 范围[-1, 1]，正值表示目标用户概率更高
             
-            # 调试信息：检查概率分布是否合理
-            if user_specificity > 0.9:
-                top3_probs = torch.topk(probs[0], k=3)
-                print(f"[DEBUG] 异常高特异性 {user_specificity:.3f}: 目标用户{user_id}={user_prob:.4f}, 最高其他={max_other_prob:.4f}")
-                print(f"[DEBUG] Top3概率: {top3_probs.values.tolist()}, 索引: {top3_probs.indices.tolist()}")
+            # 移除调试信息输出
             
             # 3. 预测稳定性（针对微多普勒时频图优化）
             # 由于微多普勒时频图对噪声极其敏感，移除噪声扰动测试
@@ -604,7 +600,7 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                                 metrics['margin'] >= actual_margin_thresh and        # 3. 决策边界
                                 visual_quality_scores[i]['is_valid'] and            # 4. 基本有效性
                                 (metrics['predicted'] == user_id or                 # 5. 严格要求：必须预测为目标用户
-                                 (metrics['user_specificity'] >= 0.8 and metrics['confidence'] >= 0.92))):  # 或极高质量（差值法0.8接近50%分位）
+                                 (metrics['user_specificity'] >= 0.95 and metrics['confidence'] >= 0.92))):  # 或极高质量（差值法0.95顶级）
                                 
                                 # 简化的统计异常检测（仅在保守模式下）
                                 if conservative_mode and len(collected_features) > 15:
@@ -735,8 +731,8 @@ def main():
     # stability_threshold 已移除，因为与confidence重复
     parser.add_argument('--diversity_threshold', type=float, default=0.035,
                        help='特征多样性阈值（0.035对应~40%通过率，平衡多样性与质量）')
-    parser.add_argument('--user_specificity_threshold', type=float, default=0.8,
-                       help='用户特异性要求（防污染：0.7对应~55%通过率，介于25%-50%分位数）')
+    parser.add_argument('--user_specificity_threshold', type=float, default=0.95,
+                       help='用户特异性要求（极严格：0.95仅保留顶级身份纯净样本，约5-10%通过率）')
     # 移除visual_quality_threshold参数
     parser.add_argument('--conservative_mode', action='store_true',
                        help='Enable conservative filtering (stricter thresholds)')
