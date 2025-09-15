@@ -115,7 +115,14 @@ def compute_user_specificity_from_samples(samples_dir, classifier, device):
                 with torch.no_grad():
                     # 获取分类器输出
                     outputs = classifier(img_tensor)
-                    probs = F.softmax(outputs, dim=1)
+                    
+                    # 处理分类器输出格式（可能是tuple）
+                    if isinstance(outputs, tuple):
+                        logits = outputs[0]  # 通常第一个元素是logits
+                    else:
+                        logits = outputs
+                    
+                    probs = F.softmax(logits, dim=1)
                     
                     # 计算指标
                     confidence, pred = torch.max(probs, dim=1)
