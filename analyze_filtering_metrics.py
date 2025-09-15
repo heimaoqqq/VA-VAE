@@ -99,7 +99,7 @@ def compute_sample_metrics(image_path, classifier, user_id, device):
         
         # 4. 稳定性 (针对微多普勒时频图优化，移除噪声扰动)
         # 微多普勒时频图对噪声极其敏感，使用置信度作为稳定性代理
-        stability = min(confidence, 1.0)
+        stability = confidence
         
         # 5. 提取特征用于多样性计算
         features = extract_features(img_tensor, classifier)
