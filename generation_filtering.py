@@ -403,6 +403,12 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
             # 统一为差值法（与analyze_filtering_metrics.py一致）
             user_specificity = user_prob - max_other_prob  # 范围[-1, 1]，正值表示目标用户概率更高
             
+            # 调试信息：检查概率分布是否合理
+            if user_specificity > 0.9:
+                top3_probs = torch.topk(probs[0], k=3)
+                print(f"[DEBUG] 异常高特异性 {user_specificity:.3f}: 目标用户{user_id}={user_prob:.4f}, 最高其他={max_other_prob:.4f}")
+                print(f"[DEBUG] Top3概率: {top3_probs.values.tolist()}, 索引: {top3_probs.indices.tolist()}")
+            
             # 3. 预测稳定性（针对微多普勒时频图优化）
             # 由于微多普勒时频图对噪声极其敏感，移除噪声扰动测试
             # 稳定性与置信度相同，因此移除重复计算
