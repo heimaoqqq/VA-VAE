@@ -400,8 +400,8 @@ def compute_user_specific_metrics(images, classifier, user_id, device, user_prot
             user_prob = probs[0, user_id].item()
             other_probs = torch.cat([probs[0, :user_id], probs[0, user_id+1:]])
             max_other_prob = torch.max(other_probs).item()
-            # 修复：使用比例而非差值，避免过度严格
-            user_specificity = user_prob / (user_prob + max_other_prob) if (user_prob + max_other_prob) > 0 else 0.0
+            # 统一为差值法（与analyze_filtering_metrics.py一致）
+            user_specificity = user_prob - max_other_prob  # 范围[-1, 1]，正值表示目标用户概率更高
             
             # 3. 预测稳定性（针对微多普勒时频图优化）
             # 由于微多普勒时频图对噪声极其敏感，移除噪声扰动测试
@@ -585,12 +585,14 @@ def generate_and_filter_advanced(model, vae, transport, classifier, user_id,
                             actual_conf_thresh = confidence_threshold * (1.05 if conservative_mode else 1.0)
                             actual_margin_thresh = margin_threshold * (1.1 if conservative_mode else 1.0)
                             
-                            # 核心3指标筛选（按文献重要性排序）
-                            if (metrics['correct'] and 
-                                metrics['confidence'] > actual_conf_thresh and      # 1. 身份一致性(最重要)
-                                metrics['user_specificity'] > user_specificity_threshold and  # 2. 用户特异性
-                                metrics['margin'] > actual_margin_thresh and        # 3. 决策边界
-                                visual_quality_scores[i]['is_valid']):              # 4. 基本有效性
+                            # 宁缺毋滥策略：严格筛选防止数据污染
+                            # 文献支持：高置信度(0.9+)是防止噪声标签的关键
+                            if (metrics['confidence'] >= actual_conf_thresh and      # 1. 置信度（防污染关键）
+                                metrics['user_specificity'] >= user_specificity_threshold and  # 2. 用户特异性
+                                metrics['margin'] >= actual_margin_thresh and        # 3. 决策边界
+                                visual_quality_scores[i]['is_valid'] and            # 4. 基本有效性
+                                (metrics['predicted'] == user_id or                 # 5. 严格要求：必须预测为目标用户
+                                 (metrics['user_specificity'] >= 0.8 and metrics['confidence'] >= 0.92))):  # 或极高质量（差值法0.8接近50%分位）
                                 
                                 # 简化的统计异常检测（仅在保守模式下）
                                 if conservative_mode and len(collected_features) > 15:
@@ -688,21 +690,21 @@ def main():
     parser.add_argument('--batch_size', type=int, default=100, 
                        help='Batch size for generation')
     # 防数据污染级严格筛选阈值（基于75%分位数策略）
-    parser.add_argument('--confidence_threshold', type=float, default=0.9,
-                       help='置信度要求（防污染级：64.4%通过率，仅顶级置信度）')
-    parser.add_argument('--margin_threshold', type=float, default=0.8,
-                       help='决策边界要求（防污染级：超过均值0.782，接近75%分位数）')
+    parser.add_argument('--confidence_threshold', type=float, default=0.92,
+                       help='置信度要求（宁缺毋滥：0.92对应~60%通过率，文献建议0.9+防止噪声）')
+    parser.add_argument('--margin_threshold', type=float, default=0.85,
+                       help='决策边界要求（宁缺毋滥：0.85对应~70%通过率，确保决策清晰）')
     # stability_threshold 已移除，因为与confidence重复
-    parser.add_argument('--diversity_threshold', type=float, default=0.1,
-                       help='特征多样性阈值（防污染级：75%分位数以上，超高多样性）')
-    parser.add_argument('--user_specificity_threshold', type=float, default=0.65,
-                       help='用户特异性要求（修正为比例：0.65表示目标用户概率占总和65%以上）')
+    parser.add_argument('--diversity_threshold', type=float, default=0.035,
+                       help='特征多样性阈值（0.035对应~40%通过率，平衡多样性与质量）')
+    parser.add_argument('--user_specificity_threshold', type=float, default=0.8,
+                       help='用户特异性要求（防污染：0.7对应~55%通过率，介于25%-50%分位数）')
     # 移除visual_quality_threshold参数
     parser.add_argument('--conservative_mode', action='store_true',
                        help='Enable conservative filtering (stricter thresholds)')
     # 移除max_outlier_ratio参数（简化版本不需要）
-    parser.add_argument('--cfg_scale', type=float, default=12.0, 
-                       help='Base CFG scale for generation')
+    parser.add_argument('--cfg_scale', type=float, default=10.0, 
+                       help='CFG scale（10.0=身份准确性与多样性平衡，防止数据污染）')
     # domain_coverage参数已移除，统一使用单一最优条件
     parser.add_argument('--start_user', type=int, default=0,
                        help='Starting user ID')
