@@ -232,6 +232,39 @@ def do_train(train_config, accelerator):
         latent_norm=train_config['data']['latent_norm'],
         latent_multiplier=train_config['data']['latent_multiplier']
     )
+    
+    # 统计每个用户的图像数量
+    if accelerator.is_main_process:
+        from pathlib import Path
+        data_path = Path(train_config['data']['data_path'])
+        print("\n" + "="*60)
+        print("📊 数据集统计信息")
+        print("="*60)
+        
+        # 统计每个用户的图像数量
+        user_counts = {}
+        total_images = 0
+        for user_dir in sorted(data_path.glob("User_*")):
+            if user_dir.is_dir():
+                user_id = int(user_dir.name.split('_')[1])
+                jpg_files = list(user_dir.glob("*.jpg"))
+                png_files = list(user_dir.glob("*.png"))
+                user_total = len(jpg_files) + len(png_files)
+                user_counts[user_id] = {
+                    'total': user_total,
+                    'jpg': len(jpg_files),
+                    'png': len(png_files)
+                }
+                total_images += user_total
+        
+        # 打印详细统计
+        for user_id in sorted(user_counts.keys()):
+            counts = user_counts[user_id]
+            print(f"User_{user_id:02d}: {counts['total']:3d} 张 (JPG: {counts['jpg']:3d}, PNG: {counts['png']:3d})")
+        
+        print(f"\n📈 总计: {total_images} 张图像")
+        print(f"📁 数据路径: {train_config['data']['data_path']}")
+        print("="*60 + "\n")
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
     global_batch_size = batch_size_per_gpu * accelerator.num_processes
     
@@ -251,8 +284,11 @@ def do_train(train_config, accelerator):
         if hasattr(train_dataset, 'labels') and len(train_dataset.labels) > 0:
             import collections
             label_counts = collections.Counter(train_dataset.labels)
-            print(f"[DATASET INFO] 标签分布: {dict(sorted(label_counts.items()))}")
-            print(f"[DATASET INFO] 标签范围: {min(train_dataset.labels)} - {max(train_dataset.labels)}")
+            print(f"\n📊 标签分布统计:")
+            for label, count in sorted(label_counts.items()):
+                print(f"  User_{label:02d}: {count:3d} 个样本")
+            print(f"\n📈 标签范围: {min(train_dataset.labels)} - {max(train_dataset.labels)}")
+            print(f"📈 总训练样本: {len(train_dataset)} 个")
     
     if 'valid_path' in train_config['data'] and train_config['data']['valid_path']:
         # 使用独立验证集
@@ -274,12 +310,16 @@ def do_train(train_config, accelerator):
         valid_dataset = None
     
     if accelerator.is_main_process:
-        logger.info(f"Training dataset: {len(train_dataset):,} images")
+        print(f"\n{'='*60}")
+        print(f"🎯 数据集加载完成:")
+        print(f"  训练集: {len(train_dataset):,} 个样本")
         if valid_dataset is not None:
-            logger.info(f"Validation dataset: {len(valid_dataset):,} images")
-            print(f"[SETUP] Validation set: {len(valid_dataset):,} images")
+            print(f"  验证集: {len(valid_dataset):,} 个样本")
+            train_ratio = len(train_dataset) / (len(train_dataset) + len(valid_dataset)) * 100
+            print(f"  训练/验证比例: {train_ratio:.1f}% / {100-train_ratio:.1f}%")
         else:
-            print(f"[SETUP] No validation set configured")
+            print(f"  验证集: 未设置")
+        print(f"={'='*60}\n")
 
     # Prepare models for training:
     update_ema(ema, model.module, decay=0)  # Ensure EMA is initialized with synced weights
