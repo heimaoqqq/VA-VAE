@@ -40,7 +40,7 @@ train:
   ckpt: '/kaggle/input/50000-pt/0050000.pt'  # 加载预训练权重
   log_every: 100                  # 更频繁的日志
   ckpt_every: 500                # 每500步保存
-  resume: true                    # 从检查点恢复
+  resume: false                   # 不从检查点恢复，使用预训练权重
   early_stopping_patience: 8      # 稍微延长耐心
   ema_decay: 0.999               # 小数据集优化的EMA衰减率
 
