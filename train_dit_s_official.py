@@ -287,7 +287,7 @@ def do_train(train_config, accelerator):
         latent_multiplier=train_config['data']['latent_multiplier']
     )
     
-    # 统计每个用户的图像数量
+    # 统计latent文件数量（不是图像文件）
     if accelerator.is_main_process:
         from pathlib import Path
         data_path = Path(train_config['data']['data_path'])
@@ -295,28 +295,15 @@ def do_train(train_config, accelerator):
         print("📊 数据集统计信息")
         print("="*60)
         
-        # 统计每个用户的图像数量
-        user_counts = {}
-        total_images = 0
-        for user_dir in sorted(data_path.glob("User_*")):
-            if user_dir.is_dir():
-                user_id = int(user_dir.name.split('_')[1])
-                jpg_files = list(user_dir.glob("*.jpg"))
-                png_files = list(user_dir.glob("*.png"))
-                user_total = len(jpg_files) + len(png_files)
-                user_counts[user_id] = {
-                    'total': user_total,
-                    'jpg': len(jpg_files),
-                    'png': len(png_files)
-                }
-                total_images += user_total
+        # 统计safetensors文件
+        safetensors_files = list(data_path.glob("*.safetensors"))
+        if safetensors_files:
+            print(f"📂 Latent文件: {len(safetensors_files)} 个.safetensors文件")
+            for f in safetensors_files[:3]:  # 显示前3个
+                print(f"   - {f.name}")
+            if len(safetensors_files) > 3:
+                print(f"   ... 及其他{len(safetensors_files)-3}个文件")
         
-        # 打印详细统计
-        for user_id in sorted(user_counts.keys()):
-            counts = user_counts[user_id]
-            print(f"User_{user_id:02d}: {counts['total']:3d} 张 (JPG: {counts['jpg']:3d}, PNG: {counts['png']:3d})")
-        
-        print(f"\n📈 总计: {total_images} 张图像")
         print(f"📁 数据路径: {train_config['data']['data_path']}")
         print("="*60 + "\n")
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
