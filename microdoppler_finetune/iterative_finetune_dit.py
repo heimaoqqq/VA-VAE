@@ -256,12 +256,15 @@ class IterativeTraining:
                 dst_dir = augmented_dir / f"User_{user_id:02d}"
                 dst_dir.mkdir(parents=True, exist_ok=True)
                 
-                existing_files = list(dst_dir.glob("*.png"))
+                # 统一处理jpg和png文件
+                existing_files = list(dst_dir.glob("*.jpg")) + list(dst_dir.glob("*.png"))
                 start_idx = len(existing_files)
                 
                 for idx, sample_info in enumerate(samples):
                     src_path = sample_info['path']
-                    dst_path = dst_dir / f"synthetic_{start_idx + idx:04d}.png"
+                    # 保持原始文件扩展名
+                    ext = src_path.suffix  # .png
+                    dst_path = dst_dir / f"synthetic_{start_idx + idx:04d}{ext}"
                     shutil.copy2(src_path, dst_path)
                     added_count += 1
             
