@@ -345,11 +345,14 @@ def do_train(train_config, accelerator):
         else:
             if accelerator.is_main_process:
                 logger.info("No checkpoint found. Starting training from scratch.")
+            train_steps = 0  # 初始化train_steps为0
+    else:
+        # resume=False的情况
+        train_steps = 0
+    
     model, opt, loader = accelerator.prepare(model, opt, loader)
 
     # Variables for monitoring/logging purposes:
-    if not train_config['train']['resume']:
-        train_steps = 0
     log_steps = 0
     running_loss = 0
     start_time = time()
