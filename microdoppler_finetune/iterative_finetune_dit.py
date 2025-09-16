@@ -197,9 +197,9 @@ class IterativeTraining:
     
     def select_high_quality_samples(self, filtered_samples_dir, 
                                    samples_per_user=50,  # 基于实际筛选结果：每用户50张
-                                   min_confidence=0.95,
-                                   min_specificity=0.97):
-        """选择高质量样本"""
+                                   min_confidence=0.0,  # 设为0，使用所有已筛选样本
+                                   min_specificity=0.0):  # 设为0，使用所有已筛选样本
+        """选择高质量样本（已筛选的直接使用）"""
         selected = defaultdict(list)
         filtered_dir = Path(filtered_samples_dir)
         
@@ -208,22 +208,13 @@ class IterativeTraining:
             candidates = []
             
             for sample_path in user_dir.glob("*.png"):
-                parts = sample_path.stem.split('_')
-                conf, spec = 0, 0
-                
-                for part in parts:
-                    if part.startswith('conf'):
-                        conf = float(part[4:])
-                    elif part.startswith('spec'):
-                        spec = float(part[4:])
-                
-                if conf >= min_confidence and spec >= min_specificity:
-                    candidates.append({
-                        'path': sample_path,
-                        'conf': conf,
-                        'spec': spec,
-                        'score': conf * 0.5 + spec * 0.5
-                    })
+                # 直接添加所有样本，不再筛选
+                candidates.append({
+                    'path': sample_path,
+                    'conf': 1.0,  # 默认值
+                    'spec': 1.0,  # 默认值
+                    'score': 1.0  # 默认值
+                })
             
             candidates.sort(key=lambda x: x['score'], reverse=True)
             # 取最小值：实际可用样本数 vs 请求的样本数
@@ -411,8 +402,8 @@ class IterativeTraining:
         selected = self.select_high_quality_samples(
             filtered_samples_dir,
             samples_per_user=samples_per_user,
-            min_confidence=0.95,
-            min_specificity=0.97
+            min_confidence=0.0,  # 使用所有已筛选样本
+            min_specificity=0.0   # 不再额外筛选
         )
         
         # 3. 创建增强数据集
