@@ -42,26 +42,41 @@ class MicrodopplerDataset(torch.utils.data.Dataset):
             image = self.transform(image)
         
         # 条件生成：从文件路径提取用户ID
-        # 路径格式: /path/to/ID_X/IDX_caseX_X_DopplerX.jpg
+        # 支持两种格式：
+        # 1. /path/to/ID_X/... (ID_1->0, ID_2->1, ..., ID_31->30)
+        # 2. /path/to/User_XX/... (User_00->0, User_01->1, ..., User_30->30)
         import re
         path_parts = Path(image_path).parts
         user_folder = None
         for part in path_parts:
-            if part.startswith('ID_'):
+            if part.startswith('ID_') or part.startswith('User_'):
                 user_folder = part
                 break
                 
         if user_folder:
-            # 提取用户ID: ID_1->0, ID_2->1, ..., ID_31->30
-            match = re.match(r'ID_(\d+)', user_folder)
-            if match:
-                user_id = int(match.group(1))
-                label = user_id - 1  # ID_1->0, ID_2->1, etc.
-                if label < 0 or label >= 31:
-                    print(f"⚠️ 用户ID超出范围: {user_folder} -> {label}, 使用0")
-                    label = 0
+            label = 0  # 默认值
+            
+            # 处理ID_X格式
+            if user_folder.startswith('ID_'):
+                match = re.match(r'ID_(\d+)', user_folder)
+                if match:
+                    user_id = int(match.group(1))
+                    label = user_id - 1  # ID_1->0, ID_2->1, etc.
+                else:
+                    print(f"⚠️ 无法解析ID格式: {user_folder}, 使用0")
+            # 处理User_XX格式
+            elif user_folder.startswith('User_'):
+                match = re.match(r'User_(\d+)', user_folder)
+                if match:
+                    label = int(match.group(1))  # User_00->0, User_01->1, etc.
+                else:
+                    print(f"⚠️ 无法解析User格式: {user_folder}, 使用0")
             else:
-                print(f"⚠️ 无法解析用户ID: {user_folder}, 使用0")
+                print(f"⚠️ 未知文件夹格式: {user_folder}, 使用0")
+                
+            # 检查范围
+            if label < 0 or label >= 31:
+                print(f"⚠️ 用户ID超出范围: {user_folder} -> {label}, 使用0")
                 label = 0
         else:
             print(f"⚠️ 未找到用户文件夹: {image_path}, 使用0")
