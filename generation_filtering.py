@@ -824,15 +824,18 @@ def main():
     # 打印当前GPU完成情况
     print(f"GPU {rank} 完成: 收集了 {total_collected} 个样本 (处理了 {len(my_users)} 个用户)")
     
-    # 同步所有GPU的结果
+    # 移除强制同步，避免NCCL超时问题
+    # 每个GPU独立完成，无需等待其他GPU
     if world_size > 1:
         try:
-            dist.barrier()
+            # 仅收集统计信息，不强制同步
             total_tensor = torch.tensor([total_collected], device=device)
-            dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
-            total_collected = total_tensor.item()
+            # 注释掉barrier和all_reduce，避免超时
+            # dist.barrier()  
+            # dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
+            # total_collected = total_tensor.item()
         except Exception as e:
-            print(f"⚠️ GPU {rank} 同步失败: {e}")
+            print(f"⚠️ GPU {rank} 统计失败: {e}")
     
     if rank == 0:
         print(f"🎯 生成完成！")
