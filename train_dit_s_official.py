@@ -14,6 +14,7 @@ import torch.distributed as dist
 import torch.backends.cuda
 import torch.backends.cudnn
 import sys  # 添加sys用于强制刷新输出
+import os  # 确保os在顶部导入
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
@@ -32,7 +33,6 @@ import yaml
 import json
 import numpy as np
 import logging
-import os
 import argparse
 from time import time
 from glob import glob
@@ -185,10 +185,10 @@ def do_train(train_config, accelerator):
     pretrained_path = train_config['train'].get('ckpt') or train_config['train'].get('weight_init')
     if accelerator.is_main_process:
         print(f"[DEBUG] Looking for pretrained weights at: {pretrained_path}")
+        print(f"[DEBUG] Model in_channels: {train_config['model'].get('in_chans', 4)}")
     
     if pretrained_path:
         # 检查文件是否存在
-        import os
         if os.path.exists(pretrained_path):
             if accelerator.is_main_process:
                 print(f"[PRETRAINED] Loading weights from: {pretrained_path}")
@@ -203,13 +203,39 @@ def do_train(train_config, accelerator):
             # remove the prefix 'module.' from the keys
             if 'model' in checkpoint:
                 checkpoint['model'] = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
+                
+                # 打印详细调试信息
+                if accelerator.is_main_process:
+                    # 检查关键参数
+                    x_embedder_weight = checkpoint['model'].get('x_embedder.proj.weight')
+                    if x_embedder_weight is not None:
+                        print(f"[CHECKPOINT] x_embedder.proj.weight shape: {x_embedder_weight.shape}")
+                    else:
+                        print(f"[CHECKPOINT] x_embedder.proj.weight NOT FOUND")
+                        print(f"[CHECKPOINT] First 10 keys: {list(checkpoint['model'].keys())[:10]}")
+                    
+                    model_x_embedder = model.state_dict().get('x_embedder.proj.weight')
+                    if model_x_embedder is not None:
+                        print(f"[MODEL] x_embedder.proj.weight shape: {model_x_embedder.shape}")
+                    
+                    # 检查模型类型
+                    print(f"[MODEL TYPE] {train_config['model']['model_type']}")
+                    print(f"[MODEL] Total parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
+                
                 model = load_weights_with_shape_check(model, checkpoint, rank=rank)
                 ema = load_weights_with_shape_check(ema, checkpoint, rank=rank) 
                 if accelerator.is_main_process:
                     print(f"[PRETRAINED] Successfully loaded pretrained weights")
+            elif 'ema' in checkpoint:
+                # 可能权重保存在ema字段中
+                if accelerator.is_main_process:
+                    print(f"[INFO] Loading from 'ema' field instead of 'model'")
+                checkpoint['model'] = checkpoint['ema']
+                model = load_weights_with_shape_check(model, checkpoint, rank=rank)
+                ema = load_weights_with_shape_check(ema, checkpoint, rank=rank)
             else:
                 if accelerator.is_main_process:
-                    print(f"[ERROR] Checkpoint doesn't contain 'model' key!")
+                    print(f"[ERROR] Checkpoint doesn't contain 'model' or 'ema' key!")
                     print(f"[ERROR] Available keys: {checkpoint.keys()}")
         else:
             if accelerator.is_main_process:
@@ -512,27 +538,29 @@ def do_train(train_config, accelerator):
 def load_weights_with_shape_check(model, checkpoint, rank=0):
     
     model_state_dict = model.state_dict()
+    loaded_params = 0
+    skipped_params = 0
+    
     # check shape and load weights
     for name, param in checkpoint['model'].items():
         if name in model_state_dict:
             if param.shape == model_state_dict[name].shape:
                 model_state_dict[name].copy_(param)
-            elif name == 'x_embedder.proj.weight':
-                # special case for x_embedder.proj.weight
-                # Handle channel mismatch: pretrained has 4 channels, our VA-VAE has 32 channels
-                weight = torch.zeros_like(model_state_dict[name])
-                in_channels = min(param.shape[1], model_state_dict[name].shape[1])
-                weight[:, :in_channels] = param[:, :in_channels]
-                model_state_dict[name] = weight
-                if rank == 0:
-                    print(f"Adapted '{name}' from {param.shape} to {model_state_dict[name].shape}")
+                loaded_params += 1
             else:
+                # 不要对x_embedder.proj.weight做特殊处理，32通道权重应该完全匹配
                 if rank == 0:
-                    print(f"Skipping loading parameter '{name}' due to shape mismatch: "
-                        f"checkpoint shape {param.shape}, model shape {model_state_dict[name].shape}")
+                    print(f"[WARNING] Shape mismatch for '{name}': "
+                        f"checkpoint {param.shape} vs model {model_state_dict[name].shape}")
+                skipped_params += 1
         else:
             if rank == 0:
-                print(f"Parameter '{name}' not found in model, skipping.")
+                print(f"[WARNING] Parameter '{name}' not found in model")
+            skipped_params += 1
+    
+    if rank == 0:
+        print(f"[LOAD SUMMARY] Loaded {loaded_params} params, skipped {skipped_params} params")
+    
     # load state dict
     model.load_state_dict(model_state_dict, strict=False)
     
