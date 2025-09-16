@@ -234,15 +234,20 @@ class IterativeTraining:
         augmented_dir = self.output_path / f"iteration_{iteration}_dataset"
         augmented_dir.mkdir(exist_ok=True)
         
-        # 复制原始数据
+        # 复制原始数据（ID_1 到 ID_31 映射到 User_00 到 User_30）
         if self.rank == 0:  # 只有主进程复制
             print(f"复制原始数据集到 {augmented_dir}")
             for user_id in range(31):
-                src_dir = self.base_dataset / f"User_{user_id:02d}"
+                # 真实数据集：ID_1 到 ID_31
+                src_dir = self.base_dataset / f"ID_{user_id+1}"
+                # 目标格式：User_00 到 User_30
                 dst_dir = augmented_dir / f"User_{user_id:02d}"
                 
                 if src_dir.exists():
+                    print(f"  复制 {src_dir.name} -> {dst_dir.name}")
                     shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+                else:
+                    print(f"  警告：找不到原始数据目录 {src_dir}")
         
         # 添加合成样本
         if self.rank == 0:  # 只有主进程操作
