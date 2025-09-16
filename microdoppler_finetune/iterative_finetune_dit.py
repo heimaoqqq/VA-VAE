@@ -226,9 +226,15 @@ class IterativeTraining:
                     })
             
             candidates.sort(key=lambda x: x['score'], reverse=True)
-            selected[user_id] = candidates[:samples_per_user]
+            # 取最小值：实际可用样本数 vs 请求的样本数
+            actual_samples = min(len(candidates), samples_per_user)
+            selected[user_id] = candidates[:actual_samples]
             
-            print(f"User_{user_id:02d}: 选择 {len(selected[user_id])}/{len(candidates)} 个高质量样本")
+            if self.rank == 0:  # 只有主进程打印
+                if actual_samples < samples_per_user:
+                    print(f"User_{user_id:02d}: 选择 {actual_samples}/{len(candidates)} 个高质量样本 (不足{samples_per_user}张)")
+                else:
+                    print(f"User_{user_id:02d}: 选择 {actual_samples}/{len(candidates)} 个高质量样本")
         
         return selected
     
@@ -238,30 +244,36 @@ class IterativeTraining:
         augmented_dir.mkdir(exist_ok=True)
         
         # 复制原始数据
-        print(f"复制原始数据集到 {augmented_dir}")
-        for user_id in range(31):
-            src_dir = self.base_dataset / f"User_{user_id:02d}"
-            dst_dir = augmented_dir / f"User_{user_id:02d}"
-            
-            if src_dir.exists():
-                shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+        if self.rank == 0:  # 只有主进程复制
+            print(f"复制原始数据集到 {augmented_dir}")
+            for user_id in range(31):
+                src_dir = self.base_dataset / f"User_{user_id:02d}"
+                dst_dir = augmented_dir / f"User_{user_id:02d}"
+                
+                if src_dir.exists():
+                    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
         
         # 添加合成样本
-        added_count = 0
-        for user_id, samples in selected_samples.items():
-            dst_dir = augmented_dir / f"User_{user_id:02d}"
-            dst_dir.mkdir(parents=True, exist_ok=True)
+        if self.rank == 0:  # 只有主进程操作
+            added_count = 0
+            for user_id, samples in selected_samples.items():
+                dst_dir = augmented_dir / f"User_{user_id:02d}"
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                
+                existing_files = list(dst_dir.glob("*.png"))
+                start_idx = len(existing_files)
+                
+                for idx, sample_info in enumerate(samples):
+                    src_path = sample_info['path']
+                    dst_path = dst_dir / f"synthetic_{start_idx + idx:04d}.png"
+                    shutil.copy2(src_path, dst_path)
+                    added_count += 1
             
-            existing_files = list(dst_dir.glob("*.png"))
-            start_idx = len(existing_files)
-            
-            for idx, sample_info in enumerate(samples):
-                src_path = sample_info['path']
-                dst_path = dst_dir / f"synthetic_{start_idx + idx:04d}.png"
-                shutil.copy2(src_path, dst_path)
-                added_count += 1
+            print(f"✅ 添加了 {added_count} 个合成样本到增强数据集")
         
-        print(f"✅ 添加了 {added_count} 个合成样本到增强数据集")
+        # 同步所有进程
+        if dist.is_initialized():
+            dist.barrier()
         return augmented_dir
     
     def prepare_augmented_dataset(self, original_data_path, synthetic_samples_path):
@@ -371,17 +383,21 @@ class IterativeTraining:
             use_contrastive: 是否在微调时使用对比学习
         """
         self.iteration += 1
-        print(f"\n{'='*60}")
-        print(f"🔄 第 {self.iteration} 轮迭代训练")
-        print(f"{'='*60}")
+        if self.rank == 0:  # 只有主进程打印
+            print(f"\n{'='*60}")
+            print(f"🔄 第 {self.iteration} 轮迭代训练")
+            print(f"{'='*60}")
         
         # 1. 分析合成样本质量
-        print("\n1️⃣ 分析合成样本质量...")
+        if self.rank == 0:
+            print("\n1️⃣ 分析合成样本质量...")
         stats = self.analyze_synthetic_quality(filtered_samples_dir)
         
         # 2. 选择高质量样本
-        print("\n2️⃣ 选择高质量样本...")
-        # 基于实际筛选结果调整（每用户已有100个高质量样本）
+        if self.rank == 0:
+            print("\n2️⃣ 选择高质量样本...")
+        
+        # 根据迭代轮次调整样本数量
         if self.iteration == 1:
             samples_per_user = 50  # 第1轮：使用50%的筛选样本
         elif self.iteration == 2:
@@ -389,7 +405,8 @@ class IterativeTraining:
         else:
             samples_per_user = 100  # 第3轮：使用全部筛选样本
         
-        print(f"  📊 第{self.iteration}轮：每用户{samples_per_user}张，总增{samples_per_user*31}张")
+        if self.rank == 0:
+            print(f"  📊 第{self.iteration}轮：每用户{samples_per_user}张，总增{samples_per_user*31}张")
         
         selected = self.select_high_quality_samples(
             filtered_samples_dir,
@@ -399,11 +416,14 @@ class IterativeTraining:
         )
         
         # 3. 创建增强数据集
-        print("\n3️⃣ 创建增强数据集...")
+        if self.rank == 0:
+            print("\n3️⃣ 创建增强数据集...")
         augmented_dir = self.augment_dataset(selected, self.iteration)
         
         # 4. 配置微调参数
-        print("\n4️⃣ 配置微调参数...")
+        if self.rank == 0:
+            print("\n4️⃣ 配置微调参数...")
+        
         finetune_config = {
             'iteration': self.iteration,
             'base_checkpoint': self.base_checkpoint,
@@ -419,8 +439,9 @@ class IterativeTraining:
         
         # 5. 保存配置
         config_path = self.output_path / f"iteration_{self.iteration}_config.yaml"
-        with open(config_path, 'w') as f:
-            yaml.dump(finetune_config, f)
+        if self.rank == 0:  # 只有主进程保存
+            with open(config_path, 'w') as f:
+                yaml.dump(finetune_config, f)
         
         # 6. 记录迭代信息
         iteration_info = {
@@ -433,18 +454,23 @@ class IterativeTraining:
         
         # 保存日志
         log_path = self.output_path / 'iteration_log.json'
-        with open(log_path, 'w') as f:
-            json.dump(self.iteration_log, f, indent=2, default=str)
+        if self.rank == 0:  # 只有主进程保存
+            with open(log_path, 'w') as f:
+                json.dump(self.iteration_log, f, indent=2, default=str)
+            
+            print(f"\n✅ 第 {self.iteration} 轮准备完成!")
+            print(f"📁 增强数据集: {augmented_dir}")
+            print(f"📄 配置文件: {config_path}")
+            
+            if use_contrastive:
+                print("\n📌 对比学习说明:")
+                print("  - 在微调时引入，不是预训练")
+                print("  - 增强31个用户的区分能力")
+                print("  - 损失权重: 0.1")
         
-        print(f"\n✅ 第 {self.iteration} 轮准备完成!")
-        print(f"📁 增强数据集: {augmented_dir}")
-        print(f"📄 配置文件: {config_path}")
-        
-        if use_contrastive:
-            print("\n📌 对比学习说明:")
-            print("  - 在微调时引入，不是预训练")
-            print("  - 增强31个用户的区分能力")
-            print("  - 损失权重: 0.1")
+        # 同步所有进程
+        if dist.is_initialized():
+            dist.barrier()
         
         return augmented_dir, config_path
 
@@ -680,22 +706,32 @@ def main():
     
     else:  # full
         # 完整流程
-        print("🎈 运行完整迭代流程...")
+        if manager.rank == 0:
+            print("🎈 运行完整迭代流程...")
+        
         augmented_dir, config_path = manager.run_iteration(
             args.synthetic_samples,
             use_contrastive=args.use_contrastive
         )
         
-        print(f"\n{'='*60}")
-        print("📋 迭代微调总结:")
-        print(f"{'='*60}")
-        print(f"✅ 数据增强: 添加高质量合成样本到训练集")
-        print(f"✅ 模型微调: 基于50000.pt继续训练，不是从头开始")
-        contrastive_status = '已启用 - 增强用户区分' if args.use_contrastive else '未启用'
-        print(f"✅ 对比学习: {contrastive_status}")
-        print(f"✅ 训练效率: 10 epochs vs 原始50000步")
-        print(f"✅ 预期效果: 每轮提升2-3倍生成质量")
-        print(f"{'='*60}\n")
+        if manager.rank == 0:
+            print(f"\n{'='*60}")
+            print("📋 迭代微调总结:")
+            print(f"{'='*60}")
+            print(f"✅ 数据增强: 添加高质量合成样本到训练集")
+            print(f"✅ 模型微调: 基于50000.pt继续训练，不是从头开始")
+            contrastive_status = '已启用 - 增强用户区分' if args.use_contrastive else '未启用'
+            print(f"✅ 对比学习: {contrastive_status}")
+            print(f"✅ 训练效率: 10 epochs vs 原始50000步")
+            print(f"✅ 预期效果: 每轮提升2-3倍生成质量")
+            print(f"{'='*60}\n")
+            
+            print("\n🎯 数据准备完成！请运行实际的微调训练脚本：")
+            print(f"python microdoppler_finetune/train_enhanced_dit.py --dataset {augmented_dir}")
+        
+        # 清理DDP
+        if dist.is_initialized():
+            dist.destroy_process_group()
 
 
 if __name__ == "__main__":
