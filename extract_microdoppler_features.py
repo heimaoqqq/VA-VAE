@@ -313,23 +313,37 @@ def main(args):
         )
         print(f'💾 保存最终批次: {latents.shape[0]} 样本')
     
-    # 计算latent统计（官方方式）
-    print("📊 计算统计信息...")
-    dataset = ImgLatentDataset(output_dir, latent_norm=True)
-    mean_tensor, std_tensor = dataset.get_latent_stats()  # 正确：返回tuple (mean, std)
+    # 同步所有进程，确保文件写入完成
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
     
-    mean_range = f"[{mean_tensor.min():.3f}, {mean_tensor.max():.3f}]"
-    std_range = f"[{std_tensor.min():.3f}, {std_tensor.max():.3f}]"
-    print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
-    print(f'✅ 当前进程数据集包含 {len(dataset)} 个样本')
-    
-    # 保存统计信息到文件（与生成脚本期望的路径一致）
-    stats_file = Path(output_dir) / 'latent_stats.pt'
-    torch.save({
-        'mean': mean_tensor,  # shape: [32, 1, 1]
-        'std': std_tensor     # shape: [32, 1, 1]
-    }, stats_file)
-    print(f"💾 统计信息已保存到: {stats_file}")
+    # 只让主进程计算统计（避免并发读取问题）
+    if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        # 等待文件系统同步
+        import time
+        time.sleep(2)
+        
+        try:
+            # 计算latent统计（官方方式）
+            print("📊 计算统计信息...")
+            dataset = ImgLatentDataset(output_dir, latent_norm=True)
+            mean_tensor, std_tensor = dataset.get_latent_stats()  # 正确：返回tuple (mean, std)
+            
+            mean_range = f"[{mean_tensor.min():.3f}, {mean_tensor.max():.3f}]"
+            std_range = f"[{std_tensor.min():.3f}, {std_tensor.max():.3f}]"
+            print(f"   均值范围: {mean_range}, 标准差范围: {std_range}")
+            print(f'✅ 数据集包含 {len(dataset)} 个样本')
+            
+            # 保存统计信息到文件（与生成脚本期望的路径一致）
+            stats_file = Path(output_dir) / 'latent_stats.pt'
+            torch.save({
+                'mean': mean_tensor,  # shape: [32, 1, 1]
+                'std': std_tensor     # shape: [32, 1, 1]
+            }, stats_file)
+            print(f"💾 统计信息已保存到: {stats_file}")
+        except Exception as e:
+            print(f"⚠️ 统计计算失败（可以稍后单独运行）: {e}")
+            print(f"   可以稍后运行: python compute_latent_stats.py --data_dir {output_dir}")
     
     # 🔍 添加总样本数统计（避免分布式处理的误解）
     if torch.distributed.is_initialized():
