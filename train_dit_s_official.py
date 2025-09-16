@@ -181,15 +181,16 @@ def do_train(train_config, accelerator):
 
     ema = deepcopy(model).to(device)  # Create an EMA of the model for use after training
 
-    # load pretrained model
-    if 'weight_init' in train_config['train']:
-        checkpoint = torch.load(train_config['train']['weight_init'], map_location=lambda storage, loc: storage)
+    # load pretrained model (支持ckpt和weight_init两种配置)
+    pretrained_path = train_config['train'].get('ckpt') or train_config['train'].get('weight_init')
+    if pretrained_path:
+        checkpoint = torch.load(pretrained_path, map_location=lambda storage, loc: storage)
         # remove the prefix 'module.' from the keys
         checkpoint['model'] = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
         model = load_weights_with_shape_check(model, checkpoint, rank=rank)
         ema = load_weights_with_shape_check(ema, checkpoint, rank=rank)
         if accelerator.is_main_process:
-            logger.info(f"Loaded pretrained model from {train_config['train']['weight_init']}")
+            logger.info(f"Loaded pretrained model from {pretrained_path}")
     requires_grad(ema, False)
     
     model = DDP(model.to(device), device_ids=[rank])
