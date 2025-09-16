@@ -49,9 +49,15 @@ class IterativeTraining:
         # DDP初始化
         self.setup_distributed()
         
-        # 路径设置
+        # 路径设置（适配Kaggle输入路径）
         self.base_checkpoint = '/kaggle/input/50000-pt/0050000.pt'  # 基础模型
-        self.base_dataset = Path(base_dataset_path) if base_dataset_path else Path('/kaggle/input/microdoppler-dataset')
+        # 兼容不同的数据集路径
+        if base_dataset_path:
+            self.base_dataset = Path(base_dataset_path)
+        elif os.path.exists('/kaggle/input/dataset'):
+            self.base_dataset = Path('/kaggle/input/dataset')  # 您使用的路径
+        else:
+            self.base_dataset = Path('/kaggle/input/microdoppler-dataset')
         self.output_path = Path(output_path)
         if self.rank == 0:  # 只有主进程创建目录
             self.output_path.mkdir(parents=True, exist_ok=True)
@@ -685,7 +691,8 @@ def main():
         print(f"{'='*60}")
         print(f"✅ 数据增强: 添加高质量合成样本到训练集")
         print(f"✅ 模型微调: 基于50000.pt继续训练，不是从头开始")
-        print(f"✅ 对比学习: {'\u5df2启用 - 增强用户区分' if args.use_contrastive else '未启用'}")
+        contrastive_status = '已启用 - 增强用户区分' if args.use_contrastive else '未启用'
+        print(f"✅ 对比学习: {contrastive_status}")
         print(f"✅ 训练效率: 10 epochs vs 原始50000步")
         print(f"✅ 预期效果: 每轮提升2-3倍生成质量")
         print(f"{'='*60}\n")
