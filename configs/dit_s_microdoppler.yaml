@@ -44,9 +44,9 @@ train:
   early_stopping_patience: 12     # 增加耐心观察长期趋势
   ema_decay: 0.999               # 小数据集优化的EMA衰减率
 
-# Optimizer configuration (改进微调配置)
+# Optimizer configuration (稳定微调配置)
 optimizer:
-  lr: 0.0001                      # 提高10倍学习率，加快收敛
+  lr: 0.00005                     # 降低学习率，在1e-5和1e-4之间找平衡
   beta2: 0.99                     # 提高beta2适应更noisy的梯度
   max_grad_norm: 1.0              # 标准梯度裁剪
   weight_decay: 0.01              # 增加权重衰减以防过拟合
