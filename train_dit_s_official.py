@@ -183,14 +183,41 @@ def do_train(train_config, accelerator):
 
     # load pretrained model (支持ckpt和weight_init两种配置)
     pretrained_path = train_config['train'].get('ckpt') or train_config['train'].get('weight_init')
+    if accelerator.is_main_process:
+        print(f"[DEBUG] Looking for pretrained weights at: {pretrained_path}")
+    
     if pretrained_path:
-        checkpoint = torch.load(pretrained_path, map_location=lambda storage, loc: storage)
-        # remove the prefix 'module.' from the keys
-        checkpoint['model'] = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
-        model = load_weights_with_shape_check(model, checkpoint, rank=rank)
-        ema = load_weights_with_shape_check(ema, checkpoint, rank=rank)
+        # 检查文件是否存在
+        import os
+        if os.path.exists(pretrained_path):
+            if accelerator.is_main_process:
+                print(f"[PRETRAINED] Loading weights from: {pretrained_path}")
+                print(f"[PRETRAINED] File size: {os.path.getsize(pretrained_path) / 1024 / 1024:.2f} MB")
+            
+            checkpoint = torch.load(pretrained_path, map_location=lambda storage, loc: storage)
+            if accelerator.is_main_process:
+                print(f"[PRETRAINED] Checkpoint keys: {checkpoint.keys()}")
+                if 'model' in checkpoint:
+                    print(f"[PRETRAINED] Model has {len(checkpoint['model'])} parameters")
+            
+            # remove the prefix 'module.' from the keys
+            if 'model' in checkpoint:
+                checkpoint['model'] = {k.replace('module.', ''): v for k, v in checkpoint['model'].items()}
+                model = load_weights_with_shape_check(model, checkpoint, rank=rank)
+                ema = load_weights_with_shape_check(ema, checkpoint, rank=rank) 
+                if accelerator.is_main_process:
+                    print(f"[PRETRAINED] Successfully loaded pretrained weights")
+            else:
+                if accelerator.is_main_process:
+                    print(f"[ERROR] Checkpoint doesn't contain 'model' key!")
+                    print(f"[ERROR] Available keys: {checkpoint.keys()}")
+        else:
+            if accelerator.is_main_process:
+                print(f"[WARNING] Pretrained checkpoint not found: {pretrained_path}")
+                print(f"[WARNING] Training from scratch with random initialization!")
+    else:
         if accelerator.is_main_process:
-            logger.info(f"Loaded pretrained model from {pretrained_path}")
+            print("[INFO] No pretrained path specified, training from scratch")
     requires_grad(ema, False)
     
     model = DDP(model.to(device), device_ids=[rank])
@@ -492,12 +519,13 @@ def load_weights_with_shape_check(model, checkpoint, rank=0):
                 model_state_dict[name].copy_(param)
             elif name == 'x_embedder.proj.weight':
                 # special case for x_embedder.proj.weight
-                # the pretrained model is trained with 256x256 images
-                # we can load the weights by resizing the weights
-                # and keep the first 3 channels the same
+                # Handle channel mismatch: pretrained has 4 channels, our VA-VAE has 32 channels
                 weight = torch.zeros_like(model_state_dict[name])
-                weight[:, :16] = param[:, :16]
+                in_channels = min(param.shape[1], model_state_dict[name].shape[1])
+                weight[:, :in_channels] = param[:, :in_channels]
                 model_state_dict[name] = weight
+                if rank == 0:
+                    print(f"Adapted '{name}' from {param.shape} to {model_state_dict[name].shape}")
             else:
                 if rank == 0:
                     print(f"Skipping loading parameter '{name}' due to shape mismatch: "
