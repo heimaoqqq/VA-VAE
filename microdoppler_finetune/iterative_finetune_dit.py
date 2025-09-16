@@ -262,10 +262,23 @@ class IterativeTraining:
                 
                 for idx, sample_info in enumerate(samples):
                     src_path = sample_info['path']
-                    # 保持原始文件扩展名
-                    ext = src_path.suffix  # .png
-                    dst_path = dst_dir / f"synthetic_{start_idx + idx:04d}{ext}"
-                    shutil.copy2(src_path, dst_path)
+                    # 统一为.jpg格式
+                    dst_path = dst_dir / f"synthetic_{start_idx + idx:04d}.jpg"
+                    
+                    # 如果是PNG，转换为JPG
+                    if src_path.suffix.lower() == '.png':
+                        from PIL import Image
+                        img = Image.open(src_path)
+                        # 转换RGBA到RGB
+                        if img.mode == 'RGBA':
+                            rgb_img = Image.new('RGB', img.size, (0, 0, 0))
+                            rgb_img.paste(img, mask=img.split()[3] if len(img.split()) > 3 else None)
+                            rgb_img.save(dst_path, 'JPEG', quality=95)
+                        else:
+                            img.save(dst_path, 'JPEG', quality=95)
+                    else:
+                        # 已经是JPG，直接复制
+                        shutil.copy2(src_path, dst_path)
                     added_count += 1
             
             print(f"✅ 添加了 {added_count} 个合成样本到增强数据集")
