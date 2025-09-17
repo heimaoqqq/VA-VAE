@@ -89,12 +89,11 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
                                dataset_path='/kaggle/input/dataset'):
     """
     使用训练好的分类器评估用户可分性
-    基于混淆矩阵分析，选择最容易区分的用户
     
-    理论依据：
-    - 选择对角线值高（正确分类率高）的类别
-    - 选择非对角线值低（误分类率低）的类别
-    - 计算每个类别的分离度指标
+    核心思想：
+    - 即使分类器已经训练好，混淆矩阵仍能反映用户间的天然相似度
+    - 找出那些最不容易与其他用户混淆的"独特"用户
+    - 这些用户有明显特征，更容易学习和生成
     """
     print("=" * 60)
     print("基于分类器性能评估用户可分性")
@@ -230,80 +229,150 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
     
     print(f"\n构建混淆矩阵: {cm.shape}")
     
-    # 4. 计算各种可分性指标
+    # 4. 计算用户间的混淆关系
+    print("\n分析用户间的混淆关系...")
+    
+    # 将混淆矩阵转换为混淆强度矩阵
+    confusion_strength = np.zeros_like(cm, dtype=float)
+    for i in range(cm.shape[0]):
+        row_sum = cm[i, :].sum()
+        if row_sum > 0:
+            # 计算每个用户被误分为其他用户的比例
+            confusion_strength[i, :] = cm[i, :] / row_sum
+    
+    # 计算对称混淆强度（两个用户互相混淆的程度）
+    symmetric_confusion = (confusion_strength + confusion_strength.T) / 2
+    
+    # 5. 计算每个用户的"独特性"指标
     user_metrics = {}
     
     for i, user_id in enumerate(unique_labels):
         if i >= len(cm):
             continue
-            
-        # 指标1: 准确率（对角线值 / 行总和）
-        accuracy = cm[i, i] / cm[i, :].sum() if cm[i, :].sum() > 0 else 0
         
-        # 指标2: 精确率（对角线值 / 列总和）
-        precision = cm[i, i] / cm[:, i].sum() if cm[:, i].sum() > 0 else 0
+        # 指标1: 自身识别率（对角线值）
+        self_recognition = confusion_strength[i, i]
         
-        # 指标3: 混淆度（被误分类的比例）
-        confusion_rate = 1 - accuracy
+        # 指标2: 与其他用户的平均混淆度
+        other_confusion = symmetric_confusion[i, :].copy()
+        other_confusion[i] = 0  # 排除自己
+        avg_confusion_with_others = np.mean(other_confusion)
+        max_confusion_with_others = np.max(other_confusion)
         
-        # 指标4: 类别分离度（与最容易混淆类别的区分度）
-        max_confusion_with_other = 0
-        if cm[i, :].sum() > 0:
-            other_class_errors = cm[i, :].copy()
-            other_class_errors[i] = 0  # 排除自己
-            max_confusion_with_other = np.max(other_class_errors) / cm[i, :].sum()
+        # 指标3: 混淆伙伴数（与多少用户有明显混淆，阈值>5%）
+        confusion_partners = np.sum(other_confusion > 0.05)
         
-        # 综合得分：高准确率 + 高精确率 + 低混淆度
-        separability_score = (accuracy + precision) / 2 - confusion_rate * 0.5
+        # 指标4: 独特性得分
+        # 高自识别 + 低与其他用户混淆 + 少混淆伙伴 = 高独特性
+        uniqueness_score = self_recognition - avg_confusion_with_others * 2 - confusion_partners * 0.01
+        
+        # 指标5: 难度分数（反向指标，值越低越容易学习）
+        difficulty_score = 1 - self_recognition + avg_confusion_with_others
         
         user_metrics[user_id] = {
-            'accuracy': accuracy,
-            'precision': precision,
-            'confusion_rate': confusion_rate,
-            'max_confusion': max_confusion_with_other,
-            'separability_score': separability_score,
+            'self_recognition': self_recognition,
+            'avg_confusion': avg_confusion_with_others,
+            'max_confusion': max_confusion_with_others,
+            'confusion_partners': confusion_partners,
+            'uniqueness_score': uniqueness_score,
+            'difficulty_score': difficulty_score,
             'sample_count': user_sample_counts.get(user_id, 0)
         }
         
-        print(f"ID_{user_id}: 准确率={accuracy:.2%}, 精确率={precision:.2%}, "
-              f"混淆度={confusion_rate:.2%}, 分离度={separability_score:.3f}")
+        print(f"ID_{user_id}: 自识别={self_recognition:.2%}, "
+              f"平均混淆={avg_confusion_with_others:.2%}, "
+              f"混淆伙伴={confusion_partners}, "
+              f"独特性={uniqueness_score:.3f}")
     
-    # 5. 选择最容易分离的用户（多种策略）
+    # 6. 找出最容易互相混淆的用户组
+    print("\n最容易混淆的用户对:")
+    confusion_pairs = []
+    for i in range(len(unique_labels)):
+        for j in range(i+1, len(unique_labels)):
+            mutual_confusion = symmetric_confusion[i, j]
+            if mutual_confusion > 0.1:  # 互相混淆超过10%
+                confusion_pairs.append((
+                    unique_labels[i], 
+                    unique_labels[j], 
+                    mutual_confusion
+                ))
     
-    # 策略1: 按分离度得分排序
-    by_separability = sorted(user_metrics.items(), 
-                            key=lambda x: x[1]['separability_score'], 
+    confusion_pairs.sort(key=lambda x: x[2], reverse=True)
+    for user1, user2, conf in confusion_pairs[:5]:
+        print(f"  ID_{user1} <-> ID_{user2}: {conf:.2%}")
+    
+    # 7. 选择最“独特”的用户（多种策略）
+    
+    # 策略1: 按独特性得分排序（推荐）
+    by_uniqueness = sorted(user_metrics.items(), 
+                          key=lambda x: x[1]['uniqueness_score'], 
+                          reverse=True)
+    
+    # 策略2: 按最低混淆度排序
+    by_low_confusion = sorted(user_metrics.items(), 
+                             key=lambda x: x[1]['avg_confusion'], 
+                             reverse=False)  # 混淆度越低越好
+    
+    # 策略3: 按难度排序（选择最容易的）
+    by_easiest = sorted(user_metrics.items(),
+                       key=lambda x: x[1]['difficulty_score'],
+                       reverse=False)  # 难度越低越好
+    
+    # 策略4: 排除混淆组后选择
+    # 先找出所有高度混淆的用户
+    confused_users = set()
+    for user1, user2, conf in confusion_pairs:
+        if conf > 0.15:  # 混淆度超过15%
+            confused_users.add(user1)
+            confused_users.add(user2)
+    
+    # 从非混淆用户中选择
+    non_confused = [(uid, metrics) for uid, metrics in user_metrics.items() 
+                    if uid not in confused_users]
+    by_non_confused = sorted(non_confused,
+                            key=lambda x: x[1]['uniqueness_score'],
                             reverse=True)
-    
-    # 策略2: 按准确率排序
-    by_accuracy = sorted(user_metrics.items(), 
-                        key=lambda x: x[1]['accuracy'], 
-                        reverse=True)
-    
-    # 策略3: 混合策略（准确率 + 样本数）
-    by_hybrid = sorted(user_metrics.items(), 
-                      key=lambda x: x[1]['accuracy'] * 0.7 + 
-                                   min(x[1]['sample_count']/50, 1.0) * 0.3, 
-                      reverse=True)
     
     print("\n" + "=" * 60)
     print("用户选择结果")
     print("=" * 60)
     
     strategies = {
-        'separability': ([x[0] for x in by_separability[:8]], "基于分离度得分"),
-        'accuracy': ([x[0] for x in by_accuracy[:8]], "基于准确率"),
-        'hybrid': ([x[0] for x in by_hybrid[:8]], "混合策略（准确率+样本数）")
+        'uniqueness': ([x[0] for x in by_uniqueness[:8]], "基于独特性得分"),
+        'low_confusion': ([x[0] for x in by_low_confusion[:8]], "基于低混淆度"),
+        'easiest': ([x[0] for x in by_easiest[:8]], "最容易学习的用户"),
+        'non_confused': ([x[0] for x in by_non_confused[:8]] if len(by_non_confused) >= 8 
+                        else [x[0] for x in by_uniqueness[:8]], 
+                        "排除混淆用户后选择")
     }
     
     for strategy_name, (users, description) in strategies.items():
         print(f"\n{description}:")
         print(f"选择的8个用户: {users}")
-        avg_accuracy = np.mean([user_metrics[u]['accuracy'] for u in users if u in user_metrics])
-        print(f"平均准确率: {avg_accuracy:.2%}")
+        if users:
+            avg_uniqueness = np.mean([user_metrics[u]['uniqueness_score'] for u in users if u in user_metrics])
+            avg_confusion = np.mean([user_metrics[u]['avg_confusion'] for u in users if u in user_metrics])
+            print(f"平均独特性: {avg_uniqueness:.3f}")
+            print(f"平均混淆度: {avg_confusion:.2%}")
     
-    # 推荐最佳策略
-    best_users = strategies['hybrid'][0]  # 默认使用混合策略
+    # 推荐最佳策略：选择独特性最高的用户
+    best_users = strategies['uniqueness'][0]  
+    
+    print("\n" + "=" * 60)
+    print("最终建议")
+    print("=" * 60)
+    print("选择独特性最高的8个用户：")
+    print(f"  {best_users}")
+    print("\n理由：")
+    print("  1. 这些用户有明显特征，不容易与其他用户混淆")
+    print("  2. 模型更容易学习这些用户的特征")
+    print("  3. 生成质量预期更高，通过率更好")
+    
+    # 警告高度混淆的用户
+    if confused_users:
+        print("\n⚠️  建议避免的用户（高度混淆）：")
+        print(f"  {sorted(list(confused_users)[:5])}")
+        print("  这些用户之间相似度太高，难以区分")
     
     return best_users, user_accuracies, user_metrics
 
