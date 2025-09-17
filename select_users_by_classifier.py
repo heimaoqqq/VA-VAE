@@ -19,6 +19,58 @@ import json
 from pathlib import Path
 from PIL import Image
 import torchvision.transforms as transforms
+import torchvision.models as models
+
+# 从训练脚本复制模型定义
+class DomainAdaptiveClassifier(nn.Module):
+    """针对小数据集和域适应设计的分类器"""
+    def __init__(self, num_classes=31, dropout_rate=0.3, feature_dim=512):
+        super().__init__()
+        
+        # 使用ResNet18作为backbone（预训练权重很重要）
+        self.backbone = models.resnet18(pretrained=True)
+        
+        # 冻结前面的层，只微调后面的层（防止小数据集过拟合）
+        for param in list(self.backbone.parameters())[:-20]:
+            param.requires_grad = False
+        
+        # 特征提取维度
+        backbone_dim = self.backbone.fc.in_features
+        self.backbone.fc = nn.Identity()
+        
+        # 特征投影层（用于对比学习）
+        self.feature_projector = nn.Sequential(
+            nn.Linear(backbone_dim, feature_dim),
+            nn.BatchNorm1d(feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate)
+        )
+        
+        # 分类头（简单但有效，避免过拟合）
+        self.classifier = nn.Sequential(
+            nn.Linear(feature_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, num_classes)
+        )
+        
+        # 身份特征记忆库（用于筛选时的特征匹配）
+        self.register_buffer('feature_bank', torch.zeros(num_classes, feature_dim))
+        self.register_buffer('feature_count', torch.zeros(num_classes))
+        
+        # 温度参数
+        self.temperature = 1.0
+    
+    def forward(self, x):
+        # 特征提取
+        backbone_features = self.backbone(x)
+        features = self.feature_projector(backbone_features)
+        
+        # 分类
+        logits = self.classifier(features)
+        
+        return logits, features
 
 def load_and_preprocess_image(img_path, size=256):
     """
@@ -64,36 +116,40 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
         print(f"加载的checkpoint类型: {type(checkpoint)}")
         if isinstance(checkpoint, dict):
             print(f"Checkpoint包含的键: {list(checkpoint.keys())}")
-        
-        # 尝试不同的键名组合
-        classifier = None
-        possible_keys = ['model', 'model_state_dict', 'state_dict', 'net']
-        
-        if isinstance(checkpoint, dict):
-            for key in possible_keys:
-                if key in checkpoint:
-                    classifier = checkpoint[key]
-                    print(f"找到模型在键 '{key}' 中")
-                    break
             
-            # 如果没有找到常见键，尝试直接使用checkpoint
-            if classifier is None:
-                classifier = checkpoint
-                print("未找到常见键，尝试直接使用checkpoint")
-        else:
-            # 如果不是字典，直接使用
-            classifier = checkpoint
-            print("加载的是模型对象，直接使用")
-        
-        # 检查是否有eval方法
-        if hasattr(classifier, 'eval'):
-            classifier.eval()
+            # 从 checkpoint 中获取模型参数
+            if 'num_classes' in checkpoint:
+                num_classes = checkpoint['num_classes']
+                print(f"检测到类别数: {num_classes}")
+            else:
+                num_classes = 31  # 默认值
+                print(f"使用默认类别数: {num_classes}")
+            
+            # 创建模型实例
+            classifier = DomainAdaptiveClassifier(num_classes=num_classes)
+            
+            # 加载模型参数
+            if 'model_state_dict' in checkpoint:
+                state_dict = checkpoint['model_state_dict']
+                print("使用 'model_state_dict' 加载参数")
+            elif 'state_dict' in checkpoint:
+                state_dict = checkpoint['state_dict']
+                print("使用 'state_dict' 加载参数")
+            else:
+                print("❌ 未找到模型参数")
+                return None, None, None
+            
+            # 加载参数到模型
+            classifier.load_state_dict(state_dict)
             classifier = classifier.to(device)
+            classifier.eval()
+            
             print(f"✅ 成功加载分类器: {classifier_path}")
             print(f"   模型类型: {type(classifier)}")
+            print(f"   类别数: {num_classes}")
+            
         else:
-            print(f"❌ 加载的对象不是模型: {type(classifier)}")
-            print("无法进行用户筛选，退出程序")
+            print(f"❌ Checkpoint不是字典格式: {type(checkpoint)}")
             return None, None, None
             
     except Exception as e:
@@ -131,26 +187,22 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
                 
                 # 预测
                 with torch.no_grad():
-                    outputs = classifier(img_tensor)
+                    # DomainAdaptiveClassifier 返回 (logits, features)
+                    outputs, features = classifier(img_tensor)
                     probs = F.softmax(outputs, dim=1)
-                    pred_class = torch.argmax(probs, dim=1).item()
+                    pred_class_idx = torch.argmax(probs, dim=1).item()
                     
-                    # 检查分类器输出维度和映射关系
-                    num_classes = outputs.shape[1]
-                    if num_classes == 31:  # 输出是0-30，映射到ID_1-31
-                        pred_class += 1
-                    elif num_classes == 32 and pred_class == 0:  # 跳过ID_0
-                        continue  # 不应该预测为ID_0
-                    # 如果是其他映射关系，保持原样
+                    # 分类器输出的是类别索引（0-30），需要映射到用户ID（1-31）
+                    pred_user_id = pred_class_idx + 1
                     
                     # 验证预测结果在有效范围内
-                    if pred_class < 1 or pred_class > 31:
+                    if pred_user_id < 1 or pred_user_id > 31:
                         continue  # 跳过无效预测
                     
-                user_predictions.append(pred_class)
+                user_predictions.append(pred_user_id)
                 user_labels.append(user_id)
                 
-                if pred_class == user_id:
+                if pred_user_id == user_id:
                     correct += 1
                     
             except Exception as e:
