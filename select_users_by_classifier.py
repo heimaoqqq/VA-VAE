@@ -54,49 +54,52 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
     print(f"使用设备: {device}")
     
     # 1. 加载已训练的分类器
+    print(f"尝试从 {classifier_path} 加载分类器...")
+    
     try:
-        # 首先尝试默认加载（PyTorch 2.6+ weights_only=True）
-        checkpoint = torch.load(classifier_path, map_location=device)
-        if 'model' in checkpoint:
-            classifier = checkpoint['model']
-        else:
-            classifier = checkpoint
-        classifier.eval()
-        print(f"✅ 成功加载分类器: {classifier_path}")
-    except Exception as e1:
-        print(f"⚠️ 默认加载失败: {e1}")
-        print("尝试使用 weights_only=False 加载...")
+        # 直接使用 weights_only=False，因为这是信任的模型
+        checkpoint = torch.load(classifier_path, map_location=device, weights_only=False)
         
-        try:
-            # PyTorch 2.6+ 需要显式设置 weights_only=False
-            checkpoint = torch.load(classifier_path, map_location=device, weights_only=False)
-            if 'model' in checkpoint:
-                classifier = checkpoint['model']
-            else:
-                classifier = checkpoint
-            classifier.eval()
-            print(f"✅ 成功加载分类器 (weights_only=False): {classifier_path}")
-        except Exception as e2:
-            print(f"⚠️ weights_only=False 也失败: {e2}")
-            print("尝试添加安全全局对象...")
+        # 调试：查看checkpoint的结构
+        print(f"加载的checkpoint类型: {type(checkpoint)}")
+        if isinstance(checkpoint, dict):
+            print(f"Checkpoint包含的键: {list(checkpoint.keys())}")
+        
+        # 尝试不同的键名组合
+        classifier = None
+        possible_keys = ['model', 'model_state_dict', 'state_dict', 'net']
+        
+        if isinstance(checkpoint, dict):
+            for key in possible_keys:
+                if key in checkpoint:
+                    classifier = checkpoint[key]
+                    print(f"找到模型在键 '{key}' 中")
+                    break
             
-            try:
-                # 添加numpy相关的安全全局对象
-                torch.serialization.add_safe_globals(['numpy.core.multiarray.scalar'])
-                
-                checkpoint = torch.load(classifier_path, map_location=device)
-                if 'model' in checkpoint:
-                    classifier = checkpoint['model']
-                else:
-                    classifier = checkpoint
-                classifier.eval()
-                print(f"✅ 成功加载分类器 (安全全局): {classifier_path}")
-            except Exception as e3:
-                print(f"❌ 所有加载方法都失败:")
-                print(f"  默认加载: {e1}")
-                print(f"  weights_only=False: {e2}")
-                print(f"  安全全局: {e3}")
-                return None, None, None
+            # 如果没有找到常见键，尝试直接使用checkpoint
+            if classifier is None:
+                classifier = checkpoint
+                print("未找到常见键，尝试直接使用checkpoint")
+        else:
+            # 如果不是字典，直接使用
+            classifier = checkpoint
+            print("加载的是模型对象，直接使用")
+        
+        # 检查是否有eval方法
+        if hasattr(classifier, 'eval'):
+            classifier.eval()
+            classifier = classifier.to(device)
+            print(f"✅ 成功加载分类器: {classifier_path}")
+            print(f"   模型类型: {type(classifier)}")
+        else:
+            print(f"❌ 加载的对象不是模型: {type(classifier)}")
+            print("无法进行用户筛选，退出程序")
+            return None, None, None
+            
+    except Exception as e:
+        print(f"❌ 加载分类器失败: {e}")
+        print("无法进行用户筛选，退出程序")
+        return None, None, None
     
     # 2. 对每个用户进行预测，构建混淆矩阵
     all_predictions = []
@@ -333,9 +336,11 @@ def main():
     best_users, accuracies, metrics = evaluate_user_separability()
     
     if best_users is None:
-        print("分类器分析失败，使用默认策略")
-        # 默认策略：均匀分布选择
-        best_users = [2, 5, 8, 11, 14, 17, 20, 23]
+        print("\n" + "=" * 60)
+        print("❌ 分类器加载失败，无法进行用户筛选")
+        print("请检查分类器文件路径和格式")
+        print("=" * 60)
+        return None
     
     # 保存结果
     result = {
