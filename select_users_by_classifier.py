@@ -167,9 +167,26 @@ def analyze_user_separability(user_features, user_stats):
             for c in range(3):
                 h1 = hist1[c*32:(c+1)*32]
                 h2 = hist2[c*32:(c+1)*32]
+                
+                # 添加小的epsilon避免log(0)
+                h1 = h1 + 1e-10
+                h2 = h2 + 1e-10
+                
+                # 重新归一化
+                h1 = h1 / h1.sum()
+                h2 = h2 / h2.sum()
+                
                 # 使用JS散度（对称的KL散度）
                 m = (h1 + h2) / 2
-                js_div = 0.5 * entropy(h1, m) + 0.5 * entropy(h2, m)
+                kl1 = entropy(h1, m)
+                kl2 = entropy(h2, m)
+                js_div = 0.5 * kl1 + 0.5 * kl2
+                
+                # 如果JS散度太小，使用L2距离作为补充
+                if js_div < 1e-6:
+                    l2_dist = np.linalg.norm(h1 - h2)
+                    js_div = l2_dist * 0.01  # 缩放L2距离
+                    
                 distances.append(js_div)
             
             distance_matrix[i, j] = np.mean(distances)
@@ -178,13 +195,15 @@ def analyze_user_separability(user_features, user_stats):
     user_metrics = {}
     
     for i, uid in enumerate(user_ids):
-        # 该用户到其他所有用户的平均距离
-        avg_distance = np.mean(distance_matrix[i, :])
+        # 该用户到其他所有用户的平均距离（排除自己）
+        distances_to_others = []
+        for j in range(n_users):
+            if i != j:
+                distances_to_others.append(distance_matrix[i, j])
+        avg_distance = np.mean(distances_to_others) if distances_to_others else 0
         
         # 最近邻距离（最相似用户的距离）
-        other_distances = distance_matrix[i, :].copy()
-        other_distances[i] = np.inf  # 排除自己
-        nearest_distance = np.min(other_distances)
+        nearest_distance = min(distances_to_others) if distances_to_others else 0
         
         # 用户内部的一致性（方差越小越一致）
         internal_consistency = 1.0 / (1.0 + user_stats[uid]['var_hist'])
@@ -211,17 +230,40 @@ def analyze_user_separability(user_features, user_stats):
               f"独特性={uniqueness:.4f}")
     
     # 3. 找出相似用户组
-    print("\n最相似的用户对：")
+    print("\n最相似的用户对（距离最小）：")
     similar_pairs = []
     for i in range(n_users):
         for j in range(i+1, n_users):
-            similarity = 1.0 / (1.0 + distance_matrix[i, j])
-            if similarity > 0.9:  # 高度相似
-                similar_pairs.append((user_ids[i], user_ids[j], similarity))
+            dist = distance_matrix[i, j]
+            # 记录所有用户对的距离
+            similar_pairs.append((user_ids[i], user_ids[j], dist))
     
-    similar_pairs.sort(key=lambda x: x[2], reverse=True)
-    for uid1, uid2, sim in similar_pairs[:5]:
-        print(f"  ID_{uid1} <-> ID_{uid2}: 相似度={sim:.3f}")
+    # 按距离排序（距离小的在前）
+    similar_pairs.sort(key=lambda x: x[2])
+    
+    print("  最相似的5对：")
+    for uid1, uid2, dist in similar_pairs[:5]:
+        print(f"    ID_{uid1} <-> ID_{uid2}: 距离={dist:.6f}")
+    
+    print("\n  最不相似的5对：")
+    for uid1, uid2, dist in similar_pairs[-5:]:
+        print(f"    ID_{uid1} <-> ID_{uid2}: 距离={dist:.6f}")
+    
+    # 找出高度相似的用户对（距离小于平均值的50%）
+    all_distances = [x[2] for x in similar_pairs]
+    avg_dist = np.mean(all_distances)
+    highly_similar = [(u1, u2, d) for u1, u2, d in similar_pairs if d < avg_dist * 0.5]
+    
+    
+    if highly_similar:
+        print(f"\n  发现{len(highly_similar)}对高度相似的用户（距离<平均值50%）")
+    
+    # 计算距离矩阵的统计信息
+    print(f"\n距离统计：")
+    print(f"  平均距离: {avg_dist:.6f}")
+    print(f"  最小距离: {min(all_distances):.6f}")
+    print(f"  最大距离: {max(all_distances):.6f}")
+    print(f"  距离标准差: {np.std(all_distances):.6f}")
     
     return user_metrics, distance_matrix, similar_pairs
 
