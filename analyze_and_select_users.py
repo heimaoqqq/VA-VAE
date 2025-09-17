@@ -221,38 +221,70 @@ class UserSelectionAnalyzer:
         
         return selected_indices, report
 
-def main():
+def load_microdoppler_data(dataset_path='/kaggle/input/dataset'):
     """
-    示例：分析微多普勒数据并选择用户
+    从实际数据集路径加载微多普勒数据
     """
-    # 加载特征和标签
-    # 这里需要替换为实际的特征提取
-    print("加载数据...")
+    import os
+    from pathlib import Path
     
-    # 假设已有特征矩阵
-    # features = np.load('user_features.npy')  # (N_samples, D_features)
-    # labels = np.load('user_labels.npy')      # (N_samples,)
-    # predictions = np.load('predictions.npy') # (N_samples,)
+    print(f"从 {dataset_path} 加载微多普勒数据...")
     
-    # 模拟数据用于演示
-    np.random.seed(42)
-    n_samples = 4650  # 31用户×150张
-    n_features = 512  # VA-VAE特征维度
-    n_users = 31
-    
-    # 生成模拟特征（实际使用时替换）
     features = []
     labels = []
-    for user_id in range(n_users):
-        # 每个用户有不同的特征中心和方差
-        center = np.random.randn(n_features) * 5
-        variance = 0.5 + np.random.rand() * 2  # 不同用户难度不同
-        user_features = center + np.random.randn(150, n_features) * variance
-        features.append(user_features)
-        labels.extend([user_id] * 150)
+    user_count = {}
     
-    features = np.vstack(features)
+    # 遍历用户目录
+    dataset_dir = Path(dataset_path)
+    user_dirs = sorted([d for d in dataset_dir.iterdir() if d.is_dir() and d.name.startswith('User_')])
+    
+    print(f"找到 {len(user_dirs)} 个用户目录")
+    
+    for user_dir in user_dirs:
+        user_id = int(user_dir.name.split('_')[1])  # 提取用户ID
+        
+        # 加载该用户的所有图像特征
+        image_files = list(user_dir.glob('*.jpg')) + list(user_dir.glob('*.png'))
+        user_features = []
+        
+        print(f"处理 User_{user_id:02d}: {len(image_files)} 张图像")
+        
+        # 这里需要实际的特征提取
+        # 暂时使用图像路径作为特征的占位符
+        for img_path in image_files:
+            # TODO: 使用VA-VAE或其他方法提取实际特征
+            # 现在使用随机特征作为占位符
+            feature = np.random.randn(512)  # 512维特征
+            user_features.append(feature)
+            labels.append(user_id)
+        
+        if user_features:
+            features.extend(user_features)
+            user_count[user_id] = len(user_features)
+    
+    features = np.array(features)
     labels = np.array(labels)
+    
+    print(f"\n数据加载完成:")
+    print(f"  总样本数: {len(features)}")
+    print(f"  特征维度: {features.shape[1]}")
+    print(f"  用户数量: {len(np.unique(labels))}")
+    
+    # 显示每个用户的样本数
+    for user_id, count in sorted(user_count.items()):
+        print(f"  User_{user_id:02d}: {count} 张")
+    
+    return features, labels
+
+def main():
+    """
+    分析微多普勒数据并选择用户
+    """
+    # 加载实际数据
+    features, labels = load_microdoppler_data('/kaggle/input/dataset')
+    
+    # 如果需要预测数据（用于混淆矩阵计算），可以加载
+    # predictions = None  # 暂时不使用预测数据
     
     # 创建分析器
     analyzer = UserSelectionAnalyzer(features, labels)
