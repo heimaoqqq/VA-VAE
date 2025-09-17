@@ -48,8 +48,12 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
     print("基于分类器性能评估用户可分性")
     print("=" * 60)
     
-    # 1. 加载已训练的分类器
+    # 先初始化设备，避免作用域问题
+    import torch
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"使用设备: {device}")
+    
+    # 1. 加载已训练的分类器
     try:
         # 首先尝试默认加载（PyTorch 2.6+ weights_only=True）
         checkpoint = torch.load(classifier_path, map_location=device)
@@ -78,7 +82,6 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
             
             try:
                 # 添加numpy相关的安全全局对象
-                import torch.serialization
                 torch.serialization.add_safe_globals(['numpy.core.multiarray.scalar'])
                 
                 checkpoint = torch.load(classifier_path, map_location=device)
