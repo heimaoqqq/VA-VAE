@@ -224,6 +224,7 @@ class UserSelectionAnalyzer:
 def load_microdoppler_data(dataset_path='/kaggle/input/dataset'):
     """
     从实际数据集路径加载微多普勒数据
+    适配ID_1, ID_10等目录格式
     """
     import os
     from pathlib import Path
@@ -234,26 +235,37 @@ def load_microdoppler_data(dataset_path='/kaggle/input/dataset'):
     labels = []
     user_count = {}
     
-    # 遍历用户目录
+    # 遍历用户目录 - 修改为ID_开头的目录
     dataset_dir = Path(dataset_path)
-    user_dirs = sorted([d for d in dataset_dir.iterdir() if d.is_dir() and d.name.startswith('User_')])
+    user_dirs = sorted([d for d in dataset_dir.iterdir() if d.is_dir() and d.name.startswith('ID_')])
     
     print(f"找到 {len(user_dirs)} 个用户目录")
     
+    if len(user_dirs) == 0:
+        print("错误：未找到用户目录！")
+        print("请检查数据集路径和目录结构")
+        # 显示实际存在的目录
+        all_dirs = [d.name for d in dataset_dir.iterdir() if d.is_dir()]
+        print(f"实际存在的目录: {all_dirs[:10]}...")
+        return np.array([]), np.array([])
+    
     for user_dir in user_dirs:
-        user_id = int(user_dir.name.split('_')[1])  # 提取用户ID
+        # 从ID_1格式提取用户ID
+        user_id = int(user_dir.name.split('_')[1])  
         
         # 加载该用户的所有图像特征
         image_files = list(user_dir.glob('*.jpg')) + list(user_dir.glob('*.png'))
         user_features = []
         
-        print(f"处理 User_{user_id:02d}: {len(image_files)} 张图像")
+        print(f"处理 ID_{user_id}: {len(image_files)} 张图像")
         
         # 这里需要实际的特征提取
         # 暂时使用图像路径作为特征的占位符
         for img_path in image_files:
             # TODO: 使用VA-VAE或其他方法提取实际特征
-            # 现在使用随机特征作为占位符
+            # 现在使用随机特征作为占位符，但基于图像文件名设置随机种子保证一致性
+            seed = hash(str(img_path)) % (2**32)
+            np.random.seed(seed)
             feature = np.random.randn(512)  # 512维特征
             user_features.append(feature)
             labels.append(user_id)
@@ -262,6 +274,10 @@ def load_microdoppler_data(dataset_path='/kaggle/input/dataset'):
             features.extend(user_features)
             user_count[user_id] = len(user_features)
     
+    if len(features) == 0:
+        print("警告：未找到任何图像文件！")
+        return np.array([]), np.array([])
+        
     features = np.array(features)
     labels = np.array(labels)
     
@@ -272,7 +288,7 @@ def load_microdoppler_data(dataset_path='/kaggle/input/dataset'):
     
     # 显示每个用户的样本数
     for user_id, count in sorted(user_count.items()):
-        print(f"  User_{user_id:02d}: {count} 张")
+        print(f"  ID_{user_id}: {count} 张")
     
     return features, labels
 
@@ -282,6 +298,11 @@ def main():
     """
     # 加载实际数据
     features, labels = load_microdoppler_data('/kaggle/input/dataset')
+    
+    # 检查数据是否加载成功
+    if len(features) == 0 or len(labels) == 0:
+        print("错误：数据加载失败，无法进行用户选择分析")
+        return
     
     # 如果需要预测数据（用于混淆矩阵计算），可以加载
     # predictions = None  # 暂时不使用预测数据
