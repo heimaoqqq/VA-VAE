@@ -102,7 +102,7 @@ class CrossDomainEvaluator:
         """加载训练好的分类器"""
         print(f"Loading classifier from: {model_path}")
         
-        checkpoint = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         
         # 获取模型配置
         num_classes = checkpoint.get('num_classes', 31)
