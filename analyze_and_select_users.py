@@ -299,14 +299,50 @@ def main():
         
         print(f"选中的用户ID: {report['selected_users']}")
         print(f"平均Fisher比提升: {report['average_scores']['improvement']:.2f}x")
-        print(f"最高得分用户: User_{report['selected_users'][-1]}")
-        print(f"最低得分用户: User_{report['selected_users'][0]}")
+        print(f"最高得分用户: User_{report['selected_users'][-1]:02d}")
+        print(f"最低得分用户: User_{report['selected_users'][0]:02d}")
+        
+        # 显示详细得分
+        print("\n详细得分:")
+        for i, user_id in enumerate(report['selected_users']):
+            fisher = report['scores']['fisher'][i] if report['scores']['fisher'] else 'N/A'
+            prototype = report['scores']['prototype'][i]
+            difficulty = report['scores']['difficulty'][i]
+            total = report['scores']['total'][i]
+            
+            print(f"  User_{user_id:02d}: Fisher={fisher:.3f}, Prototype={prototype:.3f}, "
+                  f"Difficulty={difficulty:.3f}, Total={total:.3f}")
         
         # 保存结果
-        with open(f'user_selection_{n_select}.json', 'w') as f:
+        with open(f'/kaggle/working/user_selection_{n_select}.json', 'w') as f:
             json.dump(report, f, indent=2)
+        
+        print(f"\n结果已保存到 /kaggle/working/user_selection_{n_select}.json")
     
-    print("\n分析完成！结果已保存。")
+    # 推荐最佳配置
+    print("\n" + "="*60)
+    print("推荐方案")
+    print("="*60)
+    print("基于分析结果，推荐以下策略:")
+    print("1. 如果追求最高质量: 选择8个用户，深度训练")
+    print("2. 如果需要平衡: 选择12个用户，适中训练")
+    print("3. 建议使用DiT-S模型配合对比学习")
+    print("4. 训练完成后可以逐步扩展到更多用户")
+    
+    print("\n分析完成！")
+
+def extract_features_with_vae(dataset_path, vae_model_path=None):
+    """
+    使用VA-VAE模型提取特征（实际实现）
+    这个函数可以在后续完善，用真实的VA-VAE特征替换随机特征
+    """
+    # TODO: 实现真实的特征提取
+    # 1. 加载VA-VAE模型
+    # 2. 遍历图像文件
+    # 3. 提取latent特征
+    # 4. 返回特征矩阵
+    pass
+        
 
 if __name__ == "__main__":
     main()
