@@ -51,6 +51,7 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
     # 1. 加载已训练的分类器
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     try:
+        # 首先尝试默认加载（PyTorch 2.6+ weights_only=True）
         checkpoint = torch.load(classifier_path, map_location=device)
         if 'model' in checkpoint:
             classifier = checkpoint['model']
@@ -58,9 +59,41 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
             classifier = checkpoint
         classifier.eval()
         print(f"✅ 成功加载分类器: {classifier_path}")
-    except Exception as e:
-        print(f"❌ 加载分类器失败: {e}")
-        return None, None, None
+    except Exception as e1:
+        print(f"⚠️ 默认加载失败: {e1}")
+        print("尝试使用 weights_only=False 加载...")
+        
+        try:
+            # PyTorch 2.6+ 需要显式设置 weights_only=False
+            checkpoint = torch.load(classifier_path, map_location=device, weights_only=False)
+            if 'model' in checkpoint:
+                classifier = checkpoint['model']
+            else:
+                classifier = checkpoint
+            classifier.eval()
+            print(f"✅ 成功加载分类器 (weights_only=False): {classifier_path}")
+        except Exception as e2:
+            print(f"⚠️ weights_only=False 也失败: {e2}")
+            print("尝试添加安全全局对象...")
+            
+            try:
+                # 添加numpy相关的安全全局对象
+                import torch.serialization
+                torch.serialization.add_safe_globals(['numpy.core.multiarray.scalar'])
+                
+                checkpoint = torch.load(classifier_path, map_location=device)
+                if 'model' in checkpoint:
+                    classifier = checkpoint['model']
+                else:
+                    classifier = checkpoint
+                classifier.eval()
+                print(f"✅ 成功加载分类器 (安全全局): {classifier_path}")
+            except Exception as e3:
+                print(f"❌ 所有加载方法都失败:")
+                print(f"  默认加载: {e1}")
+                print(f"  weights_only=False: {e2}")
+                print(f"  安全全局: {e3}")
+                return None, None, None
     
     # 2. 对每个用户进行预测，构建混淆矩阵
     all_predictions = []
@@ -96,9 +129,17 @@ def evaluate_user_separability(classifier_path='/kaggle/input/best-calibrated-mo
                     probs = F.softmax(outputs, dim=1)
                     pred_class = torch.argmax(probs, dim=1).item()
                     
-                    # 注意：如果分类器输出是0-30，需要+1转换为1-31
-                    if pred_class < 31:
+                    # 检查分类器输出维度和映射关系
+                    num_classes = outputs.shape[1]
+                    if num_classes == 31:  # 输出是0-30，映射到ID_1-31
                         pred_class += 1
+                    elif num_classes == 32 and pred_class == 0:  # 跳过ID_0
+                        continue  # 不应该预测为ID_0
+                    # 如果是其他映射关系，保持原样
+                    
+                    # 验证预测结果在有效范围内
+                    if pred_class < 1 or pred_class > 31:
+                        continue  # 跳过无效预测
                     
                 user_predictions.append(pred_class)
                 user_labels.append(user_id)
