@@ -265,7 +265,7 @@ def main():
     
     # Kaggle环境默认路径
     parser.add_argument('--data-dir', type=str, 
-                       default='/kaggle/input/dataset',
+                       default='/kaggle/input/backpack/backpack',
                        help='Path to target domain data (背包步态)')
     parser.add_argument('--model-path', type=str,
                        default='/kaggle/input/best-calibrated-model-pth/best_calibrated_model.pth',
