@@ -277,7 +277,7 @@ class CombinedLCCS_PNC:
 
 def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
                           lccs_method='progressive', lccs_momentum=0.01, lccs_iterations=5,
-                          fusion_alpha=0.6, similarity_tau=0.01):
+                          lccs_alpha=0.3, fusion_alpha=0.6, similarity_tau=0.01):
     """运行LCCS+PNC组合实验"""
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -361,7 +361,8 @@ def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
         support_loader,
         method=lccs_method,
         momentum=lccs_momentum,
-        iterations=lccs_iterations
+        iterations=lccs_iterations,
+        alpha=lccs_alpha
     )
     
     # 步骤2：构建原型（在LCCS适应后的模型上）
@@ -455,6 +456,7 @@ def main():
         lccs_method=args.lccs_method,
         lccs_momentum=args.lccs_momentum,
         lccs_iterations=args.lccs_iterations,
+        lccs_alpha=args.lccs_alpha,
         fusion_alpha=args.fusion_alpha,
         similarity_tau=args.similarity_tau
     )
