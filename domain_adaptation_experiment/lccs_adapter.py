@@ -7,14 +7,14 @@ LCCS (Label-Conditional Channel Statistics) Adapter
 import torch
 import torch.nn as nn
 from copy import deepcopy
-from tqdm import tqdm
 import argparse
 from pathlib import Path
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from improved_classifier_training import ImprovedClassifier
-from build_improved_prototypes import TargetDomainDataset
+from build_improved_prototypes_with_split import SplitTargetDomainDataset
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 import torchvision.transforms as transforms
 
 
@@ -100,7 +100,7 @@ class LCCSAdapter:
         return accuracy
 
 
-def apply_lccs_and_evaluate(model_path, data_dir, support_size=50):
+def apply_lccs_and_evaluate(model_path, data_dir, support_size=3, seed=42):  # 使用严格数据划分
     """应用LCCS并评估"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
@@ -126,11 +126,13 @@ def apply_lccs_and_evaluate(model_path, data_dir, support_size=50):
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # 创建支持集（用于BN适应）
-    support_dataset = TargetDomainDataset(
+    # 创建支持集（用于BN适应）- 使用严格划分
+    support_dataset = SplitTargetDomainDataset(
         data_dir=data_dir,
         transform=transform,
-        support_size=support_size  # 更多样本用于BN统计
+        support_size=support_size,
+        mode='support',  # 只使用支持集
+        seed=seed
     )
     
     support_loader = DataLoader(
@@ -140,11 +142,13 @@ def apply_lccs_and_evaluate(model_path, data_dir, support_size=50):
         num_workers=2
     )
     
-    # 创建测试集（完整数据）
-    from cross_domain_evaluator import BackpackWalkingDataset
-    test_dataset = BackpackWalkingDataset(
+    # 创建测试集（严格排除支持集）
+    test_dataset = SplitTargetDomainDataset(
         data_dir=data_dir,
-        transform=transform
+        transform=transform,
+        support_size=support_size,
+        mode='test',  # 只使用测试集
+        seed=seed
     )
     
     test_loader = DataLoader(
@@ -185,15 +189,18 @@ def main():
     parser.add_argument('--data-dir', type=str,
                        default='/kaggle/input/backpack/backpack',
                        help='Path to target domain data')
-    parser.add_argument('--support-size', type=int, default=50,
-                       help='Support set size for BN adaptation')
+    parser.add_argument('--support-size', type=int, default=3,
+                       help='Support set size for BN adaptation (few-shot: 1-10)')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed for data split (must match PNC)')
     
     args = parser.parse_args()
     
     baseline_acc, lccs_acc = apply_lccs_and_evaluate(
         args.model_path,
         args.data_dir,
-        args.support_size
+        args.support_size,
+        args.seed
     )
     
     print("\n" + "="*60)
