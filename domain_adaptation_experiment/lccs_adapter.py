@@ -167,12 +167,15 @@ def apply_lccs_and_evaluate(model_path, data_dir, support_size=10, seed=42):  # 
     
     # 基线评估
     print("\n📊 Baseline evaluation (without LCCS)...")
+    print(f"   Test samples: {len(test_dataset)} (excluding support set)")
+    print(f"   Support samples: {len(support_dataset)} (for BN adaptation)")
     model.eval()
     adapter = LCCSAdapter(model, device)
     baseline_acc = adapter.evaluate_with_lccs(test_loader)
     print(f"Baseline accuracy: {baseline_acc:.2%}")
     
     # LCCS适应
+    print(f"\n🎯 Adapting with {len(support_dataset)} support samples...")
     adapter.adapt_bn_stats(support_loader, momentum=0.1)
     
     # LCCS评估
