@@ -154,9 +154,19 @@ def evaluate_prototype_calibration(args):
                 }
             }
             
+            # 转换numpy int64键为Python int以支持JSON序列化
+            def convert_keys(obj):
+                if isinstance(obj, dict):
+                    return {str(k) if hasattr(k, 'item') else k: convert_keys(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_keys(item) for item in obj]
+                else:
+                    return obj
+            
+            serializable_results = convert_keys(results)
             save_path = output_path / 'prototype_calibration_results.json'
             with open(save_path, 'w') as f:
-                json.dump(results, f, indent=2, default=str)
+                json.dump(serializable_results, f, indent=2, default=str)
             
             print(f"\n💾 Results saved to: {save_path}")
     
