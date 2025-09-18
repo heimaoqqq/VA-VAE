@@ -67,7 +67,11 @@ class LCCSAdapter:
         # 在支持集上前向传播以收集统计量
         with torch.no_grad():
             for _ in range(3):  # 多次遍历以稳定统计量
-                for images, _ in tqdm(support_loader, desc="Collecting BN stats"):
+                for batch in tqdm(support_loader, desc="Collecting BN stats"):
+                    if len(batch) == 3:  # TargetDomainDataset返回3个值
+                        images, labels, user_names = batch
+                    else:  # 标准数据集返回2个值
+                        images, labels = batch
                     images = images.to(self.device)
                     _ = self.model(images)
         
