@@ -26,7 +26,7 @@ from collections import defaultdict
 # 添加父目录到路径以导入分类器
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
-from improved_classifier_training import ImprovedClassifier
+from train_calibrated_classifier import DomainAdaptiveClassifier
 
 
 class BackpackWalkingDataset(Dataset):
@@ -109,9 +109,8 @@ class CrossDomainEvaluator:
         model_name = checkpoint.get('model_name', 'resnet18')
         
         # 创建模型
-        model = ImprovedClassifier(
-            num_classes=num_classes,
-            backbone=model_name
+        model = DomainAdaptiveClassifier(
+            num_classes=num_classes
         ).to(self.device)
         
         # 加载权重
@@ -124,9 +123,22 @@ class CrossDomainEvaluator:
         
         return model, checkpoint
     
-    def evaluate_on_target_domain(self, model, target_data_dir, batch_size=16):
-        """在目标域（背包行走）数据上评估模型"""
-        print(f"\n🎯 Evaluating on target domain: {target_data_dir}")
+    def evaluate_on_target_domain(self, model, target_data_dir, batch_size=16, 
+                                  use_prototypes=False, prototype_path=None,
+                                  fusion_alpha=0.4, similarity_tau=0.1):
+        """在目标域（背包行走）数据上评估模型
+        
+        Args:
+            model: 分类器模型
+            target_data_dir: 目标域数据目录
+            batch_size: 批处理大小
+            use_prototypes: 是否使用原型校准
+            prototype_path: 原型文件路径
+            fusion_alpha: 原型融合权重 (0-1)
+            similarity_tau: 相似度温度参数
+        """
+        mode = "with Prototype Calibration" if use_prototypes else "Baseline"
+        print(f"\n🎯 Evaluating on target domain ({mode}): {target_data_dir}")
         
         # 创建目标域数据集
         target_dataset = BackpackWalkingDataset(
@@ -146,6 +158,19 @@ class CrossDomainEvaluator:
             pin_memory=True
         )
         
+        # 加载原型（如果启用）
+        prototypes = None
+        if use_prototypes:
+            if prototype_path is None:
+                raise ValueError("Prototype path must be provided when use_prototypes=True")
+            
+            print(f"📦 Loading prototypes from: {prototype_path}")
+            proto_dict = torch.load(prototype_path, map_location=self.device)
+            prototypes = proto_dict['prototypes'].to(self.device)
+            print(f"✓ Loaded prototypes: {prototypes.shape}")
+            print(f"   • Fusion weight (α): {fusion_alpha:.2f}")
+            print(f"   • Temperature (τ): {similarity_tau:.2f}")
+        
         # 评估
         all_predictions = []
         all_labels = []
@@ -158,8 +183,30 @@ class CrossDomainEvaluator:
                 labels = labels.to(self.device)
                 
                 # 前向传播
-                outputs = model(images)
-                probabilities = torch.softmax(outputs, dim=1)
+                outputs, _ = model(images)  # DomainAdaptiveClassifier返回(logits, features)
+                
+                if use_prototypes:
+                    # 提取特征用于原型匹配
+                    backbone_features = model.backbone(images)
+                    features = model.feature_projector(backbone_features)  # 特征投影层
+                    
+                    # L2归一化特征
+                    features = features / features.norm(2, dim=1, keepdim=True)
+                    
+                    # 计算与原型的余弦相似度
+                    similarities = torch.matmul(features, prototypes.T)  # [batch, num_classes]
+                    
+                    # 应用温度缩放并转换为概率
+                    proto_probs = torch.softmax(similarities / similarity_tau, dim=1)
+                    
+                    # 原始分类概率
+                    class_probs = torch.softmax(outputs, dim=1)
+                    
+                    # 融合两种概率分布
+                    probabilities = (1 - fusion_alpha) * class_probs + fusion_alpha * proto_probs
+                else:
+                    # 基线方法：仅使用分类器输出
+                    probabilities = torch.softmax(outputs, dim=1)
                 
                 # 获取预测和置信度
                 confidences, predictions = torch.max(probabilities, 1)
