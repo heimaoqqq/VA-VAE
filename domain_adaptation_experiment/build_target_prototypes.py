@@ -115,7 +115,8 @@ class PrototypeBuilder:
         
         # 加载模型
         model = DomainAdaptiveClassifier(num_classes=31).to(self.device)
-        checkpoint = torch.load(model_path, map_location=self.device)
+        # PyTorch 2.6+ 需要设置 weights_only=False
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         
         if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
             model.load_state_dict(checkpoint['model_state_dict'])
