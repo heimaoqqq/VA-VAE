@@ -7,6 +7,7 @@ LCCS (Label-Conditional Channel Statistics) Adapter
 import torch
 import torch.nn as nn
 from copy import deepcopy
+from tqdm import tqdm
 import argparse
 from pathlib import Path
 import sys
@@ -14,7 +15,6 @@ sys.path.append(str(Path(__file__).parent.parent))
 from improved_classifier_training import ImprovedClassifier
 from build_improved_prototypes_with_split import SplitTargetDomainDataset
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 import torchvision.transforms as transforms
 
 
@@ -86,7 +86,13 @@ class LCCSAdapter:
         total = 0
         
         with torch.no_grad():
-            for images, labels in tqdm(test_loader, desc="Evaluating with LCCS"):
+            for batch in tqdm(test_loader, desc="Evaluating with LCCS"):
+                # 处理不同格式的数据集返回值
+                if len(batch) == 3:  # SplitTargetDomainDataset返回3个值
+                    images, labels, _ = batch
+                else:  # 标准格式
+                    images, labels = batch
+                
                 images = images.to(self.device)
                 labels = labels.to(self.device)
                 
@@ -100,9 +106,10 @@ class LCCSAdapter:
         return accuracy
 
 
-def apply_lccs_and_evaluate(model_path, data_dir, support_size=3, seed=42):  # 使用严格数据划分
-    """应用LCCS并评估"""
+def apply_lccs_and_evaluate(model_path, data_dir, support_size=10, seed=42):  # 添加seed参数
+    """应用LCCS并评估 - 使用严格的数据划分"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"\n🔧 Using strict data split with seed={seed}")
     
     # 加载模型
     print(f"📦 Loading model from: {model_path}")
@@ -126,13 +133,13 @@ def apply_lccs_and_evaluate(model_path, data_dir, support_size=3, seed=42):  # �
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # 创建支持集（用于BN适应）- 使用严格划分
+    # 创建支持集（用于BN适应）- 严格划分
     support_dataset = SplitTargetDomainDataset(
         data_dir=data_dir,
         transform=transform,
         support_size=support_size,
         mode='support',  # 只使用支持集
-        seed=seed
+        seed=seed  # 确保划分一致性
     )
     
     support_loader = DataLoader(
@@ -142,13 +149,13 @@ def apply_lccs_and_evaluate(model_path, data_dir, support_size=3, seed=42):  # �
         num_workers=2
     )
     
-    # 创建测试集（严格排除支持集）
+    # 创建测试集 - 严格排除支持集
     test_dataset = SplitTargetDomainDataset(
         data_dir=data_dir,
         transform=transform,
         support_size=support_size,
         mode='test',  # 只使用测试集
-        seed=seed
+        seed=seed  # 确保划分一致性
     )
     
     test_loader = DataLoader(
@@ -189,10 +196,10 @@ def main():
     parser.add_argument('--data-dir', type=str,
                        default='/kaggle/input/backpack/backpack',
                        help='Path to target domain data')
-    parser.add_argument('--support-size', type=int, default=3,
+    parser.add_argument('--support-size', type=int, default=10,
                        help='Support set size for BN adaptation (few-shot: 1-10)')
     parser.add_argument('--seed', type=int, default=42,
-                       help='Random seed for data split (must match PNC)')
+                       help='Random seed for data split')
     
     args = parser.parse_args()
     
