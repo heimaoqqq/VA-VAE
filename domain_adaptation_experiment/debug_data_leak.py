@@ -37,9 +37,25 @@ def check_data_leak():
         support_paths.add(str(sample['path']))
     
     test_paths = set()
-    for i in range(len(test_dataset)):
-        path = test_dataset.samples[i]['path']
-        test_paths.add(str(path))
+    # BackpackWalkingDataset的数据格式不同，直接访问内部属性
+    if hasattr(test_dataset, 'samples') and len(test_dataset.samples) > 0:
+        for sample in test_dataset.samples:
+            if isinstance(sample, dict):
+                test_paths.add(str(sample['path']))
+            else:
+                # 如果是其他格式，尝试通过数据加载器获取
+                print(f"⚠️ BackpackWalkingDataset格式不同，尝试手动获取路径...")
+                break
+    
+    # 如果上面的方法不行，手动扫描目录
+    if len(test_paths) == 0:
+        data_dir = Path('/kaggle/input/backpack/backpack')
+        for user_dir in data_dir.iterdir():
+            if user_dir.is_dir():
+                for img_file in user_dir.glob('*.png'):
+                    test_paths.add(str(img_file))
+                for img_file in user_dir.glob('*.jpg'):
+                    test_paths.add(str(img_file))
     
     # 检查重叠
     overlap = support_paths & test_paths
