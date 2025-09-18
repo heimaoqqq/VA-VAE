@@ -60,9 +60,15 @@ class CombinedLCCS_PNC:
         print(f"\n🔧 Step 1: LCCS Adaptation (method={method})")
         
         if method == 'progressive':
-            self._lccs_progressive(support_loader, **kwargs)
+            # 只传递progressive相关参数
+            prog_kwargs = {k: v for k, v in kwargs.items() 
+                          if k in ['momentum', 'iterations']}
+            self._lccs_progressive(support_loader, **prog_kwargs)
         elif method == 'weighted':
-            self._lccs_weighted(support_loader, **kwargs)
+            # 只传递weighted相关参数
+            weight_kwargs = {k: v for k, v in kwargs.items() 
+                           if k in ['alpha']}
+            self._lccs_weighted(support_loader, **weight_kwargs)
         else:
             raise ValueError(f"Unknown LCCS method: {method}")
     
