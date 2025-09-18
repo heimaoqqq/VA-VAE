@@ -252,8 +252,8 @@ def main():
                        default='/kaggle/input/best-calibrated-model-pth/best_calibrated_model.pth',
                        help='Path to trained classifier')
     parser.add_argument('--data-dir', type=str,
-                       default='/kaggle/input/dataset',
-                       help='Path to target domain data')
+                       default='/kaggle/input/backpack/backpack',
+                       help='Path to target domain data (背包步态)')
     parser.add_argument('--prototype-path', type=str,
                        default='/kaggle/working/target_prototypes.pt',
                        help='Path to computed prototypes')
