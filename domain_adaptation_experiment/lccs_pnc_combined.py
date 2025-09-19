@@ -1,502 +1,336 @@
 #!/usr/bin/env python3
 """
-LCCS + PNC 组合方法
-先用LCCS适应BatchNorm，再用PNC原型校准
-理论上获得最优性能
+为ImprovedClassifier构建目标域原型 - 带数据集划分功能
+严格划分支持集和测试集，避免数据泄漏
 """
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from tqdm import tqdm
-import argparse
+import torchvision.transforms as transforms
+from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
+from PIL import Image
 import numpy as np
-from tabulate import tabulate
+import random
+from tqdm import tqdm
+from datetime import datetime
+import json
+import argparse
+
+# 添加父目录到路径以导入分类器
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
-
 from improved_classifier_training import ImprovedClassifier
-from build_improved_prototypes_with_split import SplitTargetDomainDataset
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 
 
-class CombinedLCCS_PNC:
-    """LCCS + PNC 组合适配器"""
+class SplitTargetDomainDataset(Dataset):
+    """目标域数据集 - 严格划分支持集和测试集"""
     
-    def __init__(self, model, device='cuda'):
+    def __init__(self, data_dir, transform=None, support_size=10, mode='support', seed=42):
+        """
+        Args:
+            data_dir: 数据目录路径
+            transform: 数据变换
+            support_size: 每个用户的支持集大小
+            mode: 'support' or 'test'
+            seed: 随机种子
+        """
+        self.data_dir = Path(data_dir)
+        self.transform = transform
+        self.support_size = support_size
+        self.mode = mode
+        self.samples = []
+        
+        # 设置随机种子确保可重复
+        random.seed(seed)
+        np.random.seed(seed)
+        
+        # 加载数据集
+        self._split_and_load()
+        
+    def _split_and_load(self):
+        """严格划分并加载支持集或测试集"""
+        # 扫描所有用户目录（ID_1 到 ID_31）
+        user_dirs = sorted([d for d in self.data_dir.iterdir() if d.is_dir()])
+        
+        for user_dir in user_dirs:
+            # 提取用户ID（ID_x -> x-1）
+            user_name = user_dir.name
+            if user_name.startswith('ID_'):
+                user_id = int(user_name.split('_')[1]) - 1  # ID_1 -> 0
+            else:
+                continue
+            
+            # 获取该用户的所有图像
+            image_files = list(user_dir.glob('*.png')) + list(user_dir.glob('*.jpg'))
+            
+            if len(image_files) == 0:
+                print(f"⚠️ No images found for {user_name}")
+                continue
+            
+            # 随机打乱并划分
+            random.shuffle(image_files)
+            
+            # 划分支持集和测试集
+            support_files = image_files[:self.support_size]
+            test_files = image_files[self.support_size:]
+            
+            # 根据mode选择数据
+            if self.mode == 'support':
+                selected_files = support_files
+                print(f"✓ {user_name}: Support set {len(support_files)} samples")
+            else:  # test mode
+                selected_files = test_files
+                print(f"✓ {user_name}: Test set {len(test_files)} samples")
+            
+            # 添加到数据集
+            for img_path in selected_files:
+                self.samples.append({
+                    'path': img_path,
+                    'label': user_id,
+                    'user_name': user_name
+                })
+        
+        print(f"\n📊 {self.mode.capitalize()} dataset: {len(self.samples)} samples total")
+        
+    def __len__(self):
+        return len(self.samples)
+        
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        
+        # 加载图像
+        image = Image.open(sample['path']).convert('RGB')
+        
+        # 应用变换
+        if self.transform:
+            image = self.transform(image)
+        
+        return image, sample['label'], sample['user_name']
+
+
+class ImprovedPrototypeBuilderWithSplit:
+    """ImprovedClassifier的原型构建器 - 带数据划分"""
+    
+    def __init__(self, model_path, device='cuda'):
         self.device = device
-        self.model = model.to(device)
-        self.original_bn_stats = self._save_bn_stats()
-        self.prototypes = None
+        self.model = self._load_model(model_path)
         
-    def _save_bn_stats(self):
-        """保存原始BN统计量"""
-        bn_stats = {}
-        for name, module in self.model.named_modules():
-            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
-                bn_stats[name] = {
-                    'running_mean': module.running_mean.clone(),
-                    'running_var': module.running_var.clone(),
-                    'momentum': module.momentum,
-                    'num_batches_tracked': module.num_batches_tracked.clone() if module.num_batches_tracked is not None else None
-                }
-        return bn_stats
-    
-    def _restore_bn_stats(self):
-        """恢复原始BN统计量"""
-        for name, module in self.model.named_modules():
-            if name in self.original_bn_stats:
-                module.running_mean.data = self.original_bn_stats[name]['running_mean']
-                module.running_var.data = self.original_bn_stats[name]['running_var']
-                if module.momentum is not None:
-                    module.momentum = self.original_bn_stats[name]['momentum']
-                if module.num_batches_tracked is not None:
-                    module.num_batches_tracked.data = self.original_bn_stats[name]['num_batches_tracked']
-    
-    def step1_lccs_adaptation(self, support_loader, method='progressive', **kwargs):
-        """步骤1：LCCS适应BatchNorm"""
-        print(f"\n🔧 Step 1: LCCS Adaptation (method={method})")
+    def _load_model(self, model_path):
+        """加载ImprovedClassifier"""
+        print(f"📦 Loading ImprovedClassifier from: {model_path}")
         
-        if method == 'progressive':
-            # 只传递progressive相关参数
-            prog_kwargs = {k: v for k, v in kwargs.items() 
-                          if k in ['momentum', 'iterations']}
-            self._lccs_progressive(support_loader, **prog_kwargs)
-        elif method == 'weighted':
-            # 只传递weighted相关参数
-            weight_kwargs = {k: v for k, v in kwargs.items() 
-                           if k in ['alpha']}
-            self._lccs_weighted(support_loader, **weight_kwargs)
+        # 加载checkpoint
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        
+        # 获取模型配置
+        num_classes = checkpoint.get('num_classes', 31)
+        backbone = checkpoint.get('backbone', 'resnet18')
+        
+        # 创建模型
+        model = ImprovedClassifier(
+            num_classes=num_classes,
+            backbone=backbone
+        ).to(self.device)
+        
+        # 加载权重
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
         else:
-            raise ValueError(f"Unknown LCCS method: {method}")
+            model.load_state_dict(checkpoint)
+        
+        model.eval()
+        print(f"✓ Model loaded successfully: {backbone} with {num_classes} classes")
+        
+        if 'best_val_acc' in checkpoint:
+            print(f"   Original validation accuracy: {checkpoint['best_val_acc']:.2f}%")
+            
+        return model
     
-    def _lccs_progressive(self, support_loader, momentum=0.01, iterations=5):
-        """渐进式LCCS更新"""
-        print(f"   Progressive update: momentum={momentum}, iterations={iterations}")
-        
-        self.model.train()
-        for param in self.model.parameters():
-            param.requires_grad = False
-        
-        # 设置小momentum
-        for module in self.model.modules():
-            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
-                module.momentum = momentum
-        
-        # 多次迭代更新
-        with torch.no_grad():
-            for i in range(iterations):
-                for batch in tqdm(support_loader, desc=f"   LCCS iter {i+1}/{iterations}", leave=False):
-                    if len(batch) == 3:
-                        images, _, _ = batch
-                    else:
-                        images, _ = batch
-                    images = images.to(self.device)
-                    _ = self.model(images)
-        
-        self.model.eval()
-        print("   ✅ LCCS adaptation complete")
-    
-    def _lccs_weighted(self, support_loader, alpha=0.3):
-        """加权融合LCCS"""
-        print(f"   Weighted fusion: alpha={alpha}")
-        
-        # 保存源域统计
-        source_stats = self._save_bn_stats()
-        
-        # 收集目标域统计
-        self.model.train()
-        for module in self.model.modules():
-            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
-                module.reset_running_stats()
-                module.momentum = 1.0
+    def extract_features(self, dataloader):
+        """提取特征向量"""
+        features = []
+        labels = []
+        user_names = []
         
         with torch.no_grad():
-            for _ in range(10):
-                for batch in support_loader:
-                    if len(batch) == 3:
-                        images, _, _ = batch
-                    else:
-                        images, _ = batch
-                    images = images.to(self.device)
-                    _ = self.model(images)
-        
-        # 保存目标域统计
-        target_stats = self._save_bn_stats()
-        
-        # 加权融合
-        for name, module in self.model.named_modules():
-            if isinstance(module, (nn.BatchNorm2d, nn.BatchNorm1d)):
-                if name in source_stats and name in target_stats:
-                    module.running_mean = (1-alpha) * source_stats[name]['running_mean'] + \
-                                         alpha * target_stats[name]['running_mean']
-                    module.running_var = (1-alpha) * source_stats[name]['running_var'] + \
-                                        alpha * target_stats[name]['running_var']
-        
-        self.model.eval()
-        print("   ✅ LCCS weighted fusion complete")
-    
-    def step2_build_prototypes(self, support_loader):
-        """步骤2：在LCCS适应后的模型上构建原型"""
-        print(f"\n🎯 Step 2: Building Prototypes on LCCS-adapted model")
-        
-        self.model.eval()
-        
-        # 收集特征和标签
-        all_features = []
-        all_labels = []
-        
-        with torch.no_grad():
-            for batch in tqdm(support_loader, desc="   Extracting features"):
-                if len(batch) == 3:
-                    images, labels, _ = batch
-                else:
-                    images, labels = batch
-                    
-                images = images.to(self.device)
+            for batch_images, batch_labels, batch_users in tqdm(dataloader, desc="Extracting features"):
+                batch_images = batch_images.to(self.device)
                 
-                # 提取backbone特征（LCCS已经改善了这些特征）
-                features = self.model.backbone(images)
+                # 提取特征：直接使用backbone输出
+                feat = self.model.backbone(batch_images)
                 
-                all_features.append(features.cpu())
-                all_labels.extend(labels.tolist())
+                features.append(feat.cpu())
+                labels.extend(batch_labels.tolist())
+                user_names.extend(batch_users)
         
-        # 合并所有特征
-        all_features = torch.cat(all_features, dim=0)
-        
-        # 计算每个类的原型
-        num_classes = max(all_labels) + 1
+        features = torch.cat(features, dim=0)
+        return features, labels, user_names
+    
+    def compute_prototypes(self, features, labels, normalize=True):
+        """计算每个类的原型"""
+        num_classes = max(labels) + 1
         prototypes = []
         
         for class_id in range(num_classes):
-            class_mask = [i for i, l in enumerate(all_labels) if l == class_id]
-            if len(class_mask) > 0:
-                class_features = all_features[class_mask]
-                # 计算均值原型
-                prototype = class_features.mean(dim=0)
-                # L2归一化
-                prototype = prototype / prototype.norm(2)
-                prototypes.append(prototype)
-            else:
-                prototypes.append(torch.zeros(all_features.shape[1]))
-        
-        self.prototypes = torch.stack(prototypes).to(self.device)
-        print(f"   ✅ Built prototypes: {self.prototypes.shape}")
-    
-    def step3_combined_inference(self, test_loader, fusion_alpha=0.6, similarity_tau=0.01):
-        """步骤3：组合推理 - LCCS特征 + PNC校准"""
-        print(f"\n🚀 Step 3: Combined Inference")
-        print(f"   Fusion alpha: {fusion_alpha}")
-        print(f"   Similarity tau: {similarity_tau}")
-        
-        if self.prototypes is None:
-            raise ValueError("Prototypes not built! Run step2_build_prototypes first.")
-        
-        self.model.eval()
-        
-        all_predictions = []
-        all_labels = []
-        all_confidences = []
-        
-        with torch.no_grad():
-            for batch in tqdm(test_loader, desc="   Evaluating"):
-                if len(batch) == 3:
-                    images, labels, _ = batch
-                else:
-                    images, labels = batch
-                
-                images = images.to(self.device)
-                labels = labels.to(self.device)
-                
-                # 1. 获取LCCS改善后的分类器输出
-                outputs = self.model(images)
-                
-                # 2. 提取LCCS改善后的特征
-                features = self.model.backbone(images)
-                
-                # 3. L2归一化特征
-                features = features / features.norm(2, dim=1, keepdim=True)
-                
-                # 4. 计算与原型的相似度
-                similarities = torch.matmul(features, self.prototypes.T)
-                
-                # 5. 温度缩放并转为概率
-                proto_probs = F.softmax(similarities / similarity_tau, dim=1)
-                
-                # 6. 分类器概率
-                class_probs = F.softmax(outputs, dim=1)
-                
-                # 7. 融合两种概率
-                combined_probs = (1 - fusion_alpha) * class_probs + fusion_alpha * proto_probs
-                
-                # 8. 最终预测
-                confidences, predictions = torch.max(combined_probs, 1)
-                
-                all_predictions.extend(predictions.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-                all_confidences.extend(confidences.cpu().numpy())
-        
-        # 计算准确率
-        accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
-        mean_confidence = np.mean(all_confidences)
-        
-        return accuracy, mean_confidence
-    
-    def evaluate_baseline(self, test_loader):
-        """基线评估（无任何适应）"""
-        self.model.eval()
-        
-        correct = 0
-        total = 0
-        confidences = []
-        
-        with torch.no_grad():
-            for batch in tqdm(test_loader, desc="   Baseline eval"):
-                if len(batch) == 3:
-                    images, labels, _ = batch
-                else:
-                    images, labels = batch
-                    
-                images = images.to(self.device)
-                labels = labels.to(self.device)
-                
-                outputs = self.model(images)
-                probs = F.softmax(outputs, dim=1)
-                conf, predicted = torch.max(probs, 1)
-                
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-                confidences.extend(conf.cpu().numpy())
-        
-        accuracy = correct / total
-        mean_confidence = np.mean(confidences)
-        return accuracy, mean_confidence
-
-
-def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
-                          lccs_method='progressive', lccs_momentum=0.01, lccs_iterations=5,
-                          lccs_alpha=0.3, fusion_alpha=0.6, similarity_tau=0.01,
-                          prototype_path=None):
-    """运行LCCS+PNC组合实验"""
-    
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    print("="*80)
-    print("🔬 LCCS + PNC COMBINED EXPERIMENT")
-    print("="*80)
-    
-    # 数据准备
-    transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])
-    ])
-    
-    # 支持集
-    support_dataset = SplitTargetDomainDataset(
-        data_dir=data_dir,
-        transform=transform,
-        support_size=support_size,
-        mode='support',
-        seed=seed
-    )
-    
-    support_loader = DataLoader(
-        support_dataset,
-        batch_size=31,
-        shuffle=False,  # 保持顺序以便原型构建
-        num_workers=2
-    )
-    
-    # 测试集
-    test_dataset = SplitTargetDomainDataset(
-        data_dir=data_dir,
-        transform=transform,
-        support_size=support_size,
-        mode='test',
-        seed=seed
-    )
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=64,
-        shuffle=False,
-        num_workers=4
-    )
-    
-    print(f"\n Data Configuration:")
-    print(f"   Dataset: {data_dir}")
-    print(f"   Support samples: {len(support_dataset)} ({support_size}/user)")
-    print(f"   Test samples: {len(test_dataset)}")
-    print(f"   Seed: {seed}")
-    if prototype_path:
-        print(f"   Prototype source: {prototype_path}")
-    
-    # 加载模型
-    print(f"\n Loading model from: {model_path}")
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    
-    model = ImprovedClassifier(
-        num_classes=checkpoint.get('num_classes', 31),
-        backbone=checkpoint.get('backbone', 'resnet18')
-    ).to(device)
-    
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-    
-    # 创建组合适配器
-    adapter = CombinedLCCS_PNC(model, device)
-    
-    # 基线评估
-    print("\n" + "-"*60)
-    print(" BASELINE (No adaptation)")
-    baseline_acc, baseline_conf = adapter.evaluate_baseline(test_loader)
-    print(f"   Accuracy: {baseline_acc:.2%}")
-    print(f"   Confidence: {baseline_conf:.3f}")
-    
-    # 步骤1：LCCS适应
-    print("\n" + "-"*60)
-    adapter.step1_lccs_adaptation(
-        support_loader,
-        method=lccs_method,
-        momentum=lccs_momentum,
-        iterations=lccs_iterations,
-        alpha=lccs_alpha
-    )
-    
-    # 步骤2：构建或加载原型
-    print("-"*60)
-    if prototype_path and Path(prototype_path).exists():
-        print(f" Loading pre-built prototypes from: {prototype_path}")
-        prototype_data = torch.load(prototype_path, map_location=device, weights_only=False)
-        
-        if 'prototypes' in prototype_data:
-            adapter.prototypes = prototype_data['prototypes'].to(device)
-            print(f"   Built prototypes: {adapter.prototypes.shape}")
+            # 获取该类的所有特征
+            class_mask = [i for i, l in enumerate(labels) if l == class_id]
+            if len(class_mask) == 0:
+                print(f"⚠️ No samples for class {class_id}")
+                prototypes.append(torch.zeros(features.shape[1]))
+                continue
             
-            # 显示原型信息
-            if 'metadata' in prototype_data:
-                metadata = prototype_data['metadata']
-                print(f"   Source dataset: {metadata.get('dataset_name', 'Unknown')}")
-                print(f"   Support size: {metadata.get('support_size', 'Unknown')}")
-                print(f"   Users: {metadata.get('num_users', 'Unknown')}")
-        else:
-            print("   Warning: No 'prototypes' key found in file, building new ones...")
-            adapter.step2_build_prototypes(support_loader)
-    else:
-        if prototype_path:
-            print(f"   Warning: Prototype file not found: {prototype_path}")
-        print(f" Building prototypes on LCCS-adapted model")
-        adapter.step2_build_prototypes(support_loader)
+            class_features = features[class_mask]
+            
+            # 计算均值原型
+            prototype = class_features.mean(dim=0)
+            
+            # L2归一化
+            if normalize:
+                prototype = prototype / prototype.norm(2)
+            
+            prototypes.append(prototype)
+        
+        prototypes = torch.stack(prototypes)
+        return prototypes
     
-    # 步骤3：组合推理
-    print("-"*60)
-    combined_acc, combined_conf = adapter.step3_combined_inference(
-        test_loader,
-        fusion_alpha=fusion_alpha,
-        similarity_tau=similarity_tau
-    )
-    
-    # 结果汇总
-    print("\n" + "="*80)
-    print(" RESULTS SUMMARY")
-    print("="*80)
-    
-    results = [
-        ["Method", "Accuracy", "Confidence", "Improvement"],
-        ["Baseline", f"{baseline_acc:.2%}", f"{baseline_conf:.3f}", "-"],
-        ["LCCS+PNC", f"{combined_acc:.2%}", f"{combined_conf:.3f}", 
-         f"{combined_acc-baseline_acc:+.2%}"]
-    ]
-    
-    print(tabulate(results, headers="firstrow", tablefmt="grid"))
-    
-    # 与单独方法比较
-    print(f"\n Performance Analysis:")
-    print(f"   Dataset: {Path(data_dir).name}")
-    if prototype_path:
-        prototype_source = Path(prototype_path).stem.replace('improved_prototypes_split_', '')
-        print(f"   Prototype source: {prototype_source}")
-    print(f"   LCCS+PNC: {combined_acc:.2%} ({combined_acc-baseline_acc:+.2%})")
-    print(f"   Reference - PNC alone on backpack: 84.46% (+8.80%)")
-    print(f"   Reference - LCCS alone on backpack: 78.09% (+2.42%)")
-    
-    # 评估
-    improvement = combined_acc - baseline_acc
-    if improvement > 0.09:
-        print(f"\n EXCELLENT! Combined approach achieves best performance!")
-    elif improvement > 0.08:
-        print(f"\n Good! Combined approach is competitive with PNC alone.")
-        print(f"\n✅ Good! Combined approach is competitive with PNC alone.")
-    else:
-        print(f"\n⚠️ Combined approach did not exceed PNC alone.")
-    
-    return {
-        'baseline': baseline_acc,
-        'combined': combined_acc,
-        'improvement': improvement
-    }
+    def build_and_save(self, data_dir, output_path, support_size=10, batch_size=32, seed=42):
+        """构建并保存原型 - 同时保存数据集划分信息"""
+        print("\n" + "="*60)
+        print("🔧 BUILDING PROTOTYPES WITH DATA SPLIT")
+        print("="*60)
+        
+        # 数据变换（与训练时一致）
+        transform = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                               std=[0.229, 0.224, 0.225])
+        ])
+        
+        # 创建支持集数据集
+        support_dataset = SplitTargetDomainDataset(
+            data_dir=data_dir,
+            transform=transform,
+            support_size=support_size,
+            mode='support',
+            seed=seed
+        )
+        
+        support_loader = DataLoader(
+            support_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=2,
+            pin_memory=True
+        )
+        
+        # 提取特征
+        print("\n🎯 Extracting features from support set...")
+        features, labels, user_names = self.extract_features(support_loader)
+        print(f"✓ Extracted features: {features.shape}")
+        
+        # 计算原型
+        print("\n📐 Computing prototypes...")
+        prototypes = self.compute_prototypes(features, labels)
+        print(f"✓ Computed prototypes: {prototypes.shape}")
+        
+        # 保存支持集文件路径（用于排除）
+        support_paths = [str(sample['path']) for sample in support_dataset.samples]
+        
+        # 保存
+        save_dict = {
+            'prototypes': prototypes,
+            'user_ids': list(range(prototypes.shape[0])),
+            'feature_dim': prototypes.shape[1],
+            'metadata': {
+                'model_type': 'ImprovedClassifier',
+                'support_size': support_size,
+                'num_support_samples': len(support_dataset),
+                'feature_extraction': 'backbone_direct',
+                'timestamp': datetime.now().isoformat(),
+                'seed': seed,
+                'data_split': 'strict_split',
+                'dataset_name': Path(data_dir).name,  # 添加数据集名称
+                'num_users': prototypes.shape[0]      # 添加用户数量
+            },
+            'support_paths': support_paths,  # 关键：保存支持集路径
+            'user_stats': {}
+        }
+        
+        # 统计每个用户的信息
+        print("\n📈 Prototype statistics:")
+        for i in range(prototypes.shape[0]):
+            user_samples = sum(1 for l in labels if l == i)
+            norm = prototypes[i].norm(2).item()
+            save_dict['user_stats'][f'ID_{i+1}'] = {
+                'support_samples': user_samples,
+                'prototype_norm': norm
+            }
+            print(f"   • ID_{i+1}: {user_samples} support samples, prototype norm: {norm:.3f}")
+        
+        # 保存文件
+        torch.save(save_dict, output_path)
+        print(f"\n💾 Prototypes saved to: {output_path}")
+        print(f"   Support set paths saved for exclusion during testing")
+        
+        # 创建测试集信息
+        test_dataset = SplitTargetDomainDataset(
+            data_dir=data_dir,
+            transform=transform,
+            support_size=support_size,
+            mode='test',
+            seed=seed
+        )
+        
+        print(f"\n📊 Data split summary:")
+        print(f"   Support set: {len(support_dataset)} samples (for prototypes)")
+        print(f"   Test set: {len(test_dataset)} samples (for evaluation)")
+        print(f"   No overlap between sets!")
+        
+        print("\n✅ Prototype building with strict data split completed!")
+        return save_dict
 
 
 def main():
-    parser = argparse.ArgumentParser(description='LCCS + PNC Combined Approach')
+    """主函数"""
+    parser = argparse.ArgumentParser(description='Build prototypes with strict data split')
     
-    # 数据和模型
-    parser.add_argument('--model-path', type=str,
-                       default='/kaggle/working/VA-VAE/improved_classifier/best_improved_classifier.pth',
-                       help='Path to trained model')
-    parser.add_argument('--data-dir', type=str,
+    # Kaggle环境默认路径
+    parser.add_argument('--data-dir', type=str, 
                        default='/kaggle/input/backpack/backpack',
                        help='Path to target domain data')
-    parser.add_argument('--support-size', type=int, default=3,
-                       help='Support samples per user')
+    parser.add_argument('--model-path', type=str,
+                       default='/kaggle/working/VA-VAE/improved_classifier/best_improved_classifier.pth',
+                       help='Path to ImprovedClassifier model')
+    parser.add_argument('--output-path', type=str,
+                       default='/kaggle/working/improved_prototypes_split.pt',
+                       help='Path to save prototypes')
+    parser.add_argument('--support-size', type=int, default=10,
+                       help='Number of support samples per user')
+    parser.add_argument('--batch-size', type=int, default=32,
+                       help='Batch size for feature extraction')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed for data split')
-    
-    # LCCS参数
-    parser.add_argument('--lccs-method', type=str, default='progressive',
-                       choices=['progressive', 'weighted'],
-                       help='LCCS adaptation method')
-    parser.add_argument('--lccs-momentum', type=float, default=0.01,
-                       help='Momentum for progressive LCCS')
-    parser.add_argument('--lccs-iterations', type=int, default=5,
-                       help='Iterations for progressive LCCS')
-    parser.add_argument('--lccs-alpha', type=float, default=0.3,
-                       help='Alpha for weighted LCCS')
-    
-    # 原型相关参数
-    parser.add_argument('--prototype-path', type=str, default=None,
-                       help='Path to pre-built prototype file (.pt)')
-    
-    # PNC参数
-    parser.add_argument('--fusion-alpha', type=float, default=0.6,
-                       help='Fusion weight for PNC')
-    parser.add_argument('--similarity-tau', type=float, default=0.01,
-                       help='Temperature for similarity')
+    parser.add_argument('--device', type=str, default='cuda',
+                       help='Device to use (cuda/cpu)')
     
     args = parser.parse_args()
     
-    # 运行实验
-    results = run_combined_experiment(
+    # 创建原型构建器
+    builder = ImprovedPrototypeBuilderWithSplit(
         model_path=args.model_path,
-        data_dir=args.data_dir,
-        support_size=args.support_size,
-        seed=args.seed,
-        lccs_method=args.lccs_method,
-        lccs_momentum=args.lccs_momentum,
-        lccs_iterations=args.lccs_iterations,
-        lccs_alpha=args.lccs_alpha,
-        fusion_alpha=args.fusion_alpha,
-        similarity_tau=args.similarity_tau,
-        prototype_path=args.prototype_path
+        device=args.device
     )
     
-    print(f"\n🏁 Experiment complete!")
+    # 构建并保存原型
+    builder.build_and_save(
+        data_dir=args.data_dir,
+        output_path=args.output_path,
+        support_size=args.support_size,
+        batch_size=args.batch_size,
+        seed=args.seed
+    )
 
 
 if __name__ == '__main__':
