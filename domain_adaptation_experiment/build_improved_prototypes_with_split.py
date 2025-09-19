@@ -250,7 +250,9 @@ class ImprovedPrototypeBuilderWithSplit:
                 'feature_extraction': 'backbone_direct',
                 'timestamp': datetime.now().isoformat(),
                 'seed': seed,
-                'data_split': 'strict_split'
+                'data_split': 'strict_split',
+                'dataset_name': Path(data_dir).name,  # 添加数据集名称
+                'num_users': prototypes.shape[0]      # 添加用户数量
             },
             'support_paths': support_paths,  # 关键：保存支持集路径
             'user_stats': {}
