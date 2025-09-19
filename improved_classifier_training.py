@@ -278,11 +278,21 @@ class SupConLoss(nn.Module):
 class ImprovedMicroDopplerDataset(Dataset):
     """改进的微多普勒数据集，包含强数据增强"""
     
-    def __init__(self, data_dir, split='train', transform=None, contrastive_pairs=False):
+    def __init__(self, data_dir, split='train', transform=None, contrastive_pairs=False, 
+                 generated_data_dirs=None, use_generated=False):
         self.data_dir = Path(data_dir)
         self.split = split
         self.contrastive_pairs = contrastive_pairs
+        self.generated_data_dirs = generated_data_dirs or []
+        self.use_generated = use_generated
         self.samples = []
+        
+        # 加载数据
+        self._load_data()
+        
+        # 如果是训练集且使用生成数据，则加载合成数据
+        if self.split == 'train' and self.use_generated:
+            self._load_generated_data()
         
         # 收集所有样本
         user_samples = defaultdict(list)
@@ -340,11 +350,96 @@ class ImprovedMicroDopplerDataset(Dataset):
         if transform:
             self.transform = transform
     
+    def _load_data(self):
+        """加载真实数据集"""
+        if not self.data_dir.exists():
+            raise FileNotFoundError(f"数据目录不存在: {self.data_dir}")
+        
+        user_samples = defaultdict(list)
+        self._load_data_from_dir(self.data_dir, user_samples, 'real')
+        
+        # 统计信息
+        total_samples = sum(len(samples) for samples in user_samples.values())
+        print(f"真实数据: {len(user_samples)} 个用户的 {total_samples} 张图像")
+    
+    def _load_data_from_dir(self, data_dir, user_samples, data_type='real'):
+        """从指定目录加载数据"""
+        data_dir = Path(data_dir)
+        if not data_dir.exists():
+            print(f"数据目录不存在: {data_dir}")
+            return
+            
+        # 查找用户目录：支持ID_*, User_*, user_*格式
+        id_dirs = []
+        for pattern in ["ID_*", "User_*", "user_*"]:
+            id_dirs.extend(data_dir.glob(pattern))
+        
+        if len(id_dirs) == 0:
+            print(f"Warning: 在 {data_dir} 中未找到ID_*、User_*或user_*格式的用户目录")
+            # 尝试数字格式目录
+            id_dirs = [d for d in data_dir.iterdir() if d.is_dir() and d.name.isdigit()]
+            id_dirs = sorted(id_dirs, key=lambda x: int(x.name))
+        
+        for user_dir in sorted(id_dirs):
+            user_folder_name = user_dir.name
+            
+            # 解析用户ID
+            if user_folder_name.startswith("ID_"):
+                user_id = int(user_folder_name.split('_')[1]) - 1  # 转换为0-based索引
+            elif user_folder_name.startswith(("User_", "user_")):
+                user_id = int(user_folder_name.split('_')[1])  # User_已经是0-based
+            else:
+                # 尝试直接解析数字
+                try:
+                    user_id = int(user_folder_name)
+                except ValueError:
+                    print(f"无法解析用户ID: {user_folder_name}")
+                    continue
+            
+            # 获取所有图像文件
+            image_files = list(user_dir.glob("*.png")) + list(user_dir.glob("*.jpg"))
+            
+            current_data_samples = []
+            for img_path in image_files:
+                path_info = (str(img_path), data_type)
+                current_data_samples.append(path_info)
+                user_samples[user_id].append(path_info)
+            
+            # 添加到主样本列表
+            for path_info in current_data_samples:
+                path, dtype = path_info
+                self.samples.append((path, user_id, dtype))
+    
+    def _load_generated_data(self):
+        """加载合成数据"""
+        if not self.generated_data_dirs:
+            return
+        
+        total_generated = 0
+        user_samples = defaultdict(list)
+        
+        for gen_dir in self.generated_data_dirs:
+            gen_dir = Path(gen_dir)
+            if gen_dir.exists():
+                print(f"加载合成数据: {gen_dir}")
+                self._load_data_from_dir(gen_dir, user_samples, 'generated')
+                
+        # 统计合成数据
+        for user_id, samples in user_samples.items():
+            generated_count = sum(1 for _, dtype in samples if dtype == 'generated')
+            total_generated += generated_count
+            
+        print(f"合成数据: {len(user_samples)} 个用户的 {total_generated} 张图像")
+    
     def __len__(self):
         return len(self.samples)
     
     def __getitem__(self, idx):
-        img_path, label = self.samples[idx]
+        if len(self.samples[idx]) == 3:
+            img_path, label, data_type = self.samples[idx]
+        else:
+            img_path, label = self.samples[idx]
+            data_type = 'real'
         
         try:
             image = Image.open(img_path).convert('RGB')
@@ -360,7 +455,7 @@ class ImprovedMicroDopplerDataset(Dataset):
                 
         except Exception as e:
             print(f"Error loading {img_path}: {e}")
-            # 返回零张量
+            # 返回零张量 - 尺寸与实际图像一致
             if self.contrastive_pairs:
                 return (torch.zeros(3, 256, 256), torch.zeros(3, 256, 256)), label
             else:
@@ -445,36 +540,6 @@ class ImprovedClassifier(nn.Module):
         return logits
 
 
-class FocalLoss(nn.Module):
-    """Focal Loss - 处理类别不平衡"""
-    
-    def __init__(self, alpha=1, gamma=2):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-    
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-        pt = torch.exp(-ce_loss)
-        focal_loss = self.alpha * (1-pt)**self.gamma * ce_loss
-        return focal_loss.mean()
-
-
-class LabelSmoothingLoss(nn.Module):
-    """标签平滑损失"""
-    
-    def __init__(self, num_classes, smoothing=0.1):
-        super().__init__()
-        self.num_classes = num_classes
-        self.smoothing = smoothing
-    
-    def forward(self, pred, target):
-        confidence = 1.0 - self.smoothing
-        smooth_target = torch.full_like(pred, self.smoothing / (self.num_classes - 1))
-        smooth_target.scatter_(1, target.unsqueeze(1), confidence)
-        return F.kl_div(F.log_softmax(pred, dim=1), smooth_target, reduction='batchmean')
-
-
 def train_with_contrastive_learning(model, train_loader, val_loader, device, args, rank=0):
     """改进的训练函数，集成对比学习"""
     
@@ -485,12 +550,12 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
     # 验证数据集是否为空
     if len(train_loader.dataset) == 0:
         if is_main_process():
-            print("❌ 训练数据集为空，无法开始训练")
+            print("训练数据集为空，无法开始训练")
         return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
     
     if len(val_loader.dataset) == 0:
         if is_main_process():
-            print("❌ 验证数据集为空，无法开始训练")
+            print("验证数据集为空，无法开始训练")
         return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
     
     if is_main_process():
@@ -508,25 +573,25 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
     if args.use_contrastive:
         if args.contrastive_type == 'interuser':
             if is_main_process():
-                print("✅ 启用InterUserContrastiveLoss对比学习 - 优化用户间差异")
+                print("启用InterUserContrastiveLoss对比学习 - 优化用户间差异")
             contrastive_criterion = InterUserContrastiveLoss(
                 temperature=args.contrastive_temperature,
                 margin=args.contrastive_margin
             )
         elif args.contrastive_type == 'supcon':
             if is_main_process():
-                print("✅ 启用SupConLoss对比学习 - 监督对比学习")
+                print("启用SupConLoss对比学习 - 监督对比学习")
             contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
         elif args.contrastive_type == 'global':
             if is_main_process():
-                print("✅ 启用GlobalNegativeContrastiveLoss - 全局负样本对比")
+                print("启用GlobalNegativeContrastiveLoss - 全局负样本对比")
             contrastive_criterion = GlobalNegativeContrastiveLoss(
                 memory_size=64,
                 temperature=args.contrastive_temperature
             )
         else:
             if is_main_process():
-                print(f"⚠️ 未知对比学习类型: {args.contrastive_type}，使用SupConLoss")
+                print(f"未知对比学习类型: {args.contrastive_type}，使用SupConLoss")
             contrastive_criterion = SupConLoss(temperature=args.contrastive_temperature)
     else:
         contrastive_criterion = None
@@ -677,11 +742,11 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
         
         # 防止除零错误
         if len(train_loader) == 0:
-            print("❌ 训练数据集为空，请检查数据路径和格式")
+            print("训练数据集为空，请检查数据路径和格式")
             return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
         
         if len(val_loader) == 0:
-            print("❌ 验证数据集为空，请检查数据路径和格式")
+            print("验证数据集为空，请检查数据路径和格式")
             return model, None, 0.0, {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': [], 'contrastive_loss': [], 'classification_loss': []}
         
         # 统计
@@ -710,12 +775,12 @@ def train_with_contrastive_learning(model, train_loader, val_loader, device, arg
                 best_val_acc = val_acc
                 best_model_state = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
                 patience_counter = 0
-                print(f"🎯 New best validation accuracy: {best_val_acc:.2f}%")
+                print(f"New best validation accuracy: {best_val_acc:.2f}%")
             else:
                 patience_counter += 1
             
             if patience_counter >= args.patience:
-                print(f"🛑 Early stopping at epoch {epoch+1}")
+                print(f"Early stopping at epoch {epoch+1}")
                 break
     
     return model, best_model_state, best_val_acc, history
@@ -753,6 +818,11 @@ def main():
                        choices=['none', 'minimal', 'moderate', 'aggressive'],
                        help='Layer freezing strategy: none(risk overfitting), minimal(conv1+bn1), moderate(+layer1), aggressive(+layer2)')
     
+    parser.add_argument('--generated_data_dir', type=str, action='append', 
+                       help='Generated dataset directory (can be specified multiple times)')
+    parser.add_argument('--use_generated', action='store_true', 
+                       help='Use generated data to augment training set')
+    
     args = parser.parse_args()
     
     # 初始化分布式训练
@@ -781,9 +851,11 @@ def main():
     
     # 数据集
     train_dataset = ImprovedMicroDopplerDataset(
-        args.data_dir, 
+        data_dir=args.data_dir, 
         split='train', 
-        contrastive_pairs=args.use_contrastive
+        contrastive_pairs=args.use_contrastive,
+        generated_data_dirs=args.generated_data_dir,
+        use_generated=args.use_generated
     )
     val_dataset = ImprovedMicroDopplerDataset(
         args.data_dir, 
