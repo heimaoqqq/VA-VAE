@@ -277,7 +277,8 @@ class CombinedLCCS_PNC:
 
 def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
                           lccs_method='progressive', lccs_momentum=0.01, lccs_iterations=5,
-                          lccs_alpha=0.3, fusion_alpha=0.6, similarity_tau=0.01):
+                          lccs_alpha=0.3, fusion_alpha=0.6, similarity_tau=0.01,
+                          prototype_path=None):
     """运行LCCS+PNC组合实验"""
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -326,13 +327,16 @@ def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
         num_workers=4
     )
     
-    print(f"\n📊 Data Configuration:")
+    print(f"\n Data Configuration:")
+    print(f"   Dataset: {data_dir}")
     print(f"   Support samples: {len(support_dataset)} ({support_size}/user)")
     print(f"   Test samples: {len(test_dataset)}")
     print(f"   Seed: {seed}")
+    if prototype_path:
+        print(f"   Prototype source: {prototype_path}")
     
     # 加载模型
-    print(f"\n📦 Loading model from: {model_path}")
+    print(f"\n Loading model from: {model_path}")
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     
     model = ImprovedClassifier(
@@ -350,7 +354,7 @@ def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
     
     # 基线评估
     print("\n" + "-"*60)
-    print("📊 BASELINE (No adaptation)")
+    print(" BASELINE (No adaptation)")
     baseline_acc, baseline_conf = adapter.evaluate_baseline(test_loader)
     print(f"   Accuracy: {baseline_acc:.2%}")
     print(f"   Confidence: {baseline_conf:.3f}")
@@ -365,9 +369,30 @@ def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
         alpha=lccs_alpha
     )
     
-    # 步骤2：构建原型（在LCCS适应后的模型上）
+    # 步骤2：构建或加载原型
     print("-"*60)
-    adapter.step2_build_prototypes(support_loader)
+    if prototype_path and Path(prototype_path).exists():
+        print(f" Loading pre-built prototypes from: {prototype_path}")
+        prototype_data = torch.load(prototype_path, map_location=device, weights_only=False)
+        
+        if 'prototypes' in prototype_data:
+            adapter.prototypes = prototype_data['prototypes'].to(device)
+            print(f"   Built prototypes: {adapter.prototypes.shape}")
+            
+            # 显示原型信息
+            if 'metadata' in prototype_data:
+                metadata = prototype_data['metadata']
+                print(f"   Source dataset: {metadata.get('dataset_name', 'Unknown')}")
+                print(f"   Support size: {metadata.get('support_size', 'Unknown')}")
+                print(f"   Users: {metadata.get('num_users', 'Unknown')}")
+        else:
+            print("   Warning: No 'prototypes' key found in file, building new ones...")
+            adapter.step2_build_prototypes(support_loader)
+    else:
+        if prototype_path:
+            print(f"   Warning: Prototype file not found: {prototype_path}")
+        print(f" Building prototypes on LCCS-adapted model")
+        adapter.step2_build_prototypes(support_loader)
     
     # 步骤3：组合推理
     print("-"*60)
@@ -379,7 +404,7 @@ def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
     
     # 结果汇总
     print("\n" + "="*80)
-    print("📈 RESULTS SUMMARY")
+    print(" RESULTS SUMMARY")
     print("="*80)
     
     results = [
@@ -392,16 +417,21 @@ def run_combined_experiment(model_path, data_dir, support_size=3, seed=42,
     print(tabulate(results, headers="firstrow", tablefmt="grid"))
     
     # 与单独方法比较
-    print(f"\n📊 Comparison with individual methods:")
-    print(f"   PNC alone: 84.46% (+8.80%)")
-    print(f"   LCCS alone: 78.09% (+2.42%)")
+    print(f"\n Performance Analysis:")
+    print(f"   Dataset: {Path(data_dir).name}")
+    if prototype_path:
+        prototype_source = Path(prototype_path).stem.replace('improved_prototypes_split_', '')
+        print(f"   Prototype source: {prototype_source}")
     print(f"   LCCS+PNC: {combined_acc:.2%} ({combined_acc-baseline_acc:+.2%})")
+    print(f"   Reference - PNC alone on backpack: 84.46% (+8.80%)")
+    print(f"   Reference - LCCS alone on backpack: 78.09% (+2.42%)")
     
     # 评估
     improvement = combined_acc - baseline_acc
     if improvement > 0.09:
-        print(f"\n🏆 EXCELLENT! Combined approach achieves best performance!")
+        print(f"\n EXCELLENT! Combined approach achieves best performance!")
     elif improvement > 0.08:
+        print(f"\n Good! Combined approach is competitive with PNC alone.")
         print(f"\n✅ Good! Combined approach is competitive with PNC alone.")
     else:
         print(f"\n⚠️ Combined approach did not exceed PNC alone.")
@@ -439,6 +469,10 @@ def main():
     parser.add_argument('--lccs-alpha', type=float, default=0.3,
                        help='Alpha for weighted LCCS')
     
+    # 原型相关参数
+    parser.add_argument('--prototype-path', type=str, default=None,
+                       help='Path to pre-built prototype file (.pt)')
+    
     # PNC参数
     parser.add_argument('--fusion-alpha', type=float, default=0.6,
                        help='Fusion weight for PNC')
@@ -458,7 +492,8 @@ def main():
         lccs_iterations=args.lccs_iterations,
         lccs_alpha=args.lccs_alpha,
         fusion_alpha=args.fusion_alpha,
-        similarity_tau=args.similarity_tau
+        similarity_tau=args.similarity_tau,
+        prototype_path=args.prototype_path
     )
     
     print(f"\n🏁 Experiment complete!")
