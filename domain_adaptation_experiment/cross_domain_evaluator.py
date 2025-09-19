@@ -193,13 +193,22 @@ class CrossDomainEvaluator:
                 images = images.to(self.device)
                 labels = labels.to(self.device)
                 
-                # 前向传播
-                outputs, _ = model(images)  # DomainAdaptiveClassifier返回(logits, features)
+                # 前向传播 - 根据模型类型处理返回值
+                model_output = model(images)
+                if isinstance(model_output, tuple):
+                    outputs, _ = model_output  # DomainAdaptiveClassifier返回(logits, features)
+                else:
+                    outputs = model_output  # ImprovedClassifier只返回logits
                 
                 if use_prototypes:
                     # 提取特征用于原型匹配
                     backbone_features = model.backbone(images)
-                    features = model.feature_projector(backbone_features)  # 特征投影层
+                    # 检查模型是否有feature_projector属性
+                    if hasattr(model, 'feature_projector'):
+                        features = model.feature_projector(backbone_features)
+                    else:
+                        # 对于ImprovedClassifier，直接使用backbone特征
+                        features = backbone_features
                     
                     # L2归一化特征
                     features = features / features.norm(2, dim=1, keepdim=True)
