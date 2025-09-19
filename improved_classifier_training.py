@@ -325,15 +325,16 @@ class ImprovedMicroDopplerDataset(Dataset):
         user_samples = defaultdict(list)
         self._load_data_from_dir(self.data_dir, user_samples, 'real')
         
-        # 统计信息
+        # 统计信息  
         total_samples = sum(len(samples) for samples in user_samples.values())
-        print(f"真实数据: {len(user_samples)} 个用户的 {total_samples} 张图像")
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            print(f" 真实数据: {len(user_samples)} 个用户的 {total_samples} 张图像")
     
     def _load_data_from_dir(self, data_dir, user_samples, data_type='real'):
         """从指定目录加载数据"""
         data_dir = Path(data_dir)
         if not data_dir.exists():
-            print(f"数据目录不存在: {data_dir}")
+            print(f"⚠️ 数据目录不存在: {data_dir}")
             return
             
         # 查找用户目录：支持ID_*, User_*, user_*格式
@@ -402,7 +403,8 @@ class ImprovedMicroDopplerDataset(Dataset):
             generated_count = sum(1 for _, dtype in samples if dtype == 'generated')
             total_generated += generated_count
             
-        print(f" 合成数据: {len(user_samples)} 个用户的 {total_generated} 张图像")
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            print(f" 合成数据: {len(user_samples)} 个用户的 {total_generated} 张图像")
     
     def _split_data(self):
         """根据split参数划分训练集和验证集"""
@@ -420,7 +422,7 @@ class ImprovedMicroDopplerDataset(Dataset):
             # 清空当前样本列表，准备重新分配
             self.samples = []
             
-            # 按用户划分训练集和验证集（7:3比例）
+            # 按用户划分训练集和验证集（8:2比例）
             random.seed(42)  # 确保可重复
             for user_id, samples in user_samples.items():
                 # 分离真实数据和合成数据
@@ -430,7 +432,7 @@ class ImprovedMicroDopplerDataset(Dataset):
                 # 只对真实数据进行训练/验证划分
                 if real_samples:
                     random.shuffle(real_samples)
-                    split_idx = int(len(real_samples) * 0.7)
+                    split_idx = int(len(real_samples) * 0.8)
                     
                     if self.split == 'train':
                         # 训练集：真实训练数据 + 全部合成数据
@@ -871,8 +873,11 @@ def main():
         use_generated=args.use_generated
     )
     val_dataset = ImprovedMicroDopplerDataset(
-        args.data_dir, 
-        split='val'
+        data_dir=args.data_dir, 
+        split='val',
+        contrastive_pairs=False,
+        generated_data_dirs=None,
+        use_generated=False
     )
     
     # 分布式采样器
