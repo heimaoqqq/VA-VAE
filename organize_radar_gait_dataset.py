@@ -193,19 +193,18 @@ if __name__ == "__main__":
     # 首先检查数据集结构
     if check_dataset_structure():
         print("\n" + "="*60)
+        print("✅ 数据集结构检查通过，开始自动重组...")
         
-        # 询问是否继续重组
-        proceed = input("数据集检查完成，是否开始重组? (y/n, 默认y): ").strip().lower()
+        # 直接开始重组，不需要询问
+        success = organize_kaggle_gait_dataset()
         
-        if proceed in ['', 'y', 'yes']:
-            success = organize_kaggle_gait_dataset()
-            
-            if success:
-                print("\n🎯 下一步建议:")
-                print("1. 检查 /kaggle/working/organized_gait_dataset 目录")
-                print("2. 使用重组后的数据进行训练")
-                print("3. 如需要可以将数据打包下载")
+        if success:
+            print("\n🎯 下一步建议:")
+            print("1. 检查 /kaggle/working/organized_gait_dataset 目录")
+            print("2. 使用重组后的数据进行训练")
+            print("3. 如需要可以将数据打包下载")
+            print("\n✨ 重组完成！数据已准备就绪。")
         else:
-            print("👋 重组已取消")
+            print("❌ 重组过程中出现错误")
     else:
         print("❌ 数据集检查失败，请检查数据集路径和结构")
