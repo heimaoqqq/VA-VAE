@@ -294,41 +294,8 @@ class ImprovedMicroDopplerDataset(Dataset):
         if self.split == 'train' and self.use_generated:
             self._load_generated_data()
         
-        # 收集所有样本
-        user_samples = defaultdict(list)
-        
-        # 检查数据目录是否存在
-        if not self.data_dir.exists():
-            raise FileNotFoundError(f"数据目录不存在: {self.data_dir}")
-        
-        # 查找ID_*目录
-        id_dirs = list(self.data_dir.glob("ID_*"))
-        
-        if len(id_dirs) == 0:
-            raise ValueError(f"在 {self.data_dir} 中未找到ID_*格式的用户目录")
-        
-        for user_dir in sorted(id_dirs):
-            if user_dir.is_dir():
-                user_id = int(user_dir.name.split('_')[1]) - 1  # 转换为0-based索引
-                for ext in ['*.png', '*.jpg', '*.jpeg']:
-                    for img_path in user_dir.glob(ext):
-                        user_samples[user_id].append(str(img_path))
-        
-        if not user_samples:
-            raise ValueError("未找到任何图像文件")
-        
-        # 划分训练/验证集
-        for user_id, paths in user_samples.items():
-            random.shuffle(paths)
-            split_idx = int(len(paths) * 0.8)
-            
-            if split == 'train':
-                selected_paths = paths[:split_idx]
-            else:  # validation
-                selected_paths = paths[split_idx:]
-            
-            for path in selected_paths:
-                self.samples.append((path, user_id))
+        # 数据划分处理
+        self._split_data()
         
         # 微多普勒图像专用变换（最小增强，保持频谱结构）
         if split == 'train':
@@ -385,9 +352,9 @@ class ImprovedMicroDopplerDataset(Dataset):
             
             # 解析用户ID
             if user_folder_name.startswith("ID_"):
-                user_id = int(user_folder_name.split('_')[1]) - 1  # 转换为0-based索引
+                user_id = int(user_folder_name.split('_')[1]) - 1  # ID_1->0, ID_2->1, ..., ID_31->30
             elif user_folder_name.startswith(("User_", "user_")):
-                user_id = int(user_folder_name.split('_')[1])  # User_已经是0-based
+                user_id = int(user_folder_name.split('_')[1])  # User_00->0, User_01->1, ..., User_30->30
             else:
                 # 尝试直接解析数字
                 try:
@@ -395,6 +362,12 @@ class ImprovedMicroDopplerDataset(Dataset):
                 except ValueError:
                     print(f"无法解析用户ID: {user_folder_name}")
                     continue
+            
+            # 验证映射正确性
+            if data_type == 'generated' and user_folder_name.startswith("User_"):
+                expected_real_id = f"ID_{user_id + 1}"  # User_00 -> ID_1
+                if not dist.is_initialized() or dist.get_rank() == 0:
+                    print(f"   映射: {user_folder_name} -> {expected_real_id} (user_id={user_id})")
             
             # 获取所有图像文件
             image_files = list(user_dir.glob("*.png")) + list(user_dir.glob("*.jpg"))
@@ -429,7 +402,47 @@ class ImprovedMicroDopplerDataset(Dataset):
             generated_count = sum(1 for _, dtype in samples if dtype == 'generated')
             total_generated += generated_count
             
-        print(f"合成数据: {len(user_samples)} 个用户的 {total_generated} 张图像")
+        print(f" 合成数据: {len(user_samples)} 个用户的 {total_generated} 张图像")
+    
+    def _split_data(self):
+        """根据split参数划分训练集和验证集"""
+        if not hasattr(self, '_all_samples_collected'):
+            # 收集所有已加载的样本，按用户分组
+            user_samples = defaultdict(list)
+            for sample in self.samples:
+                if len(sample) == 3:
+                    path, user_id, data_type = sample
+                else:
+                    path, user_id = sample
+                    data_type = 'real'
+                user_samples[user_id].append((path, data_type))
+            
+            # 清空当前样本列表，准备重新分配
+            self.samples = []
+            
+            # 按用户划分训练集和验证集（7:3比例）
+            random.seed(42)  # 确保可重复
+            for user_id, samples in user_samples.items():
+                # 分离真实数据和合成数据
+                real_samples = [(p, dt) for p, dt in samples if dt == 'real']
+                generated_samples = [(p, dt) for p, dt in samples if dt == 'generated']
+                
+                # 只对真实数据进行训练/验证划分
+                if real_samples:
+                    random.shuffle(real_samples)
+                    split_idx = int(len(real_samples) * 0.7)
+                    
+                    if self.split == 'train':
+                        # 训练集：真实训练数据 + 全部合成数据
+                        selected_samples = real_samples[:split_idx] + generated_samples
+                    else:  # validation
+                        # 验证集：只用真实验证数据
+                        selected_samples = real_samples[split_idx:]
+                    
+                    for path, data_type in selected_samples:
+                        self.samples.append((path, user_id, data_type))
+            
+            self._all_samples_collected = True
     
     def __len__(self):
         return len(self.samples)
