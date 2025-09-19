@@ -18,14 +18,14 @@ from tqdm import tqdm
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.manifold import TSNE
 from scipy.stats import ttest_rel, mannwhitneyu
+import sys
+sys.path.append(str(Path(__file__).parent.parent))
+from improved_classifier_training import ImprovedClassifier
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 from collections import defaultdict
 
-# 添加父目录到路径以导入分类器
-import sys
-sys.path.append(str(Path(__file__).parent.parent))
 from train_calibrated_classifier import DomainAdaptiveClassifier
 
 
@@ -108,10 +108,21 @@ class CrossDomainEvaluator:
         num_classes = checkpoint.get('num_classes', 31)
         model_name = checkpoint.get('model_name', 'resnet18')
         
-        # 创建模型
-        model = DomainAdaptiveClassifier(
-            num_classes=num_classes
-        ).to(self.device)
+        # 创建模型 - 支持ImprovedClassifier
+        if 'projection_head.0.weight' in checkpoint['model_state_dict']:
+            # ImprovedClassifier格式
+            from improved_classifier_training import ImprovedClassifier
+            model = ImprovedClassifier(
+                num_classes=num_classes,
+                backbone=checkpoint.get('backbone', 'resnet18')
+            ).to(self.device)
+            print(f"   Detected ImprovedClassifier format")
+        else:
+            # DomainAdaptiveClassifier格式
+            model = DomainAdaptiveClassifier(
+                num_classes=num_classes
+            ).to(self.device)
+            print(f"   Detected DomainAdaptiveClassifier format")
         
         # 加载权重
         model.load_state_dict(checkpoint['model_state_dict'])
