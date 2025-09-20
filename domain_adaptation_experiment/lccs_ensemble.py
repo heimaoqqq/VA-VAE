@@ -182,8 +182,8 @@ def test_lccs_strategies(model_path, data_dir, support_size=3, seed=42):
     print("\n🎯 Testing LCCS without NCC...")
     adapter = FixedLCCSAdapter(model, device)
     
-    # 测试不同的alpha值
-    for alpha in [0.1, 0.2, 0.3]:
+    # 测试不同的alpha值（扩大到0.6）
+    for alpha in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]:
         # 重新加载模型
         model_lccs = ImprovedClassifier(num_classes=31).to(device)
         if 'model_state_dict' in checkpoint:
