@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
 """
 增强的原型方法 - 结合ProtoNet++思想
-渐进式改进Pure NCC
+渐进式改进Pure NCC - 使用真实数据
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import torchvision.transforms as transforms
 from typing import Optional, Dict, Tuple
 import numpy as np
+from pathlib import Path
+import sys
+import argparse
+
+# 添加父目录到路径
+sys.path.append(str(Path(__file__).parent.parent))
+from improved_classifier_training import ImprovedClassifier
+from build_improved_prototypes_with_split import SplitTargetDomainDataset
 
 
 class EnhancedPrototypeClassifier:
@@ -256,29 +266,151 @@ def comprehensive_method_comparison():
     return sorted_methods
 
 
-if __name__ == '__main__':
-    # 全面对比
-    comprehensive_method_comparison()
+def extract_real_features(model, data_loader, device):
+    """从真实数据中提取特征"""
+    model.eval()
+    all_features = []
+    all_labels = []
     
-    print("\n" + "=" * 60)
-    print("🧪 Testing Enhanced Prototype Methods...")
+    with torch.no_grad():
+        for batch in data_loader:
+            if len(batch) == 3:
+                images, labels, _ = batch
+            else:
+                images, labels = batch
+            
+            images = images.to(device)
+            labels = labels.to(device)
+            
+            # 提取backbone特征
+            features = model.backbone(images)
+            
+            all_features.append(features)
+            all_labels.append(labels)
     
-    # 模拟数据测试
-    torch.manual_seed(42)
+    return torch.cat(all_features, dim=0), torch.cat(all_labels, dim=0)
+
+
+def test_with_real_data(model_path, data_dir, support_size=3, seed=42):
+    """使用真实数据测试增强原型方法"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"🔧 Using device: {device}")
     
-    support_features = torch.randn(93, 512, device=device)
-    support_labels = torch.repeat_interleave(torch.arange(31), 3).to(device)
-    test_features = torch.randn(1000, 512, device=device)
-    test_labels = torch.randint(0, 31, (1000,), device=device)
+    # 加载模型
+    print("📦 Loading ImprovedClassifier...")
+    model = ImprovedClassifier(num_classes=31).to(device)
+    checkpoint = torch.load(model_path, map_location=device)
     
-    # 比较方法
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
+    
+    model.eval()
+    print("✅ Model loaded successfully")
+    
+    # 数据变换
+    transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
+    
+    # 支持集
+    print("📊 Loading support set...")
+    support_dataset = SplitTargetDomainDataset(
+        data_dir=data_dir,
+        transform=transform,
+        support_size=support_size,
+        mode='support',
+        seed=seed
+    )
+    
+    support_loader = DataLoader(support_dataset, batch_size=32, shuffle=False)
+    
+    # 测试集
+    print("📊 Loading test set...")
+    test_dataset = SplitTargetDomainDataset(
+        data_dir=data_dir,
+        transform=transform,
+        support_size=support_size,
+        mode='test',
+        seed=seed
+    )
+    
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+    
+    print(f"✓ Support set: {len(support_dataset)} samples")
+    print(f"✓ Test set: {len(test_dataset)} samples")
+    
+    # 提取特征
+    print("\n🔍 Extracting features...")
+    support_features, support_labels = extract_real_features(model, support_loader, device)
+    test_features, test_labels = extract_real_features(model, test_loader, device)
+    
+    print(f"✓ Support features: {support_features.shape}")
+    print(f"✓ Test features: {test_features.shape}")
+    
+    # 比较增强原型方法
+    print("\n🧪 Testing Enhanced Prototype Methods...")
     results = compare_prototype_methods(
         support_features, support_labels,
         test_features, test_labels
     )
     
-    print("\n📊 Prototype Method Comparison:")
-    print("-" * 50)
-    for method, metrics in results.items():
-        print(f"{method:15s}: Acc={metrics['accuracy']:.3f}, Conf={metrics['confidence']:.3f}")
+    # 显示结果
+    print("\n📊 Enhanced Prototype Method Comparison:")
+    print("=" * 60)
+    print(f"{'Method':<20} {'Accuracy':<12} {'Confidence':<12}")
+    print("-" * 60)
+    
+    sorted_results = sorted(results.items(), key=lambda x: x[1]['accuracy'], reverse=True)
+    
+    for i, (method, metrics) in enumerate(sorted_results, 1):
+        acc = f"{metrics['accuracy']:.3f}"
+        conf = f"{metrics['confidence']:.3f}"
+        
+        if i <= 3:
+            medal = ["🥇", "🥈", "🥉"][i-1]
+        else:
+            medal = f"{i:2d}."
+        
+        print(f"{medal} {method:<17} {acc:<12} {conf:<12}")
+    
+    return results
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Test Enhanced Prototype Methods with Real Data')
+    parser.add_argument('--model-path', type=str,
+                       default='/kaggle/working/VA-VAE/improved_classifier/best_improved_classifier.pth',
+                       help='Path to trained ImprovedClassifier')
+    parser.add_argument('--data-dir', type=str,
+                       default='/kaggle/working/organized_gait_dataset/Normal_free',
+                       help='Path to test data directory')
+    parser.add_argument('--support-size', type=int, default=3,
+                       help='Number of support samples per class')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed for reproducibility')
+    parser.add_argument('--show-theory-comparison', action='store_true',
+                       help='Also show theoretical method comparison')
+    
+    args = parser.parse_args()
+    
+    if args.show_theory_comparison:
+        # 理论对比
+        print("🏆 Theoretical Method Comparison")
+        comprehensive_method_comparison()
+        print("\n" + "=" * 80)
+    
+    # 真实数据测试
+    print("🔬 REAL DATA EVALUATION")
+    print("=" * 80)
+    
+    test_with_real_data(
+        model_path=args.model_path,
+        data_dir=args.data_dir,
+        support_size=args.support_size,
+        seed=args.seed
+    )
