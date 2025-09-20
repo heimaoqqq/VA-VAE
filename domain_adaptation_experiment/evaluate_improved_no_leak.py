@@ -52,7 +52,7 @@ class NoLeakEvaluator:
     
     def evaluate(self, model, data_dir, support_size, seed, 
                  use_prototypes=False, prototype_path=None,
-                 fusion_alpha=0.5, similarity_tau=0.1):
+                 fusion_alpha=0.5, similarity_tau=0.1, use_pure_ncc=False):
         """评估模型 - 使用严格划分的测试集"""
         
         mode = "with PNC" if use_prototypes else "Baseline"
@@ -119,22 +119,22 @@ class NoLeakEvaluator:
                     # 计算与原型的相似度
                     similarities = torch.matmul(features, prototypes.T)
                     
-                    # 温度缩放
-                    proto_probs = torch.softmax(similarities / similarity_tau, dim=1)
-                    
-                    # 分类器概率
-                    class_probs = torch.softmax(outputs, dim=1)
-                    
-                    # 融合
-                    probabilities = (1 - fusion_alpha) * class_probs + fusion_alpha * proto_probs
+                    if use_pure_ncc:
+                        # 纯NCC：只使用原型相似度
+                        predicted = similarities.argmax(dim=1)
+                        confidences = torch.softmax(similarities, dim=1).max(dim=1)[0]
+                    else:
+                        # 原始PNC：原型+分类器融合
+                        proto_probs = torch.softmax(similarities / similarity_tau, dim=1)
+                        class_probs = torch.softmax(outputs, dim=1)
+                        final_probs = fusion_alpha * proto_probs + (1 - fusion_alpha) * class_probs
+                        predicted = final_probs.argmax(dim=1)
+                        confidences = final_probs.max(dim=1)[0]
                 else:
-                    # 基线：仅分类器
-                    probabilities = torch.softmax(outputs, dim=1)
+                    predicted = outputs.argmax(dim=1)
+                    confidences = torch.softmax(outputs, dim=1).max(dim=1)[0]
                 
-                # 预测
-                confidences, predictions = torch.max(probabilities, 1)
-                
-                all_predictions.extend(predictions.cpu().numpy())
+                all_predictions.extend(predicted.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
                 all_confidences.extend(confidences.cpu().numpy())
         
@@ -162,6 +162,8 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--fusion-alpha', type=float, default=0.5)
     parser.add_argument('--similarity-tau', type=float, default=0.01)
+    parser.add_argument('--use-pure-ncc', action='store_true', 
+                       help='Use pure NCC instead of PNC fusion')
     
     args = parser.parse_args()
     
@@ -190,7 +192,8 @@ def main():
         use_prototypes=True,
         prototype_path=args.prototype_path,
         fusion_alpha=args.fusion_alpha,
-        similarity_tau=args.similarity_tau
+        similarity_tau=args.similarity_tau,
+        use_pure_ncc=args.use_pure_ncc
     )
     
     # 结果对比
