@@ -106,7 +106,7 @@ class ImprovedPNC:
         
         return predictions, confidences, final_probs
     
-    def evaluate(self, test_loader, use_lccs=True, lccs_alpha=0.1):
+    def evaluate(self, test_loader, fusion_alpha=0.6, use_confidence_weight=True):
         """评估改进的PNC"""
         self.model.eval()
         
@@ -131,8 +131,8 @@ class ImprovedPNC:
                 # 自适应融合预测
                 predictions, confidences, _ = self.adaptive_fusion_predict(
                     features, outputs, 
-                    alpha_base=0.5, 
-                    confidence_weight=True
+                    alpha_base=fusion_alpha, 
+                    confidence_weight=use_confidence_weight
                 )
                 
                 total += labels.size(0)
@@ -202,7 +202,11 @@ def test_improved_pnc(model_path, data_dir, support_size=3, seed=42):
     confidences = []
     
     with torch.no_grad():
-        for images, labels in test_loader:
+        for batch in test_loader:
+            if len(batch) == 3:
+                images, labels, _ = batch
+            else:
+                images, labels = batch
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
             probs = F.softmax(outputs, dim=1)
@@ -216,14 +220,25 @@ def test_improved_pnc(model_path, data_dir, support_size=3, seed=42):
     results['Baseline'] = {'accuracy': baseline_acc, 'confidence': baseline_conf}
     print(f"Baseline: {baseline_acc:.2%} (conf: {baseline_conf:.3f})")
     
-    # 2. 标准PNC
-    print("\n🎯 Testing Standard PNC...")
-    pnc = ImprovedPNC(model, device)
-    pnc.compute_prototypes(support_loader)
+    # 2. 标准PNC（测试不同的fusion_alpha）
+    print("\n🎯 Testing Standard PNC with different fusion_alpha...")
     
-    acc, conf = pnc.evaluate(test_loader, use_lccs=False)
-    results['Standard PNC'] = {'accuracy': acc, 'confidence': conf}
-    print(f"Standard PNC: {acc:.2%} (conf: {conf:.3f})")
+    for alpha in [0.4, 0.5, 0.6, 0.7]:
+        pnc = ImprovedPNC(model, device)
+        pnc.compute_prototypes(support_loader)
+        
+        acc, conf = pnc.evaluate(test_loader, fusion_alpha=alpha, use_confidence_weight=False)
+        results[f'PNC (α={alpha})'] = {'accuracy': acc, 'confidence': conf}
+        print(f"PNC (α={alpha}): {acc:.2%} (conf: {conf:.3f})")
+    
+    # 2.5 自适应权重PNC
+    print("\n🎯 Testing Adaptive PNC...")
+    pnc_adaptive = ImprovedPNC(model, device)
+    pnc_adaptive.compute_prototypes(support_loader)
+    
+    acc, conf = pnc_adaptive.evaluate(test_loader, fusion_alpha=0.6, use_confidence_weight=True)
+    results['PNC (adaptive)'] = {'accuracy': acc, 'confidence': conf}
+    print(f"PNC (adaptive): {acc:.2%} (conf: {conf:.3f})")
     
     # 3. LCCS + 改进PNC
     print("\n🎯 Testing LCCS + Improved PNC...")
@@ -236,7 +251,7 @@ def test_improved_pnc(model_path, data_dir, support_size=3, seed=42):
     pnc_lccs = ImprovedPNC(model, device)
     pnc_lccs.prototypes = adapter.prototypes  # 使用LCCS后的原型
     
-    acc, conf = pnc_lccs.evaluate(test_loader, use_lccs=True)
+    acc, conf = pnc_lccs.evaluate(test_loader, fusion_alpha=0.6, use_confidence_weight=True)
     results['LCCS + Improved PNC'] = {'accuracy': acc, 'confidence': conf}
     print(f"LCCS + Improved PNC: {acc:.2%} (conf: {conf:.3f})")
     
@@ -262,6 +277,10 @@ if __name__ == '__main__':
                        default='/kaggle/working/organized_gait_dataset/Normal_free')
     parser.add_argument('--support-size', type=int, default=3)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--fusion-alpha', type=float, default=0.6,
+                       help='Fusion weight for PNC (default: 0.6 based on best results)')
+    parser.add_argument('--similarity-tau', type=float, default=0.01,
+                       help='Temperature for similarity scaling (default: 0.01)')
     
     args = parser.parse_args()
     
