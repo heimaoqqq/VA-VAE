@@ -265,6 +265,20 @@ class FixedLCCSAdapter:
         return accuracy
 
 
+def load_model(model_path, device):
+    """加载训练好的分类器模型"""
+    model = ImprovedClassifier(num_classes=31)
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    if 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
+    
+    model = model.to(device)
+    return model
+
+
 def test_all_methods(model_path, data_dir, support_size=3, seed=42):
     """测试所有LCCS方法（包含NCC）"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -272,7 +286,42 @@ def test_all_methods(model_path, data_dir, support_size=3, seed=42):
     # 数据准备
     transform = transforms.Compose([
         transforms.Resize((256, 256)),
-{{ ... }}
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])
+    ])
+    
+    # 支持集
+    support_dataset = SplitTargetDomainDataset(
+        data_dir=data_dir,
+        transform=transform,
+        support_size=support_size,
+        mode='support',
+        seed=seed
+    )
+    
+    support_loader = DataLoader(
+        support_dataset,
+        batch_size=31,  # 所有用户一个batch
+        shuffle=True,
+        num_workers=2
+    )
+    
+    # 测试集
+    test_dataset = SplitTargetDomainDataset(
+        data_dir=data_dir,
+        transform=transform,
+        support_size=support_size,
+        mode='test',
+        seed=seed
+    )
+    
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=64,
+        shuffle=False,
+        num_workers=4
+    )
     
     print(f"📊 Data split: {len(support_dataset)} support, {len(test_dataset)} test")
     
@@ -297,7 +346,20 @@ def test_all_methods(model_path, data_dir, support_size=3, seed=42):
             method_name = f"{method}{'_NCC' if use_ncc else ''}"
             print(f"\n📊 Testing {method_name}...")
             
-{{ ... }}
+            # 重新加载模型
+            model = load_model(model_path, device)
+            adapter = FixedLCCSAdapter(model, device)
+            
+            # 应用不同的适应方法
+            if method == 'weighted':
+                adapter.adapt_bn_stats_v1(support_loader, alpha=0.3)
+            elif method == 'progressive':
+                adapter.adapt_bn_stats_v2(support_loader, momentum=0.01, iterations=5)
+            else:  # mean_shift
+                adapter.adapt_bn_stats_v3(support_loader)
+            
+            # 如果使用NCC，计算原型
+            if use_ncc:
                 adapter.compute_class_prototypes(support_loader)
             
             # 评估
@@ -327,7 +389,7 @@ def test_all_methods(model_path, data_dir, support_size=3, seed=42):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-path', type=str,
-{{ ... }}
+                       default='/kaggle/working/VA-VAE/improved_classifier/best_improved_classifier.pth')
     parser.add_argument('--data-dir', type=str,
                        default='/kaggle/input/backpack/backpack')
     parser.add_argument('--support-size', type=int, default=3)
