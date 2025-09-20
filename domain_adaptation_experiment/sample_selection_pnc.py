@@ -171,11 +171,11 @@ def test_sample_selection_strategies(model_path, data_dir, support_size=3, seed=
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # 加载完整目标域数据
+    # 加载完整目标域数据（使用所有可用样本作为候选）
     full_dataset = SplitTargetDomainDataset(
         data_dir=data_dir,
         transform=transform,
-        support_size=100,  # 使用更多样本用于选择
+        support_size=1000,  # 使用足够大的数字获取所有样本
         mode='support',
         seed=seed
     )
@@ -212,9 +212,12 @@ def test_sample_selection_strategies(model_path, data_dir, support_size=3, seed=
         else:
             _, label = full_dataset[i]
         
-        if label.item() not in class_datasets:
-            class_datasets[label.item()] = []
-        class_datasets[label.item()].append(i)
+        # 处理label可能是tensor或int的情况
+        label_id = label.item() if hasattr(label, 'item') else label
+        
+        if label_id not in class_datasets:
+            class_datasets[label_id] = []
+        class_datasets[label_id].append(i)
     
     results = {}
     
