@@ -5,16 +5,20 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from copy import deepcopy
-from tqdm import tqdm
-import argparse
+from torch.utils.data import DataLoader, Dataset
+import torchvision.transforms as transforms
 from pathlib import Path
+from PIL import Image
+import numpy as np
+from tqdm import tqdm
+from collections import defaultdict
+import argparse
 import sys
 sys.path.append(str(Path(__file__).parent.parent))
 from improved_classifier_training import ImprovedClassifier
 from build_improved_prototypes_with_split import SplitTargetDomainDataset
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
 
 
 class FixedLCCSAdapter:
@@ -175,24 +179,84 @@ class FixedLCCSAdapter:
         
         print("✅ Mean-shift adaptation complete!")
     
-    def evaluate(self, test_loader):
-        """评估模型"""
+    def compute_class_prototypes(self, support_loader):
+        """计算每个类的原型（质心）用于NCC分类"""
+        print("🔧 Computing class prototypes for NCC...")
+        
         self.model.eval()
-        correct = 0
-        total = 0
+        class_features = defaultdict(list)
         
         with torch.no_grad():
-            for batch in tqdm(test_loader, desc="Evaluating"):
+            for batch in support_loader:
                 if len(batch) == 3:
                     images, labels, _ = batch
                 else:
                     images, labels = batch
-                    
                 images = images.to(self.device)
                 labels = labels.to(self.device)
                 
-                outputs = self.model(images)
-                _, predicted = torch.max(outputs, 1)
+                # 提取特征（backbone输出）
+                features = self.model.backbone(images)  # [B, 512] for ResNet18
+                
+                # 按类收集特征
+                for feat, label in zip(features, labels):
+                    class_features[label.item()].append(feat)
+        
+        # 计算每个类的原型（均值）
+        self.prototypes = {}
+        for class_id, feats in class_features.items():
+            if feats:
+                class_prototype = torch.stack(feats).mean(dim=0)
+                self.prototypes[class_id] = F.normalize(class_prototype, dim=0)
+        
+        print(f"✅ Computed prototypes for {len(self.prototypes)} classes")
+        return self.prototypes
+    
+    def ncc_predict(self, features):
+        """使用最近质心分类器预测"""
+        if not hasattr(self, 'prototypes'):
+            raise ValueError("Prototypes not computed! Call compute_class_prototypes first.")
+        
+        # 归一化特征
+        features = F.normalize(features, dim=1)
+        
+        # 计算到每个原型的距离
+        distances = []
+        class_ids = []
+        for class_id, prototype in self.prototypes.items():
+            dist = torch.cdist(features, prototype.unsqueeze(0), p=2)
+            distances.append(dist)
+            class_ids.append(class_id)
+        
+        # 找最近的原型
+        distances = torch.cat(distances, dim=1)
+        predictions = torch.tensor(class_ids)[distances.argmin(dim=1)]
+        return predictions
+    
+    def evaluate(self, test_loader, use_ncc=False):
+        """评估性能（支持NCC和原始分类器）"""
+        self.model.eval()
+        
+        correct = 0
+        total = 0
+        
+        with torch.no_grad():
+            for batch in test_loader:
+                if len(batch) == 3:
+                    images, labels, _ = batch
+                else:
+                    images, labels = batch
+                images = images.to(self.device)
+                labels = labels.to(self.device)
+                
+                if use_ncc:
+                    # 使用NCC分类
+                    features = self.model.backbone(images)
+                    predicted = self.ncc_predict(features).to(self.device)
+                else:
+                    # 使用原始分类器
+                    outputs = self.model(images)
+                    _, predicted = torch.max(outputs, 1)
                 
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
@@ -202,114 +266,68 @@ class FixedLCCSAdapter:
 
 
 def test_all_methods(model_path, data_dir, support_size=3, seed=42):
-    """测试所有LCCS方法"""
+    """测试所有LCCS方法（包含NCC）"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     # 数据准备
     transform = transforms.Compose([
         transforms.Resize((256, 256)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])
-    ])
-    
-    # 支持集
-    support_dataset = SplitTargetDomainDataset(
-        data_dir=data_dir,
-        transform=transform,
-        support_size=support_size,
-        mode='support',
-        seed=seed
-    )
-    
-    support_loader = DataLoader(
-        support_dataset,
-        batch_size=31,  # 所有用户一个batch
-        shuffle=True,
-        num_workers=2
-    )
-    
-    # 测试集
-    test_dataset = SplitTargetDomainDataset(
-        data_dir=data_dir,
-        transform=transform,
-        support_size=support_size,
-        mode='test',
-        seed=seed
-    )
-    
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=64,
-        shuffle=False,
-        num_workers=4
-    )
+{{ ... }}
     
     print(f"📊 Data split: {len(support_dataset)} support, {len(test_dataset)} test")
     
     results = {}
     
-    # 基线测试
+    # 基线测试（无适应）
     print("\n" + "="*60)
-    print("📊 BASELINE (No adaptation)")
-    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    model = ImprovedClassifier(
-        num_classes=checkpoint.get('num_classes', 31),
-        backbone=checkpoint.get('backbone', 'resnet18')
-    ).to(device)
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-    
+    print("🔬 BASELINE: No adaptation")
+    model = load_model(model_path, device)
     adapter = FixedLCCSAdapter(model, device)
-    baseline_acc = adapter.evaluate(test_loader)
+    baseline_acc = adapter.evaluate(test_loader, use_ncc=False)
     results['baseline'] = baseline_acc
     print(f"Baseline accuracy: {baseline_acc:.2%}")
     
-    # 方法1：加权融合
+    # 测试所有方法组合
     print("\n" + "="*60)
-    print("🔬 METHOD 1: Weighted Fusion")
-    adapter._restore_bn_stats()  # 恢复原始
-    adapter.adapt_bn_stats_v1(support_loader, alpha=0.3)
-    method1_acc = adapter.evaluate(test_loader)
-    results['weighted_fusion'] = method1_acc
-    print(f"Method 1 accuracy: {method1_acc:.2%} ({method1_acc-baseline_acc:+.2%})")
+    print("🔬 Testing LCCS methods with/without NCC")
+    print("="*60)
     
-    # 方法2：渐进更新
-    print("\n" + "="*60)
-    print("🔬 METHOD 2: Progressive Update")
-    adapter._restore_bn_stats()  # 恢复原始
-    adapter.adapt_bn_stats_v2(support_loader, momentum=0.01, iterations=5)
-    method2_acc = adapter.evaluate(test_loader)
-    results['progressive'] = method2_acc
-    print(f"Method 2 accuracy: {method2_acc:.2%} ({method2_acc-baseline_acc:+.2%})")
-    
-    # 方法3：均值偏移
-    print("\n" + "="*60)
-    print("🔬 METHOD 3: Mean-shift Only")
-    adapter._restore_bn_stats()  # 恢复原始
-    adapter.adapt_bn_stats_v3(support_loader)
-    method3_acc = adapter.evaluate(test_loader)
-    results['mean_shift'] = method3_acc
-    print(f"Method 3 accuracy: {method3_acc:.2%} ({method3_acc-baseline_acc:+.2%})")
+    for method in ['weighted', 'progressive', 'mean_shift']:
+        for use_ncc in [False, True]:
+            method_name = f"{method}{'_NCC' if use_ncc else ''}"
+            print(f"\n📊 Testing {method_name}...")
+            
+{{ ... }}
+                adapter.compute_class_prototypes(support_loader)
+            
+            # 评估
+            accuracy = adapter.evaluate(test_loader, use_ncc=use_ncc)
+            results[method_name] = accuracy
+            improvement = accuracy - baseline_acc
+            print(f"   Accuracy: {accuracy:.2%} ({improvement:+.2%})")
     
     # 总结
     print("\n" + "="*60)
     print("📊 SUMMARY")
     print("="*60)
+    print(f"{'Method':<25} {'Accuracy':>10} {'Improvement':>12}")
+    print("-"*47)
     for method, acc in results.items():
-        improvement = acc - results['baseline'] if method != 'baseline' else 0
-        print(f"{method:20s}: {acc:.2%} ({improvement:+.2%})")
+        improvement = acc - baseline_acc
+        print(f"{method:<25} {acc:>9.2%} {improvement:>+11.2%}")
     
+    # 找最佳方法
     best_method = max(results, key=results.get)
-    print(f"\n🏆 Best method: {best_method} ({results[best_method]:.2%})")
+    best_acc = results[best_method]
+    print(f"\n🏆 Best method: {best_method} with {best_acc:.2%}")
+    
+    return results
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model-path', type=str,
-                       default='/kaggle/working/VA-VAE/improved_classifier/best_improved_classifier.pth')
+{{ ... }}
     parser.add_argument('--data-dir', type=str,
                        default='/kaggle/input/backpack/backpack')
     parser.add_argument('--support-size', type=int, default=3)
