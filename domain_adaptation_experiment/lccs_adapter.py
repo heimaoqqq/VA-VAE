@@ -228,9 +228,14 @@ class FixedLCCSAdapter:
             distances.append(dist)
             class_ids.append(class_id)
         
-        # 找最近的原型
-        distances = torch.cat(distances, dim=1)
-        predictions = torch.tensor(class_ids)[distances.argmin(dim=1)]
+        # 找最近的原型 - 确保设备一致性
+        distances = torch.cat(distances, dim=1)  # [batch_size, num_classes]
+        argmin_indices = distances.argmin(dim=1)  # GPU上的索引
+        
+        # 将class_ids转换为与距离相同设备的张量
+        class_ids_tensor = torch.tensor(class_ids, device=distances.device)
+        predictions = class_ids_tensor[argmin_indices]
+        
         return predictions
     
     def evaluate(self, test_loader, use_ncc=False):
@@ -252,7 +257,7 @@ class FixedLCCSAdapter:
                 if use_ncc:
                     # 使用NCC分类
                     features = self.model.backbone(images)
-                    predicted = self.ncc_predict(features).to(self.device)
+                    predicted = self.ncc_predict(features)  # 已经在正确设备上
                 else:
                     # 使用原始分类器
                     outputs = self.model(images)
