@@ -23,9 +23,10 @@ from lccs_adapter import FixedLCCSAdapter
 class ImprovedPNC:
     """改进的PNC：LCCS + 优化的融合策略"""
     
-    def __init__(self, model, device='cuda'):
+    def __init__(self, model, device='cuda', similarity_tau=0.01):
         self.model = model
         self.device = device
+        self.similarity_tau = similarity_tau
         self.prototypes = None
         
     def compute_prototypes(self, support_loader):
@@ -80,7 +81,7 @@ class ImprovedPNC:
                 proto_logits.append(torch.zeros((features.shape[0], 1), device=self.device) - 1e10)
         
         proto_logits = torch.cat(proto_logits, dim=1)
-        proto_probs = F.softmax(proto_logits / 0.01, dim=1)  # 温度0.01
+        proto_probs = F.softmax(proto_logits / self.similarity_tau, dim=1)  # 可调节温度
         
         # 分类器预测
         class_probs = F.softmax(outputs, dim=1)
@@ -223,6 +224,17 @@ def test_improved_pnc(model_path, data_dir, support_size=3, seed=42):
     # 2. 标准PNC（测试不同的fusion_alpha）
     print("\n🎯 Testing Standard PNC with different fusion_alpha...")
     
+    # 最佳alpha=0.7，测试不同tau值
+    print("Testing similarity_tau with best alpha=0.7...")
+    for tau in [0.005, 0.01, 0.02, 0.05]:
+        pnc_tau = ImprovedPNC(model, device, similarity_tau=tau)
+        pnc_tau.compute_prototypes(support_loader)
+        
+        acc, conf = pnc_tau.evaluate(test_loader, fusion_alpha=0.7, use_confidence_weight=False)
+        results[f'PNC (α=0.7, τ={tau})'] = {'accuracy': acc, 'confidence': conf}
+        print(f"PNC (α=0.7, τ={tau}): {acc:.2%} (conf: {conf:.3f})")
+    
+    # 保留原始测试
     for alpha in [0.4, 0.5, 0.6, 0.7]:
         pnc = ImprovedPNC(model, device)
         pnc.compute_prototypes(support_loader)
