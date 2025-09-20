@@ -239,12 +239,46 @@ class FixedLCCSAdapter:
         
         return predictions
     
-    def evaluate(self, test_loader, use_ncc=False):
-        """评估性能（支持NCC和原始分类器）"""
+    def ncc_predict_with_confidence(self, features, temperature=0.1):
+        """使用最近质心分类器预测（带置信度和温度缩放）"""
+        if not hasattr(self, 'prototypes'):
+            raise ValueError("Prototypes not computed! Call compute_class_prototypes first.")
+        
+        # 归一化特征
+        features = F.normalize(features, dim=1)
+        
+        # 计算到每个原型的余弦相似度
+        similarities = []
+        class_ids = []
+        for class_id, prototype in self.prototypes.items():
+            # 使用余弦相似度
+            sim = torch.matmul(features, prototype.unsqueeze(1))  # [batch, 1]
+            similarities.append(sim)
+            class_ids.append(class_id)
+        
+        # 合并相似度
+        similarities = torch.cat(similarities, dim=1)  # [batch_size, num_classes]
+        
+        # 温度缩放后的softmax（解决置信度过低的问题）
+        scaled_similarities = similarities / temperature
+        probs = F.softmax(scaled_similarities, dim=1)
+        
+        # 获取预测和置信度
+        confidences, indices = probs.max(dim=1)
+        
+        # 映射到类别ID
+        class_ids_tensor = torch.tensor(class_ids, device=similarities.device)
+        predictions = class_ids_tensor[indices]
+        
+        return predictions, confidences
+    
+    def evaluate(self, test_loader, use_ncc=False, return_confidence=True):
+        """评估性能（支持NCC和原始分类器，返回置信度）"""
         self.model.eval()
         
         correct = 0
         total = 0
+        all_confidences = []
         
         with torch.no_grad():
             for batch in test_loader:
@@ -258,22 +292,37 @@ class FixedLCCSAdapter:
                 if use_ncc:
                     # 使用NCC分类
                     features = self.model.backbone(images)
-                    predicted = self.ncc_predict(features)  # 已经在正确设备上
+                    predicted, confidences = self.ncc_predict_with_confidence(features)
                 else:
                     # 使用原始分类器
                     outputs = self.model(images)
-                    _, predicted = torch.max(outputs, 1)
+                    probs = F.softmax(outputs, dim=1)
+                    confidences, predicted = torch.max(probs, 1)
                 
                 total += labels.size(0)
                 correct += (predicted == labels).sum().item()
+                all_confidences.extend(confidences.cpu().numpy())
         
         accuracy = correct / total
+        mean_confidence = np.mean(all_confidences)
+        
+        if return_confidence:
+            return accuracy, mean_confidence
         return accuracy
 
 
-def load_model(model_path, device):
+def load_model(model_path, device, model_type='improved'):
     """加载训练好的分类器模型"""
-    model = ImprovedClassifier(num_classes=31)
+    if model_type == 'standard':
+        # 使用标准ResNet18
+        from train_standard_resnet import StandardResNet18Classifier
+        model = StandardResNet18Classifier(num_classes=31)
+        # 修改backbone访问方式
+        model.backbone = model.backbone  # ResNet18已经是backbone
+    else:
+        # 使用ImprovedClassifier
+        model = ImprovedClassifier(num_classes=31)
+    
     checkpoint = torch.load(model_path, map_location=device)
     
     if 'model_state_dict' in checkpoint:
@@ -285,7 +334,7 @@ def load_model(model_path, device):
     return model
 
 
-def test_all_methods(model_path, data_dir, support_size=3, seed=42):
+def test_all_methods(model_path, data_dir, support_size=3, seed=42, tune_params=False):
     """测试所有LCCS方法（包含NCC）"""
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
@@ -338,56 +387,114 @@ def test_all_methods(model_path, data_dir, support_size=3, seed=42):
     print("🔬 BASELINE: No adaptation")
     model = load_model(model_path, device)
     adapter = FixedLCCSAdapter(model, device)
-    baseline_acc = adapter.evaluate(test_loader, use_ncc=False)
-    results['baseline'] = baseline_acc
-    print(f"Baseline accuracy: {baseline_acc:.2%}")
+    baseline_acc, baseline_conf = adapter.evaluate(test_loader, use_ncc=False)
+    results['baseline'] = {'accuracy': baseline_acc, 'confidence': baseline_conf}
+    print(f"Baseline accuracy: {baseline_acc:.2%}, confidence: {baseline_conf:.3f}")
     
     # 测试所有方法组合
     print("\n" + "="*60)
     print("🔬 Testing LCCS methods with/without NCC")
     print("="*60)
     
-    for method in ['weighted', 'progressive']:  # 移除破坏性的mean_shift
-        for use_ncc in [False, True]:
-            method_name = f"{method}{'_NCC' if use_ncc else ''}"
-            print(f"\n📊 Testing {method_name}...")
-            
-            # 重新加载模型
-            model = load_model(model_path, device)
-            adapter = FixedLCCSAdapter(model, device)
-            
-            # 应用不同的适应方法
-            if method == 'weighted':
-                adapter.adapt_bn_stats_v1(support_loader, alpha=0.3)
-            elif method == 'progressive':
-                adapter.adapt_bn_stats_v2(support_loader, momentum=0.01, iterations=5)
-            else:  # mean_shift
-                adapter.adapt_bn_stats_v3(support_loader)
-            
-            # 如果使用NCC，计算原型
-            if use_ncc:
-                adapter.compute_class_prototypes(support_loader)
-            
-            # 评估
-            accuracy = adapter.evaluate(test_loader, use_ncc=use_ncc)
-            results[method_name] = accuracy
-            improvement = accuracy - baseline_acc
-            print(f"   Accuracy: {accuracy:.2%} ({improvement:+.2%})")
+    if tune_params:
+        # 参数调优模式：测试多个alpha值
+        print("\n🔬 Parameter Tuning Mode")
+        alpha_values = [0.05, 0.1, 0.15, 0.2, 0.3]
+        momentum_values = [0.001, 0.005, 0.01]
+        
+        for alpha in alpha_values:
+            for use_ncc in [False, True]:
+                method_name = f"weighted_a{alpha}{'_NCC' if use_ncc else ''}"
+                print(f"\n📊 Testing {method_name}...")
+                
+                model = load_model(model_path, device)
+                adapter = FixedLCCSAdapter(model, device)
+                adapter.adapt_bn_stats_v1(support_loader, alpha=alpha)
+                
+                if use_ncc:
+                    adapter.compute_class_prototypes(support_loader)
+                
+                acc, conf = adapter.evaluate(test_loader, use_ncc=use_ncc)
+                results[method_name] = {'accuracy': acc, 'confidence': conf}
+                print(f"   Accuracy: {acc:.2%}, Confidence: {conf:.3f}")
+                
+        for momentum in momentum_values:
+            for use_ncc in [False, True]:
+                method_name = f"prog_m{momentum}{'_NCC' if use_ncc else ''}"
+                print(f"\n📊 Testing {method_name}...")
+                
+                model = load_model(model_path, device)
+                adapter = FixedLCCSAdapter(model, device)
+                adapter.adapt_bn_stats_v2(support_loader, momentum=momentum, iterations=3)
+                
+                if use_ncc:
+                    adapter.compute_class_prototypes(support_loader)
+                
+                acc, conf = adapter.evaluate(test_loader, use_ncc=use_ncc)
+                results[method_name] = {'accuracy': acc, 'confidence': conf}
+                print(f"   Accuracy: {acc:.2%}, Confidence: {conf:.3f}")
+    else:
+        # 标准测试模式
+        for method in ['weighted_gentle', 'progressive_conservative']:
+            for use_ncc in [False, True]:
+                method_name = f"{method}{'_NCC' if use_ncc else ''}"
+                print(f"\n📊 Testing {method_name}...")
+                
+                # 重新加载模型
+                model = load_model(model_path, device)
+                adapter = FixedLCCSAdapter(model, device)
+                
+                # 应用不同的适应方法
+                if method == 'weighted_gentle':
+                    adapter.adapt_bn_stats_v1(support_loader, alpha=0.1)
+                elif method == 'progressive_conservative':
+                    adapter.adapt_bn_stats_v2(support_loader, momentum=0.005, iterations=3)
+                
+                # 如果使用NCC，计算原型
+                if use_ncc:
+                    adapter.compute_class_prototypes(support_loader)
+                
+                # 评估
+                acc, conf = adapter.evaluate(test_loader, use_ncc=use_ncc)
+                results[method_name] = {'accuracy': acc, 'confidence': conf}
+                improvement = acc - baseline_acc
+                print(f"   Accuracy: {acc:.2%} ({improvement:+.2%}), Confidence: {conf:.3f}")
     
     # 总结
     print("\n" + "="*60)
     print("📊 SUMMARY")
     print("="*60)
-    print(f"{'Method':<25} {'Accuracy':>10} {'Improvement':>12}")
-    print("-"*47)
-    for method, acc in results.items():
+    print(f"{'Method':<25} {'Accuracy':>10} {'Confidence':>12} {'Improvement':>12}")
+    print("-"*70)
+    
+    # 按准确率排序
+    sorted_results = sorted(results.items(), 
+                           key=lambda x: x[1]['accuracy'] if isinstance(x[1], dict) else x[1], 
+                           reverse=True)
+    
+    for method, metrics in sorted_results:
+        if isinstance(metrics, dict):
+            acc = metrics['accuracy']
+            conf = metrics['confidence']
+        else:
+            # 兼容旧格式
+            acc = metrics
+            conf = 0.0
+        
         improvement = acc - baseline_acc
-        print(f"{method:<25} {acc:>9.2%} {improvement:>+11.2%}")
+        print(f"{method:<25} {acc:>9.2%} {conf:>11.3f} {improvement:>+11.2%}")
     
     # 找最佳方法
-    best_method = max(results, key=results.get)
-    best_acc = results[best_method]
-    print(f"\n🏆 Best method: {best_method} with {best_acc:.2%}")
+    best_method = max(results.items(), 
+                     key=lambda x: x[1]['accuracy'] if isinstance(x[1], dict) else x[1])
+    method_name = best_method[0]
+    if isinstance(best_method[1], dict):
+        best_acc = best_method[1]['accuracy']
+        best_conf = best_method[1]['confidence']
+        print(f"\n🏆 Best method: {method_name} with {best_acc:.2%} (confidence: {best_conf:.3f})")
+    else:
+        best_acc = best_method[1]
+        print(f"\n🏆 Best method: {method_name} with {best_acc:.2%}")
     
     return results
 
@@ -400,9 +507,11 @@ def main():
                        default='/kaggle/input/backpack/backpack')
     parser.add_argument('--support-size', type=int, default=3)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--tune-params', action='store_true',
+                       help='Enable parameter tuning mode to test multiple alpha/momentum values')
     
     args = parser.parse_args()
-    test_all_methods(args.model_path, args.data_dir, args.support_size, args.seed)
+    test_all_methods(args.model_path, args.data_dir, args.support_size, args.seed, args.tune_params)
 
 
 if __name__ == '__main__':
