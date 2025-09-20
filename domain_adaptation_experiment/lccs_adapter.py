@@ -220,21 +220,22 @@ class FixedLCCSAdapter:
         # 归一化特征
         features = F.normalize(features, dim=1)
         
-        # 计算到每个原型的距离
-        distances = []
+        # 计算到每个原型的余弦相似度（更适合对比学习特征）
+        similarities = []
         class_ids = []
         for class_id, prototype in self.prototypes.items():
-            dist = torch.cdist(features, prototype.unsqueeze(0), p=2)
-            distances.append(dist)
+            # 使用余弦相似度替代L2距离
+            sim = torch.matmul(features, prototype.unsqueeze(1))  # [batch, 1]
+            similarities.append(sim)
             class_ids.append(class_id)
         
-        # 找最近的原型 - 确保设备一致性
-        distances = torch.cat(distances, dim=1)  # [batch_size, num_classes]
-        argmin_indices = distances.argmin(dim=1)  # GPU上的索引
+        # 找最高相似度的原型
+        similarities = torch.cat(similarities, dim=1)  # [batch_size, num_classes]
+        argmax_indices = similarities.argmax(dim=1)  # GPU上的索引
         
-        # 将class_ids转换为与距离相同设备的张量
-        class_ids_tensor = torch.tensor(class_ids, device=distances.device)
-        predictions = class_ids_tensor[argmin_indices]
+        # 将class_ids转换为与相似度相同设备的张量
+        class_ids_tensor = torch.tensor(class_ids, device=similarities.device)
+        predictions = class_ids_tensor[argmax_indices]
         
         return predictions
     
@@ -346,7 +347,7 @@ def test_all_methods(model_path, data_dir, support_size=3, seed=42):
     print("🔬 Testing LCCS methods with/without NCC")
     print("="*60)
     
-    for method in ['weighted', 'progressive', 'mean_shift']:
+    for method in ['weighted', 'progressive']:  # 移除破坏性的mean_shift
         for use_ncc in [False, True]:
             method_name = f"{method}{'_NCC' if use_ncc else ''}"
             print(f"\n📊 Testing {method_name}...")
