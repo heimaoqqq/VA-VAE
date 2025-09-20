@@ -265,14 +265,12 @@ if __name__ == '__main__':
     
     # 模拟数据测试
     torch.manual_seed(42)
-    support_features = torch.randn(93, 512).cuda() if torch.cuda.is_available() else torch.randn(93, 512)
-    support_labels = torch.repeat_interleave(torch.arange(31), 3)
-    test_features = torch.randn(1000, 512).cuda() if torch.cuda.is_available() else torch.randn(1000, 512)
-    test_labels = torch.randint(0, 31, (1000,))
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    if torch.cuda.is_available():
-        support_labels = support_labels.cuda()
-        test_labels = test_labels.cuda()
+    support_features = torch.randn(93, 512, device=device)
+    support_labels = torch.repeat_interleave(torch.arange(31), 3).to(device)
+    test_features = torch.randn(1000, 512, device=device)
+    test_labels = torch.randint(0, 31, (1000,), device=device)
     
     # 比较方法
     results = compare_prototype_methods(
