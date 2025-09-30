@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-NCC 补充评估
-只评估缺失的 NCC 和 LCCS+NCC，快速测试temperature
+NCC 完整超参数调优
+测试所有参数组合，找到NCC的极限性能
 """
 
 import torch
@@ -22,13 +22,13 @@ from strategic_dataset import StrategicDataset
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description='NCC补充评估')
+    parser = argparse.ArgumentParser(description='NCC完整超参数调优')
     parser.add_argument('--model-path', type=str,
                        default='/kaggle/working/VA-VAE/improved_classifier/best_improved_classifier.pth')
     parser.add_argument('--data-dir', type=str,
                        default='/kaggle/input/backpack/backpack')
     parser.add_argument('--output-dir', type=str,
-                       default='./ncc_supplement_results')
+                       default='./ncc_tuning_results')
     
     args = parser.parse_args()
     
@@ -37,37 +37,42 @@ def main():
     output_path.mkdir(parents=True, exist_ok=True)
     
     print("\n" + "="*80)
-    print("🔍 NCC 补充评估（只评估缺失部分）")
+    print("🎯 NCC 完整超参数调优")
     print("="*80)
-    
-    # 最佳配置
-    best_strategy = 'diversity'
-    best_lccs = {
-        'momentum': 0.02,
-        'iterations': 10
-    }
-    
-    # 测试temperature（快速筛选）
-    temperatures = [0.005, 0.01, 0.05]
-    
-    print(f"\n📋 已有评估结果:")
-    print(f"  ✅ Baseline:       ~75%")
-    print(f"  ✅ LCCS+Baseline:  ~79.44%")
-    print(f"  ✅ PNC:            ~87.47%")
-    print(f"  ✅ LCCS+PNC:       87.81-88.51%")
-    
-    print(f"\n📋 待评估:")
-    print(f"  ❌ NCC (测试 {len(temperatures)} 个temperature)")
-    print(f"  ❌ LCCS+NCC")
     
     # 加载模型
     print("\n📦 加载分类器...")
     model = load_classifier(args.model_path, device)
     model.device = device
     
-    # 测试配置（先用support=3快速测试）
-    support_sizes = [3]  # 先只测试最佳的support_size
+    # 超参数搜索空间
+    strategies = ['diversity']  # 已知最佳
+    support_sizes = [3, 5, 10]
     seeds = [42, 123, 456]
+    
+    # NCC超参数
+    temperatures = [0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1]
+    distance_metrics = ['cosine', 'euclidean']
+    prototype_methods = ['simple_mean', 'weighted_mean']
+    
+    # LCCS参数（已知最佳）
+    lccs_config = {
+        'momentum': 0.02,
+        'iterations': 10
+    }
+    
+    total_configs = (len(temperatures) * len(distance_metrics) * 
+                    len(prototype_methods) * len(support_sizes) * len(seeds))
+    
+    print(f"\n超参数搜索空间:")
+    print(f"  Temperature: {temperatures}")
+    print(f"  Distance: {distance_metrics}")
+    print(f"  Prototype: {prototype_methods}")
+    print(f"  Support sizes: {support_sizes}")
+    print(f"  Seeds: {seeds}")
+    print(f"\n总计: {total_configs} 个NCC配置")
+    print(f"每个配置测试: NCC 和 LCCS+NCC")
+    print(f"总实验数: {total_configs * 2}")
     
     results = []
     
@@ -78,26 +83,16 @@ def main():
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # 总实验数
-    total = len(support_sizes) * len(seeds) * (len(temperatures) + 1)  # NCC温度测试 + LCCS+NCC
-    
-    print(f"\n总共 {total} 个实验")
-    
-    # 第一阶段：测试NCC的temperature
-    print("\n" + "="*80)
-    print("📊 阶段1: NCC Temperature 测试")
-    print("="*80)
-    
-    ncc_temp_results = []
-    
-    with tqdm(total=len(temperatures) * len(support_sizes) * len(seeds), 
-              desc="NCC Temp Test") as pbar:
-        for support_size, seed, temp in product(support_sizes, seeds, temperatures):
+    with tqdm(total=total_configs * 2, desc="NCC Tuning") as pbar:
+        for (temp, metric, proto_method, support_size, seed) in product(
+            temperatures, distance_metrics, prototype_methods, 
+            support_sizes, seeds
+        ):
             # 创建数据集
             support_dataset = StrategicDataset(
                 data_dir=args.data_dir,
                 support_size=support_size,
-                strategy=best_strategy,
+                strategy='diversity',
                 model=model,
                 mode='support',
                 seed=seed,
@@ -108,7 +103,7 @@ def main():
             test_dataset = StrategicDataset(
                 data_dir=args.data_dir,
                 support_size=support_size,
-                strategy=best_strategy,
+                strategy='diversity',
                 model=model,
                 mode='test',
                 seed=seed,
@@ -121,187 +116,241 @@ def main():
             test_loader = DataLoader(test_dataset, batch_size=64, 
                                     shuffle=False, num_workers=0)
             
-            # 提取特征和构建原型
-            features, labels = extract_features(model, support_loader, device)
-            prototypes = build_prototypes_simple_mean(features, labels)
+            # 构建原型（根据方法）
+            if proto_method == 'simple_mean':
+                features, labels = extract_features(model, support_loader, device)
+                prototypes = build_prototypes_simple_mean(features, labels)
+            else:  # weighted_mean
+                prototypes = build_prototypes_weighted(model, support_loader, device)
             
-            # NCC评估
+            # ========== 1. NCC（无LCCS）==========
             ncc = NCCEvaluator(prototypes, device)
             ncc_acc, ncc_conf = ncc.predict(
-                model, test_loader, 
-                temperature=temp, 
-                distance_metric='cosine'
+                model, test_loader,
+                temperature=temp,
+                distance_metric=metric
             )
             
-            ncc_temp_results.append({
+            results.append({
                 'method': 'NCC',
                 'temperature': temp,
+                'distance_metric': metric,
+                'prototype_method': proto_method,
                 'support_size': support_size,
                 'seed': seed,
                 'accuracy': ncc_acc,
-                'confidence': ncc_conf
+                'confidence': ncc_conf,
+                'lccs_applied': False
             })
             
             pbar.update(1)
-    
-    # 找最佳temperature
-    temp_df = pd.DataFrame(ncc_temp_results)
-    best_temp_acc = {}
-    for temp in temperatures:
-        avg_acc = temp_df[temp_df['temperature']==temp]['accuracy'].mean()
-        best_temp_acc[temp] = avg_acc
-        print(f"  Temperature={temp}: 平均准确率={avg_acc:.4f}")
-    
-    best_temp = max(best_temp_acc, key=best_temp_acc.get)
-    print(f"\n✨ 最佳 Temperature: {best_temp} (准确率: {best_temp_acc[best_temp]:.4f})")
-    
-    # 第二阶段：使用最佳temperature评估LCCS+NCC
-    print("\n" + "="*80)
-    print("📊 阶段2: LCCS+NCC 评估（使用最佳temperature）")
-    print("="*80)
-    
-    lccs_ncc_results = []
-    
-    # 测试所有support_size
-    all_support_sizes = [3, 5, 10]
-    
-    with tqdm(total=len(all_support_sizes) * len(seeds), 
-              desc="LCCS+NCC") as pbar:
-        for support_size, seed in product(all_support_sizes, seeds):
-            # 创建数据集
-            support_dataset = StrategicDataset(
-                data_dir=args.data_dir,
-                support_size=support_size,
-                strategy=best_strategy,
-                model=model,
-                mode='support',
-                seed=seed,
-                device=device,
-                transform=transform
-            )
             
-            test_dataset = StrategicDataset(
-                data_dir=args.data_dir,
-                support_size=support_size,
-                strategy=best_strategy,
-                model=model,
-                mode='test',
-                seed=seed,
-                device=device,
-                transform=transform
-            )
-            
-            support_loader = DataLoader(support_dataset, batch_size=64, 
-                                       shuffle=False, num_workers=0)
-            test_loader = DataLoader(test_dataset, batch_size=64, 
-                                    shuffle=False, num_workers=0)
-            
-            # LCCS适应
+            # ========== 2. LCCS+NCC ==========
             lccs = LCCSAdapter(model, device)
             lccs.adapt_progressive(
                 support_loader,
-                momentum=best_lccs['momentum'],
-                iterations=best_lccs['iterations']
+                momentum=lccs_config['momentum'],
+                iterations=lccs_config['iterations']
             )
             
-            # 在LCCS适应后重新提取特征和构建原型
-            features_lccs, labels_lccs = extract_features(model, support_loader, device)
-            prototypes_lccs = build_prototypes_simple_mean(features_lccs, labels_lccs)
+            # 重新构建原型（在LCCS适应后）
+            if proto_method == 'simple_mean':
+                features_lccs, labels_lccs = extract_features(model, support_loader, device)
+                prototypes_lccs = build_prototypes_simple_mean(features_lccs, labels_lccs)
+            else:
+                prototypes_lccs = build_prototypes_weighted(model, support_loader, device)
             
-            # LCCS+NCC评估（使用最佳temperature）
             ncc_lccs = NCCEvaluator(prototypes_lccs, device)
             lccs_ncc_acc, lccs_ncc_conf = ncc_lccs.predict(
                 model, test_loader,
-                temperature=best_temp,
-                distance_metric='cosine'
+                temperature=temp,
+                distance_metric=metric
             )
             
-            lccs_ncc_results.append({
+            results.append({
                 'method': 'LCCS+NCC',
-                'temperature': best_temp,
+                'temperature': temp,
+                'distance_metric': metric,
+                'prototype_method': proto_method,
                 'support_size': support_size,
                 'seed': seed,
                 'accuracy': lccs_ncc_acc,
-                'confidence': lccs_ncc_conf
+                'confidence': lccs_ncc_conf,
+                'lccs_applied': True
             })
-            
-            print(f"  Support={support_size}, Seed={seed}: {lccs_ncc_acc:.4f}")
             
             # 恢复BN
             lccs.restore_bn_stats()
             
             pbar.update(1)
     
-    # 保存所有结果
-    all_results = ncc_temp_results + lccs_ncc_results
-    results_df = pd.DataFrame(all_results)
-    results_df.to_csv(output_path / 'ncc_results.csv', index=False)
+    # 保存详细结果
+    df = pd.DataFrame(results)
+    df.to_csv(output_path / 'ncc_tuning_detailed.csv', index=False)
     
-    # 生成对比报告
+    # ==================== 分析结果 ====================
     print("\n" + "="*80)
-    print("📊 最终对比报告")
+    print("📊 超参数调优结果分析")
     print("="*80)
     
-    # NCC结果（使用最佳temperature）
-    ncc_best = temp_df[temp_df['temperature']==best_temp]
-    ncc_mean = ncc_best['accuracy'].mean()
-    
-    # LCCS+NCC结果
-    lccs_ncc_df = pd.DataFrame(lccs_ncc_results)
-    
-    print("\n总体平均:")
+    # 1. NCC最佳配置
+    print("\n【NCC】最佳配置:")
     print("-" * 80)
-    print(f"  Baseline:       ~75.00%")
-    print(f"  LCCS+Baseline:  ~79.44%")
-    print(f"  NCC:            {ncc_mean:.4f} (temperature={best_temp})")
-    print(f"  PNC:            ~87.47%")
+    ncc_df = df[df['method'] == 'NCC']
+    best_ncc = ncc_df.loc[ncc_df['accuracy'].idxmax()]
+    print(f"  ✨ 最高准确率: {best_ncc['accuracy']:.4f}")
+    print(f"  ✨ 平均置信度: {best_ncc['confidence']:.4f}")
+    print(f"  Temperature: {best_ncc['temperature']}")
+    print(f"  Distance metric: {best_ncc['distance_metric']}")
+    print(f"  Prototype method: {best_ncc['prototype_method']}")
+    print(f"  Support size: {best_ncc['support_size']}")
+    print(f"  Seed: {best_ncc['seed']}")
     
-    # 按support_size分组
-    print("\nLCCS+NCC (按 Support Size):")
+    # NCC平均性能（按配置分组）
+    print("\n【NCC】按超参数平均性能:")
+    print("-" * 80)
+    
+    # 按temperature
+    print("\n  Temperature:")
+    for temp in temperatures:
+        subset = ncc_df[ncc_df['temperature'] == temp]
+        avg_acc = subset['accuracy'].mean()
+        avg_conf = subset['confidence'].mean()
+        print(f"    {temp:6.3f}: Acc={avg_acc:.4f}, Conf={avg_conf:.4f}")
+    
+    # 按distance_metric
+    print("\n  Distance Metric:")
+    for metric in distance_metrics:
+        subset = ncc_df[ncc_df['distance_metric'] == metric]
+        avg_acc = subset['accuracy'].mean()
+        avg_conf = subset['confidence'].mean()
+        print(f"    {metric:10s}: Acc={avg_acc:.4f}, Conf={avg_conf:.4f}")
+    
+    # 按prototype_method
+    print("\n  Prototype Method:")
+    for method in prototype_methods:
+        subset = ncc_df[ncc_df['prototype_method'] == method]
+        avg_acc = subset['accuracy'].mean()
+        avg_conf = subset['confidence'].mean()
+        print(f"    {method:15s}: Acc={avg_acc:.4f}, Conf={avg_conf:.4f}")
+    
+    # 2. LCCS+NCC最佳配置
+    print("\n" + "="*80)
+    print("【LCCS+NCC】最佳配置:")
+    print("-" * 80)
+    lccs_ncc_df = df[df['method'] == 'LCCS+NCC']
+    best_lccs_ncc = lccs_ncc_df.loc[lccs_ncc_df['accuracy'].idxmax()]
+    print(f"  ✨ 最高准确率: {best_lccs_ncc['accuracy']:.4f}")
+    print(f"  ✨ 平均置信度: {best_lccs_ncc['confidence']:.4f}")
+    print(f"  Temperature: {best_lccs_ncc['temperature']}")
+    print(f"  Distance metric: {best_lccs_ncc['distance_metric']}")
+    print(f"  Prototype method: {best_lccs_ncc['prototype_method']}")
+    print(f"  Support size: {best_lccs_ncc['support_size']}")
+    print(f"  Seed: {best_lccs_ncc['seed']}")
+    
+    # 按support_size统计
+    print("\n【LCCS+NCC】按 Support Size:")
+    print("-" * 80)
     for size in [3, 5, 10]:
-        subset = lccs_ncc_df[lccs_ncc_df['support_size']==size]
-        mean_acc = subset['accuracy'].mean()
-        print(f"  Support={size}: {mean_acc:.4f}")
+        subset = lccs_ncc_df[lccs_ncc_df['support_size'] == size]
+        avg_acc = subset['accuracy'].mean()
+        std_acc = subset['accuracy'].std()
+        max_acc = subset['accuracy'].max()
+        avg_conf = subset['confidence'].mean()
+        print(f"  Support={size:2d}: Acc={avg_acc:.4f}±{std_acc:.4f} "
+              f"(最大={max_acc:.4f}), Conf={avg_conf:.4f}")
     
-    print(f"\n  LCCS+PNC:       87.81-88.51%")
+    # 3. 总体对比
+    print("\n" + "="*80)
+    print("📈 总体性能对比")
+    print("="*80)
     
-    # 关键对比
-    print("\n关键对比:")
-    print("-" * 80)
+    ncc_mean = ncc_df['accuracy'].mean()
+    ncc_max = ncc_df['accuracy'].max()
+    ncc_conf_mean = ncc_df['confidence'].mean()
+    
     lccs_ncc_mean = lccs_ncc_df['accuracy'].mean()
-    print(f"  NCC vs PNC:           {ncc_mean:.4f} vs 87.47% (差异: {87.47-ncc_mean:+.4f})")
-    print(f"  LCCS+NCC vs LCCS+PNC: {lccs_ncc_mean:.4f} vs 88.16% (差异: {88.16-lccs_ncc_mean:+.4f})")
+    lccs_ncc_max = lccs_ncc_df['accuracy'].max()
+    lccs_ncc_conf_mean = lccs_ncc_df['confidence'].mean()
     
-    # 保存总结
+    print(f"\nNCC:")
+    print(f"  平均准确率: {ncc_mean:.4f}")
+    print(f"  最大准确率: {ncc_max:.4f}")
+    print(f"  平均置信度: {ncc_conf_mean:.4f}")
+    
+    print(f"\nLCCS+NCC:")
+    print(f"  平均准确率: {lccs_ncc_mean:.4f}")
+    print(f"  最大准确率: {lccs_ncc_max:.4f}")
+    print(f"  平均置信度: {lccs_ncc_conf_mean:.4f}")
+    
+    print(f"\nLCCS 带来的提升:")
+    print(f"  平均: +{lccs_ncc_mean - ncc_mean:.4f}")
+    print(f"  最大: +{lccs_ncc_max - ncc_max:.4f}")
+    print(f"  置信度: +{lccs_ncc_conf_mean - ncc_conf_mean:.4f}")
+    
+    # 保存最佳配置
     summary = {
-        'ncc': {
-            'best_temperature': best_temp,
-            'accuracy': float(ncc_mean),
-            'temperature_comparison': {float(k): float(v) for k, v in best_temp_acc.items()}
-        },
-        'lccs_ncc': {
-            'mean_accuracy': float(lccs_ncc_mean),
-            'by_support_size': {
-                str(size): float(lccs_ncc_df[lccs_ncc_df['support_size']==size]['accuracy'].mean())
-                for size in [3, 5, 10]
+        'best_ncc': {
+            'accuracy': float(best_ncc['accuracy']),
+            'confidence': float(best_ncc['confidence']),
+            'config': {
+                'temperature': float(best_ncc['temperature']),
+                'distance_metric': str(best_ncc['distance_metric']),
+                'prototype_method': str(best_ncc['prototype_method']),
+                'support_size': int(best_ncc['support_size']),
+                'seed': int(best_ncc['seed'])
             }
         },
-        'comparison': {
-            'NCC_vs_PNC': float(87.47 - ncc_mean),
-            'LCCS_NCC_vs_LCCS_PNC': float(88.16 - lccs_ncc_mean)
+        'best_lccs_ncc': {
+            'accuracy': float(best_lccs_ncc['accuracy']),
+            'confidence': float(best_lccs_ncc['confidence']),
+            'config': {
+                'temperature': float(best_lccs_ncc['temperature']),
+                'distance_metric': str(best_lccs_ncc['distance_metric']),
+                'prototype_method': str(best_lccs_ncc['prototype_method']),
+                'support_size': int(best_lccs_ncc['support_size']),
+                'seed': int(best_lccs_ncc['seed']),
+                'lccs': lccs_config
+            }
+        },
+        'statistics': {
+            'ncc': {
+                'mean_accuracy': float(ncc_mean),
+                'max_accuracy': float(ncc_max),
+                'mean_confidence': float(ncc_conf_mean)
+            },
+            'lccs_ncc': {
+                'mean_accuracy': float(lccs_ncc_mean),
+                'max_accuracy': float(lccs_ncc_max),
+                'mean_confidence': float(lccs_ncc_conf_mean)
+            },
+            'lccs_improvement': {
+                'accuracy': float(lccs_ncc_mean - ncc_mean),
+                'confidence': float(lccs_ncc_conf_mean - ncc_conf_mean)
+            }
         }
     }
     
-    with open(output_path / 'summary.json', 'w') as f:
+    with open(output_path / 'best_configs.json', 'w') as f:
         json.dump(summary, f, indent=2)
     
     print(f"\n✅ 结果已保存到: {args.output_dir}")
-    print(f"   - ncc_results.csv")
-    print(f"   - summary.json")
+    print(f"   - ncc_tuning_detailed.csv    # 详细结果")
+    print(f"   - best_configs.json          # 最佳配置")
     
     print("\n" + "="*80)
-    print("✅ 补充评估完成！")
+    print("🎉 NCC超参数调优完成！")
     print("="*80)
+    
+    # 最终推荐
+    print(f"\n🏆 最终推荐配置:")
+    print(f"  方法: LCCS+NCC")
+    print(f"  准确率: {best_lccs_ncc['accuracy']:.4f}")
+    print(f"  置信度: {best_lccs_ncc['confidence']:.4f}")
+    print(f"  Temperature: {best_lccs_ncc['temperature']}")
+    print(f"  Distance: {best_lccs_ncc['distance_metric']}")
+    print(f"  Prototype: {best_lccs_ncc['prototype_method']}")
+    print(f"  Support size: {best_lccs_ncc['support_size']}")
 
 
 if __name__ == '__main__':
