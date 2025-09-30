@@ -284,11 +284,11 @@ def evaluate_pnc_lccs_combined_optimized(model, best_pnc, best_lccs,
             if best_lccs['lccs_method'] == 'progressive':
                 lccs.adapt_progressive(
                     support_loader,
-                    momentum=best_lccs['momentum'],
-                    iterations=best_lccs['iterations']
+                    momentum=float(best_lccs['momentum']),
+                    iterations=int(best_lccs['iterations'])
                 )
             else:
-                lccs.adapt_weighted(support_loader, alpha=best_lccs['alpha'])
+                lccs.adapt_weighted(support_loader, alpha=float(best_lccs['alpha']))
             
             # 步骤2：构建原型（在 LCCS 适应后的模型上）
             if best_pnc['prototype_strategy'] == 'simple_mean':
@@ -301,9 +301,9 @@ def evaluate_pnc_lccs_combined_optimized(model, best_pnc, best_lccs,
             pnc = PNCEvaluator(model, prototypes, model.device)
             acc, conf = pnc.predict(
                 test_loader,
-                fusion_alpha=best_pnc['fusion_alpha'],
-                similarity_tau=best_pnc['similarity_tau'],
-                use_adaptive=best_pnc['use_adaptive']
+                fusion_alpha=float(best_pnc['fusion_alpha']),
+                similarity_tau=float(best_pnc['similarity_tau']),
+                use_adaptive=bool(best_pnc['use_adaptive'])
             )
             
             # 保存结果
@@ -648,7 +648,7 @@ def main():
         best_lccs = {
             'lccs_method': 'progressive',
             'momentum': 0.01,
-            'iterations': 5
+            'iterations': 5  # 已经是整数
         }
     
     # 6. 评估 PNC+LCCS 组合（使用最佳策略）
