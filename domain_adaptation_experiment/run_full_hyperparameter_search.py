@@ -16,7 +16,91 @@ sys.path.append(str(Path(__file__).parent))
 from eval_config import *
 from eval_utils import *
 from eval_components import *
-from run_comprehensive_eval import run_single_experiment
+
+
+def run_single_experiment(model_path, data_dir, support_size, seed,
+                         method, params, device='cuda'):
+    """
+    运行单个实验配置
+    
+    Args:
+        model_path: 分类器路径
+        data_dir: 数据目录
+        support_size: 支持集大小
+        seed: 随机种子
+        method: 方法名称 ('baseline', 'pnc', 'lccs', 'pnc_lccs', 'ncc')
+        params: 超参数字典
+        device: 设备
+    
+    Returns:
+        result: 包含准确率和置信度的字典
+    """
+    # 加载模型
+    model = load_classifier(model_path, device)
+    
+    # 加载数据（严格分离support和test）
+    support_loader, test_loader = create_data_loaders(
+        data_dir, support_size, seed, batch_size=64
+    )
+    
+    # 根据方法执行评估
+    if method == 'baseline':
+        # 基线：直接分类
+        acc, conf = evaluate_baseline(model, test_loader, device)
+        result = {'accuracy': acc, 'confidence': conf}
+    
+    elif method == 'pnc':
+        # PNC单独
+        result = evaluate_pnc_only(
+            model, support_loader, test_loader,
+            prototype_strategy=params['prototype_strategy'],
+            fusion_alpha=params['fusion_alpha'],
+            similarity_tau=params['similarity_tau'],
+            use_adaptive=params['use_adaptive'],
+            device=device
+        )
+    
+    elif method == 'lccs':
+        # LCCS单独
+        result = evaluate_lccs_only(
+            model, support_loader, test_loader,
+            lccs_method=params['lccs_method'],
+            lccs_params=params['lccs_params'],
+            device=device
+        )
+    
+    elif method == 'pnc_lccs':
+        # PNC+LCCS组合
+        result = evaluate_pnc_lccs_combined(
+            model, support_loader, test_loader,
+            prototype_strategy=params['prototype_strategy'],
+            fusion_alpha=params['fusion_alpha'],
+            similarity_tau=params['similarity_tau'],
+            use_adaptive=params['use_adaptive'],
+            lccs_method=params['lccs_method'],
+            lccs_params=params['lccs_params'],
+            device=device
+        )
+    
+    elif method == 'ncc':
+        # NCC单独
+        # 先构建原型
+        features, labels = extract_features(model, support_loader, device)
+        prototypes = build_prototypes_simple_mean(features, labels)
+        
+        # NCC评估
+        ncc = NCCEvaluator(prototypes, device)
+        acc, conf = ncc.predict(
+            model, test_loader,
+            temperature=params['temperature'],
+            distance_metric=params['distance_metric']
+        )
+        result = {'accuracy': acc, 'confidence': conf}
+    
+    else:
+        raise ValueError(f"Unknown method: {method}")
+    
+    return result
 
 
 def evaluate_pnc_hyperparameters(model_path, data_dir, output_dir):
