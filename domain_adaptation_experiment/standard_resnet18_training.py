@@ -41,8 +41,8 @@ class StandardResNet18(nn.Module):
 
 def create_data_loaders(data_dir, batch_size=32, num_workers=4, train_ratio=0.8):
     """
-    按用户划分训练集和验证集，避免数据泄露
-    训练集和验证集的用户完全分离
+    每个用户的样本按 train_ratio 划分为训练集和验证集
+    所有31个用户都会出现在训练集和验证集中，避免验证集包含未见过的类别
     """
     
     # 不使用数据增强的transform
@@ -61,50 +61,42 @@ def create_data_loaders(data_dir, batch_size=32, num_workers=4, train_ratio=0.8)
     
     print(f"✅ 发现 {total_users} 个用户")
     
-    # 按用户划分：80% 训练，20% 验证
-    np.random.seed(42)
-    user_indices = np.random.permutation(total_users)
-    
-    train_user_count = int(total_users * train_ratio)
-    train_user_indices = user_indices[:train_user_count]
-    val_user_indices = user_indices[train_user_count:]
-    
-    train_users = [user_dirs[i].name for i in train_user_indices]
-    val_users = [user_dirs[i].name for i in val_user_indices]
-    
-    print(f"📊 训练用户 ({len(train_users)}): {', '.join(sorted(train_users)[:5])}...")
-    print(f"📊 验证用户 ({len(val_users)}): {', '.join(sorted(val_users))}")
-    
-    # 加载训练集数据
     train_samples = []
-    for user_idx in train_user_indices:
-        user_dir = user_dirs[user_idx]
-        user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
+    val_samples = []
+    
+    # 对每个用户，按比例划分样本到训练集和验证集
+    np.random.seed(42)
+    
+    for user_idx, user_dir in enumerate(user_dirs):
+        user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0, ID_2 -> 1, ...
         
+        # 获取该用户的所有图像
         image_files = list(user_dir.glob('*.png')) + list(user_dir.glob('*.jpg'))
         
-        for img_path in image_files:
+        # 随机打乱并划分
+        np.random.shuffle(image_files)
+        train_count = int(len(image_files) * train_ratio)
+        
+        train_images = image_files[:train_count]
+        val_images = image_files[train_count:]
+        
+        # 添加到训练集
+        for img_path in train_images:
             train_samples.append({
                 'path': img_path,
                 'label': user_id
             })
-    
-    # 加载验证集数据
-    val_samples = []
-    for user_idx in val_user_indices:
-        user_dir = user_dirs[user_idx]
-        user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
         
-        image_files = list(user_dir.glob('*.png')) + list(user_dir.glob('*.jpg'))
-        
-        for img_path in image_files:
+        # 添加到验证集
+        for img_path in val_images:
             val_samples.append({
                 'path': img_path,
                 'label': user_id
             })
     
-    print(f"✅ 训练集: {len(train_samples)} 样本 ({len(train_users)} 用户)")
-    print(f"✅ 验证集: {len(val_samples)} 样本 ({len(val_users)} 用户)")
+    print(f"✅ 训练集: {len(train_samples)} 样本 (所有 {total_users} 个用户)")
+    print(f"✅ 验证集: {len(val_samples)} 样本 (所有 {total_users} 个用户)")
+    print(f"✅ 划分比例: 训练 {train_ratio*100:.0f}% / 验证 {(1-train_ratio)*100:.0f}%")
     
     # 创建数据集
     class SampleDataset(Dataset):
@@ -309,7 +301,7 @@ def main():
     
     # 数据参数
     parser.add_argument('--data_dir', type=str, 
-                       default='/kaggle/input/dataset',
+                       default='/kaggle/input/dataset/Normal_line',
                        help='训练数据目录')
     parser.add_argument('--output_dir', type=str, default='./standard_classifier',
                        help='输出目录')
