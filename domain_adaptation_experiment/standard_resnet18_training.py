@@ -39,89 +39,94 @@ class StandardResNet18(nn.Module):
         return self.resnet(x)
 
 
-class GaitDataset(Dataset):
-    """简单的步态数据集加载器"""
+def create_data_loaders(data_dir, batch_size=32, num_workers=4, train_ratio=0.8):
+    """
+    按用户划分训练集和验证集，避免数据泄露
+    训练集和验证集的用户完全分离
+    """
     
-    def __init__(self, data_dir, transform=None):
-        self.data_dir = Path(data_dir)
-        self.transform = transform
-        self.samples = []
-        
-        # 加载所有图像
-        user_dirs = sorted([d for d in self.data_dir.iterdir() if d.is_dir()])
-        
-        for user_dir in user_dirs:
-            if not user_dir.name.startswith('ID_'):
-                continue
-            
-            user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
-            
-            image_files = list(user_dir.glob('*.png')) + list(user_dir.glob('*.jpg'))
-            
-            for img_path in image_files:
-                self.samples.append({
-                    'path': img_path,
-                    'label': user_id
-                })
-        
-        print(f"✅ 加载 {len(self.samples)} 个样本，{len(user_dirs)} 个用户")
-    
-    def __len__(self):
-        return len(self.samples)
-    
-    def __getitem__(self, idx):
-        sample = self.samples[idx]
-        
-        image = Image.open(sample['path']).convert('RGB')
-        label = sample['label']
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        return image, label
-
-
-def create_data_loaders(data_dir, batch_size=32, num_workers=4, val_split=0.2):
-    """创建训练和验证数据加载器"""
-    
-    # 数据增强（训练集）
-    train_transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.RandomHorizontalFlip(p=0.5),
-        transforms.RandomRotation(10),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])
-    ])
-    
-    # 验证集（不增强）
-    val_transform = transforms.Compose([
+    # 不使用数据增强的transform
+    transform = transforms.Compose([
         transforms.Resize((256, 256)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                            std=[0.229, 0.224, 0.225])
     ])
     
-    # 创建完整数据集
-    full_dataset = GaitDataset(data_dir, transform=train_transform)
+    data_dir = Path(data_dir)
     
-    # 分割训练集和验证集
-    dataset_size = len(full_dataset)
-    indices = list(range(dataset_size))
-    split = int(np.floor(val_split * dataset_size))
+    # 获取所有用户
+    user_dirs = sorted([d for d in data_dir.iterdir() if d.is_dir() and d.name.startswith('ID_')])
+    total_users = len(user_dirs)
     
+    print(f"✅ 发现 {total_users} 个用户")
+    
+    # 按用户划分：80% 训练，20% 验证
     np.random.seed(42)
-    np.random.shuffle(indices)
+    user_indices = np.random.permutation(total_users)
     
-    train_indices, val_indices = indices[split:], indices[:split]
+    train_user_count = int(total_users * train_ratio)
+    train_user_indices = user_indices[:train_user_count]
+    val_user_indices = user_indices[train_user_count:]
     
-    # 创建训练集
-    train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
+    train_users = [user_dirs[i].name for i in train_user_indices]
+    val_users = [user_dirs[i].name for i in val_user_indices]
     
-    # 创建验证集（使用不同的transform）
-    val_dataset_full = GaitDataset(data_dir, transform=val_transform)
-    val_dataset = torch.utils.data.Subset(val_dataset_full, val_indices)
+    print(f"📊 训练用户 ({len(train_users)}): {', '.join(sorted(train_users)[:5])}...")
+    print(f"📊 验证用户 ({len(val_users)}): {', '.join(sorted(val_users))}")
+    
+    # 加载训练集数据
+    train_samples = []
+    for user_idx in train_user_indices:
+        user_dir = user_dirs[user_idx]
+        user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
+        
+        image_files = list(user_dir.glob('*.png')) + list(user_dir.glob('*.jpg'))
+        
+        for img_path in image_files:
+            train_samples.append({
+                'path': img_path,
+                'label': user_id
+            })
+    
+    # 加载验证集数据
+    val_samples = []
+    for user_idx in val_user_indices:
+        user_dir = user_dirs[user_idx]
+        user_id = int(user_dir.name.split('_')[1]) - 1  # ID_1 -> 0
+        
+        image_files = list(user_dir.glob('*.png')) + list(user_dir.glob('*.jpg'))
+        
+        for img_path in image_files:
+            val_samples.append({
+                'path': img_path,
+                'label': user_id
+            })
+    
+    print(f"✅ 训练集: {len(train_samples)} 样本 ({len(train_users)} 用户)")
+    print(f"✅ 验证集: {len(val_samples)} 样本 ({len(val_users)} 用户)")
+    
+    # 创建数据集
+    class SampleDataset(Dataset):
+        def __init__(self, samples, transform):
+            self.samples = samples
+            self.transform = transform
+        
+        def __len__(self):
+            return len(self.samples)
+        
+        def __getitem__(self, idx):
+            sample = self.samples[idx]
+            image = Image.open(sample['path']).convert('RGB')
+            label = sample['label']
+            
+            if self.transform:
+                image = self.transform(image)
+            
+            return image, label
+    
+    train_dataset = SampleDataset(train_samples, transform)
+    val_dataset = SampleDataset(val_samples, transform)
     
     # 创建数据加载器
     train_loader = DataLoader(
@@ -129,7 +134,7 @@ def create_data_loaders(data_dir, batch_size=32, num_workers=4, val_split=0.2):
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True if num_workers > 0 else False
     )
     
     val_loader = DataLoader(
@@ -137,11 +142,8 @@ def create_data_loaders(data_dir, batch_size=32, num_workers=4, val_split=0.2):
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True if num_workers > 0 else False
     )
-    
-    print(f"✅ 训练集: {len(train_dataset)} 样本")
-    print(f"✅ 验证集: {len(val_dataset)} 样本")
     
     return train_loader, val_loader
 
@@ -306,7 +308,8 @@ def main():
     parser = argparse.ArgumentParser(description='标准 ResNet18 分类器训练')
     
     # 数据参数
-    parser.add_argument('--data_dir', type=str, required=True,
+    parser.add_argument('--data_dir', type=str, 
+                       default='/kaggle/input/dataset/Normal_line',
                        help='训练数据目录')
     parser.add_argument('--output_dir', type=str, default='./standard_classifier',
                        help='输出目录')
@@ -324,8 +327,8 @@ def main():
                        help='权重衰减')
     parser.add_argument('--patience', type=int, default=10,
                        help='Early stopping patience')
-    parser.add_argument('--val_split', type=float, default=0.2,
-                       help='验证集比例')
+    parser.add_argument('--train_ratio', type=float, default=0.8,
+                       help='训练集用户比例（按用户划分）')
     
     # 其他参数
     parser.add_argument('--num_workers', type=int, default=4,
@@ -355,7 +358,7 @@ def main():
         args.data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        val_split=args.val_split
+        train_ratio=args.train_ratio
     )
     
     # 创建模型
