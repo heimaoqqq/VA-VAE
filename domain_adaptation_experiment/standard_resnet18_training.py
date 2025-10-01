@@ -301,7 +301,7 @@ def main():
     
     # 数据参数
     parser.add_argument('--data_dir', type=str, 
-                       default='/kaggle/input/dataset/Normal_line',
+                       default='/kaggle/input/dataset',
                        help='训练数据目录')
     parser.add_argument('--output_dir', type=str, default='./standard_classifier',
                        help='输出目录')
