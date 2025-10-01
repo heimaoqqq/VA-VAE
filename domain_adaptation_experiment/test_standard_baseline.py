@@ -114,7 +114,7 @@ def main():
     
     # 模型和数据
     parser.add_argument('--model_path', type=str,
-                       default='/kaggle/working/VA-VAE/domain_adaptation_experiment/standard_classifier/best_standard_resnet18.pth',
+                       default='/kaggle/working/VA-VAE/improved_classifier/best_improved_classifier.pth',
                        help='标准ResNet18模型路径')
     parser.add_argument('--num_classes', type=int, default=31)
     
