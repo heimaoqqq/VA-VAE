@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-标准 ResNet18 Baseline 评估
-评估标准ResNet18（无对比学习）在多个目标域上的表现
+通用分类器 Baseline 评估
+支持评估标准ResNet18和改进的ResNet18（带对比学习）在多个目标域上的表现
 """
 
 import torch
@@ -14,6 +14,45 @@ from PIL import Image
 import argparse
 from tqdm import tqdm
 import pandas as pd
+
+
+class ImprovedClassifier(nn.Module):
+    """改进的分类器（带对比学习，从improved_classifier_training.py）"""
+    
+    def __init__(self, num_classes=31, dropout_rate=0.3):
+        super().__init__()
+        
+        # 使用标准ResNet18
+        self.backbone = models.resnet18(pretrained=False)
+        self.backbone.fc = nn.Identity()
+        feature_dim = 512
+        
+        # 分类头
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout_rate),
+            nn.Linear(feature_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=False),
+            nn.Dropout(dropout_rate * 0.5),
+            nn.Linear(256, num_classes)
+        )
+        
+        # 对比学习投影头
+        self.projection_head = nn.Sequential(
+            nn.Linear(feature_dim, 128),
+            nn.ReLU(inplace=False),
+            nn.Linear(128, 64)
+        )
+    
+    def forward(self, x, return_features=False):
+        features = self.backbone(x)
+        
+        if return_features:
+            projected = self.projection_head(features)
+            return features, projected
+        
+        logits = self.classifier(features)
+        return logits
 
 
 class StandardResNet18Classifier(nn.Module):
@@ -59,24 +98,65 @@ class StandardResNet18Classifier(nn.Module):
         return BackboneWrapper(self.resnet)
 
 
-def load_standard_classifier(checkpoint_path, num_classes=31, device='cuda'):
-    """加载标准ResNet18分类器"""
-    model = StandardResNet18Classifier(num_classes=num_classes)
+def load_classifier(checkpoint_path, num_classes=31, device='cuda', model_type='auto'):
+    """
+    通用分类器加载函数，支持标准版和改进版
     
+    Args:
+        checkpoint_path: 模型checkpoint路径
+        num_classes: 类别数量
+        device: 设备
+        model_type: 模型类型 ('standard', 'improved', 'auto')
+                   'auto' 会自动检测模型类型
+    """
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    # 兼容不同的保存格式
+    # 获取state_dict
     if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"✅ 加载模型，验证准确率: {checkpoint.get('best_val_acc', 'N/A'):.2f}%")
+        state_dict = checkpoint['model_state_dict']
+        best_acc = checkpoint.get('best_val_acc', checkpoint.get('best_acc', 'N/A'))
     else:
-        model.load_state_dict(checkpoint)
-        print(f"✅ 加载模型成功")
+        state_dict = checkpoint
+        best_acc = 'N/A'
+    
+    # 自动检测模型类型
+    if model_type == 'auto':
+        # 检查是否有 classifier 和 projection_head（ImprovedClassifier 的特征）
+        has_classifier = any('classifier' in k for k in state_dict.keys())
+        has_projection = any('projection_head' in k for k in state_dict.keys())
+        
+        if has_classifier and has_projection:
+            model_type = 'improved'
+            print("🔍 检测到改进版分类器（带对比学习）")
+        else:
+            model_type = 'standard'
+            print("🔍 检测到标准版分类器（无对比学习）")
+    
+    # 创建对应的模型
+    if model_type == 'improved':
+        model = ImprovedClassifier(num_classes=num_classes)
+        print("✅ 使用 ImprovedClassifier（带对比学习）")
+    else:
+        model = StandardResNet18Classifier(num_classes=num_classes)
+        print("✅ 使用 StandardResNet18Classifier（标准版）")
+    
+    # 加载权重
+    model.load_state_dict(state_dict)
+    
+    if best_acc != 'N/A':
+        if isinstance(best_acc, (int, float)):
+            print(f"📊 最佳验证准确率: {best_acc:.2f}%")
+        else:
+            print(f"📊 最佳验证准确率: {best_acc}")
     
     model = model.to(device)
     model.eval()
     
     return model
+
+
+# 保留旧函数名作为别名，向后兼容
+load_standard_classifier = load_classifier
 
 
 def evaluate_baseline(model, test_loader, device):
@@ -110,12 +190,15 @@ def evaluate_baseline(model, test_loader, device):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='标准ResNet18 Baseline评估')
+    parser = argparse.ArgumentParser(description='通用分类器 Baseline评估')
     
     # 模型和数据
     parser.add_argument('--model_path', type=str,
                        default='/kaggle/working/VA-VAE/improved_classifier/best_improved_classifier.pth',
-                       help='标准ResNet18模型路径')
+                       help='分类器模型路径')
+    parser.add_argument('--model_type', type=str, default='auto',
+                       choices=['auto', 'standard', 'improved'],
+                       help='模型类型：auto（自动检测）、standard（标准版）、improved（改进版）')
     parser.add_argument('--num_classes', type=int, default=31)
     
     # 其他
@@ -136,12 +219,12 @@ def main():
     ])
     
     print("\n" + "="*80)
-    print("📊 标准 ResNet18 Baseline 评估")
+    print("📊 分类器 Baseline 评估")
     print("="*80)
     
     # 加载模型
-    print(f"\n📦 加载标准ResNet18: {args.model_path}")
-    model = load_standard_classifier(args.model_path, args.num_classes, device)
+    print(f"\n📦 加载分类器: {args.model_path}")
+    model = load_classifier(args.model_path, args.num_classes, device, args.model_type)
     
     # 定义所有测试数据集
     datasets = {
